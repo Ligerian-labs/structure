@@ -1,0 +1,64 @@
+name: Bug report
+description: Something behaves incorrectly in a @structure package.
+title: "fix(<package>): <short description>"
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      description: Which package is affected?
+      options:
+        - "@structure/config"
+        - "@structure/observability"
+        - "@structure/domain"
+        - "@structure/cqrs"
+        - "@structure/eventsourcing"
+        - "@structure/eventsourcing-sqlite"
+        - "@structure/eventsourcing-pg"
+        - "@structure/viewmodel"
+        - "@structure/migrations"
+        - "@structure/runtime"
+        - "@structure/http"
+        - "@structure/cli"
+        - "@structure/ai"
+        - "@structure/mcp"
+        - repo tooling (turbo/biome/ci)
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen, referencing the documented contract (package README / JSDoc) when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happens instead. Include the full error output or wrong value, not a paraphrase.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Smallest code that reproduces it — ideally shaped like a bun test the fix PR can adopt as its regression test.
+      render: typescript
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: bun --version, OS, and the affected package's dependency versions if relevant.
+      placeholder: |
+        bun 1.3.14, macOS 15
+    validations:
+      required: true
+  - type: textarea
+    id: analysis
+    attributes:
+      label: Root-cause analysis (optional)
+      description: If you already investigated (agents — include file:line references and what you verified vs. inferred; flag uncertainty as "[inferred — verify]").

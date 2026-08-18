@@ -47,3 +47,7 @@ Task-specific step-by-step guides live in `.claude/skills/*/SKILL.md`: create-ag
 ## VCS
 
 - jj colocated with git. Commit: `jj commit -m "type(scope): message"` (conventional commits, single line, no trailers). Branch/bookmark names: `type/short-description`.
+
+## Contributing
+
+Full contribution flow (issues → branch → tests-first → verification gates → PR) is in [CONTRIBUTING.md](CONTRIBUTING.md). CI (`.github/workflows/ci.yml`) enforces lint, typecheck, tests, the Postgres adapter suite, and conventional PR titles. Never add AI/generated-by attribution to commits or PRs.

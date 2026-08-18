@@ -22,5 +22,6 @@
 ## Conventions
 
 - [AGENTS.md](AGENTS.md): commands, package map, hard rules, dependency direction, VCS conventions (CLAUDE.md imports it).
+- [CONTRIBUTING.md](CONTRIBUTING.md): contribution flow for humans and agents — issues, branches, tests-first, verification gates, PR template; CI mirrors the same gates.
 - [README.md](README.md): human overview and design rules.
 - Skills in `.claude/skills/*/SKILL.md`: step-by-step recipes — create-aggregate, create-command, create-event-handler, create-view-model, add-migration, read-app-state, expose-mcp-tool.

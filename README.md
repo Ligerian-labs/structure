@@ -40,4 +40,4 @@ bun run test       # turbo run test (bun test per package)
 - Every boundary is loggable (structured, correlated), measurable (traffic/errors/latency), and traceable; telemetry failure never takes down the workload.
 - Failures are classified (`transient` / `permanent` / `conflict`); only transient failures are retried, with bounded backoff and jitter.
 
-See `llms.txt` for a machine-oriented index and each package's `README.md` for its API. Conventions for coding agents live in `AGENTS.md`; task recipes (create an aggregate, a command, a view model, ...) live in `.claude/skills/`.
+See `llms.txt` for a machine-oriented index and each package's `README.md` for its API. Conventions for coding agents live in `AGENTS.md`; task recipes (create an aggregate, a command, a view model, ...) live in `.claude/skills/`. To contribute — human or agent — start with `CONTRIBUTING.md`; CI runs the same gates you run locally (`lint`, `typecheck`, `test`, plus the Postgres adapter suite).

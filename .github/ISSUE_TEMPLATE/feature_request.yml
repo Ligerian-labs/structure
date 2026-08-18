@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose new capability for an existing package or a new package.
+title: "feat(<package>): <short description>"
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't be done (or done cleanly) today? Describe the use case, not the solution.
+    validations:
+      required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: Target package
+      options:
+        - "@structure/config"
+        - "@structure/observability"
+        - "@structure/domain"
+        - "@structure/cqrs"
+        - "@structure/eventsourcing"
+        - "@structure/eventsourcing-sqlite"
+        - "@structure/eventsourcing-pg"
+        - "@structure/viewmodel"
+        - "@structure/migrations"
+        - "@structure/runtime"
+        - "@structure/http"
+        - "@structure/cli"
+        - "@structure/ai"
+        - "@structure/mcp"
+        - new package
+        - repo tooling (turbo/biome/ci)
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: Proposed API sketch
+      description: What would the calling code look like? Types matter more than implementation.
+      render: typescript
+    validations:
+      required: true
+  - type: textarea
+    id: fit
+    attributes:
+      label: Design-rule fit
+      description: How does this respect the repo's design rules (AGENTS.md — dependency direction, error taxonomy, no cross-context reads, classified failures)? Note anything it would bend.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Including "compose existing exports" — why is that not enough?
