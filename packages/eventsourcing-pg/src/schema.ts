@@ -1,0 +1,93 @@
+import * as SqlClient from "@effect/sql/SqlClient";
+import type { SqlError } from "@effect/sql/SqlError";
+import { Effect } from "effect";
+
+/** Options shared by every adapter in this package. */
+export interface AdapterOptions {
+  /** Prefix prepended to every table name (default: none). */
+  readonly tablePrefix?: string;
+}
+
+/** Resolved table names for one `tablePrefix`. */
+export interface TableNames {
+  readonly events: string;
+  readonly snapshots: string;
+  readonly checkpoints: string;
+  readonly outbox: string;
+  readonly inbox: string;
+}
+
+/** Table names for the given options (default: unprefixed). */
+export const tableNames = (options?: AdapterOptions): TableNames => {
+  const prefix = options?.tablePrefix ?? "";
+  return {
+    events: `${prefix}events`,
+    snapshots: `${prefix}snapshots`,
+    checkpoints: `${prefix}checkpoints`,
+    outbox: `${prefix}outbox`,
+    inbox: `${prefix}inbox`,
+  };
+};
+
+/**
+ * Creates every table this package needs, in order, with idempotent
+ * `CREATE TABLE IF NOT EXISTS` statements. Run it once at startup (the
+ * package-level `layer` does so automatically).
+ *
+ * The outbox has an extra `seq BIGSERIAL` column (not part of the port)
+ * so `pending` can return entries in stable enqueue order.
+ */
+export const migrate = (
+  options?: AdapterOptions,
+): Effect.Effect<void, SqlError, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = tableNames(options);
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.events)} (
+        position BIGSERIAL PRIMARY KEY,
+        stream_name TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        payload JSONB NOT NULL,
+        metadata JSONB NOT NULL,
+        UNIQUE (stream_name, version)
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.snapshots)} (
+        stream_name TEXT PRIMARY KEY,
+        state JSONB NOT NULL,
+        version INTEGER NOT NULL
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.checkpoints)} (
+        name TEXT PRIMARY KEY,
+        position BIGINT NOT NULL
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.outbox)} (
+        id TEXT PRIMARY KEY,
+        seq BIGSERIAL,
+        topic TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        metadata JSONB NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'published', 'dead')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.inbox)} (
+        consumer_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        processed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (consumer_id, message_id)
+      )
+    `;
+  });
