@@ -27,7 +27,7 @@ Effect-based framework monorepo for agent-focused backend software. Bun workspac
 | `@structure/ai` | LLM calls (Anthropic/OpenAI) with structured output, retries, test model. |
 | `@structure/mcp` | Expose tools/resources/commands to coding agents over MCP. |
 
-Every package: `src/index.ts` is the public API, `README.md` documents it, `test/` shows working usage. Machine index: `llms.txt`.
+Every package: `src/index.ts` is the public API, `README.md` documents it, `test/` shows working usage. Machine index: `llms.txt`. Cross-package narrative (getting started, architecture, operations, ADRs) lives in `docs/` — see `docs/index.md` for what lives where; update the matching doc in the same PR as a cross-package or contract change.
 
 ## Recipes (skills)
 
