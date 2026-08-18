@@ -4,7 +4,7 @@ import {
   type CommandDefinition,
   QueryBus,
   type QueryDefinition,
-} from "@structure/cqrs";
+} from "@structure-ai/cqrs";
 import { Effect, Schema } from "effect";
 import { makeToolLayer, type ToolLayer } from "./tool.js";
 

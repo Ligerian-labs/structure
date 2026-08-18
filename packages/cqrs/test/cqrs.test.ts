@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ValidationFailed } from "@structure/domain";
+import { ValidationFailed } from "@structure-ai/domain";
 import { Effect, Layer, Ref, Schema } from "effect";
 import {
   Authorizer,

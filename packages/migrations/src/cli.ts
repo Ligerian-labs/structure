@@ -1,4 +1,4 @@
-import { defineCommand, withSubcommands } from "@structure/cli";
+import { defineCommand, withSubcommands } from "@structure-ai/cli";
 import { Effect } from "effect";
 import type { MigrationSet } from "./migration.js";
 import { type RunOptions, run, status } from "./run.js";

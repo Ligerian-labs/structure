@@ -13,19 +13,19 @@ Effect-based framework monorepo for agent-focused backend software. Bun workspac
 
 | Package | Use it to |
 | --- | --- |
-| `@structure/config` | Define typed settings (env/file/overrides), load + validate at startup. |
-| `@structure/observability` | Structured logs, correlation ids, metrics, OTLP export. |
-| `@structure/domain` | Aggregates (decider: `initial`/`decide`/`evolve`), entity ids, value objects, domain events, error taxonomy. |
-| `@structure/cqrs` | Define commands/queries, register handlers, dispatch through the buses. |
-| `@structure/eventsourcing` | Event store, aggregate runtime, projections, outbox/inbox (in-memory adapters). |
-| `@structure/eventsourcing-sqlite` / `-pg` | Durable adapters for the same ports. |
-| `@structure/viewmodel` | Schema-defined read models: typed stores, generated table migrations, event-driven hydration. |
-| `@structure/migrations` | Forward-only SQL migrations (`defineMigration`/`makeSet`/`run`/`status` + CLI group). |
-| `@structure/runtime` | Readiness checks, shutdown coordinator, Bun entrypoint. |
-| `@structure/http` | HttpApi endpoints, OpenAPI docs, health probes, CQRS endpoint bridge, Bun server. |
-| `@structure/cli` | Typed CLI commands with classified exit codes. |
-| `@structure/ai` | LLM calls (Anthropic/OpenAI) with structured output, retries, test model. |
-| `@structure/mcp` | Expose tools/resources/commands to coding agents over MCP. |
+| `@structure-ai/config` | Define typed settings (env/file/overrides), load + validate at startup. |
+| `@structure-ai/observability` | Structured logs, correlation ids, metrics, OTLP export. |
+| `@structure-ai/domain` | Aggregates (decider: `initial`/`decide`/`evolve`), entity ids, value objects, domain events, error taxonomy. |
+| `@structure-ai/cqrs` | Define commands/queries, register handlers, dispatch through the buses. |
+| `@structure-ai/eventsourcing` | Event store, aggregate runtime, projections, outbox/inbox (in-memory adapters). |
+| `@structure-ai/eventsourcing-sqlite` / `-pg` | Durable adapters for the same ports. |
+| `@structure-ai/viewmodel` | Schema-defined read models: typed stores, generated table migrations, event-driven hydration. |
+| `@structure-ai/migrations` | Forward-only SQL migrations (`defineMigration`/`makeSet`/`run`/`status` + CLI group). |
+| `@structure-ai/runtime` | Readiness checks, shutdown coordinator, Bun entrypoint. |
+| `@structure-ai/http` | HttpApi endpoints, OpenAPI docs, health probes, CQRS endpoint bridge, Bun server. |
+| `@structure-ai/cli` | Typed CLI commands with classified exit codes. |
+| `@structure-ai/ai` | LLM calls (Anthropic/OpenAI) with structured output, retries, test model. |
+| `@structure-ai/mcp` | Expose tools/resources/commands to coding agents over MCP. |
 
 Every package: `src/index.ts` is the public API, `README.md` documents it, `test/` shows working usage. Machine index: `llms.txt`. Cross-package narrative (getting started, architecture, operations, ADRs) lives in `docs/` — see `docs/index.md` for what lives where; update the matching doc in the same PR as a cross-package or contract change.
 

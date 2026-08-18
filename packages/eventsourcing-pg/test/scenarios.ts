@@ -1,6 +1,6 @@
 /**
  * Behavioral test suite shared by the sql adapters — the same scenarios as
- * the in-memory implementations in @structure/eventsourcing (which are the
+ * the in-memory implementations in @structure-ai/eventsourcing (which are the
  * behavioral spec), plus the transactional-outbox and integration cases.
  *
  * NOTE: this file is intentionally duplicated between eventsourcing-sqlite
@@ -17,7 +17,7 @@ import {
   Outbox,
   Projection,
   SnapshotStore,
-} from "@structure/eventsourcing";
+} from "@structure-ai/eventsourcing";
 import { Chunk, Effect, Either, Option, Ref, Stream } from "effect";
 import { type AdapterOptions, appendWithOutbox } from "../src/index.js";
 import { Counter, counterRegistry, testMetadata } from "./fixtures.js";

@@ -100,7 +100,7 @@ export const QueryHandler = {
  * Holds every registered handler, keyed by message tag. Built once at layer
  * construction; the buses look handlers up here per dispatch.
  */
-export class HandlerRegistry extends Context.Tag("@structure/cqrs/HandlerRegistry")<
+export class HandlerRegistry extends Context.Tag("@structure-ai/cqrs/HandlerRegistry")<
   HandlerRegistry,
   ReadonlyMap<string, Registration>
 >() {

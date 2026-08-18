@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as SqlClient from "@effect/sql/SqlClient";
 import { SqliteClient } from "@effect/sql-sqlite-bun";
-import { makeSet, run } from "@structure/migrations";
+import { makeSet, run } from "@structure-ai/migrations";
 import { Effect, Schema } from "effect";
 import { columnName, createTableSql, InvalidViewModel, ViewModel } from "../src/index.js";
 
@@ -97,7 +97,7 @@ describe("createTableSql / migration", () => {
     expect(ddl).toContain("PRIMARY KEY (id)");
   });
 
-  test("ViewModel.migration runs through @structure/migrations and creates the table", async () => {
+  test("ViewModel.migration runs through @structure-ai/migrations and creates the table", async () => {
     const set = makeSet([ViewModel.migration(Payment, 1)]);
     const program = Effect.gen(function* () {
       const applied = yield* run(set);

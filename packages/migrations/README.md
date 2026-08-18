@@ -1,4 +1,4 @@
-# @structure/migrations
+# @structure-ai/migrations
 
 Versioned, ordered, forward-only SQL migrations on `@effect/sql`'s Migrator. Dialect-agnostic: the package depends only on `@effect/sql`, and apps provide whichever `SqlClient` layer they already use (`@effect/sql-sqlite-bun`, `@effect/sql-pg`, ...). Applied migrations are recorded in a bookkeeping table; concurrent runners are lock-protected, so a second runner fails instead of double-applying.
 
@@ -8,7 +8,7 @@ There is no `down`: per the delivery policy, irreversible changes roll forward w
 
 ```ts
 import * as SqlClient from "@effect/sql/SqlClient";
-import { defineMigration, layer, makeSet, run } from "@structure/migrations";
+import { defineMigration, layer, makeSet, run } from "@structure-ai/migrations";
 import { Effect } from "effect";
 
 const migrations = makeSet([
@@ -24,10 +24,10 @@ const applied = yield* run(migrations);
 const MigrateLayer = layer(migrations);
 ```
 
-CLI integration (subpath export, pairs with `@structure/cli`):
+CLI integration (subpath export, pairs with `@structure-ai/cli`):
 
 ```ts
-import { migrationsCommand } from "@structure/migrations/cli";
+import { migrationsCommand } from "@structure-ai/migrations/cli";
 // <app> migrations up | <app> migrations status
 const cmd = migrationsCommand(migrations);
 ```

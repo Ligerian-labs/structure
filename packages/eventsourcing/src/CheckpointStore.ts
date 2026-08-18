@@ -13,7 +13,7 @@ export interface CheckpointStoreService {
 }
 
 /** Service tag for the checkpoint store port. */
-export class CheckpointStore extends Context.Tag("@structure/eventsourcing/CheckpointStore")<
+export class CheckpointStore extends Context.Tag("@structure-ai/eventsourcing/CheckpointStore")<
   CheckpointStore,
   CheckpointStoreService
 >() {}

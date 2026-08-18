@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigLoadError } from "@structure/config";
+import { ConfigLoadError } from "@structure-ai/config";
 import { Cause, Data, Effect, FiberId, Layer, LogLevel, Option } from "effect";
 import {
   Args,
@@ -18,7 +18,7 @@ import {
   withSubcommands,
 } from "../src/index.js";
 
-// @structure/domain is not a declared dependency of this package, so these
+// @structure-ai/domain is not a declared dependency of this package, so these
 // mirror its tagged-error shape (`classification` field) structurally.
 class InvariantViolation extends Data.TaggedError("InvariantViolation")<{
   readonly rule: string;

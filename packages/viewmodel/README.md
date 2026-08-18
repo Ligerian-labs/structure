@@ -1,12 +1,12 @@
-# @structure/viewmodel
+# @structure-ai/viewmodel
 
 The query side of CQRS as a deliberately small "ORM": a view model is a Schema-defined row in one table, with a typed store, a generated table migration, and hydration from domain events. Not a general ORM — no relations, no lazy loading, no change tracking. Read models are denormalized, shaped per consumer, and disposable: any of them can be rebuilt from the event history.
 
 ## Usage
 
 ```ts
-import { ViewModel, ViewProjection, ViewStore } from "@structure/viewmodel";
-import { makeSet } from "@structure/migrations";
+import { ViewModel, ViewProjection, ViewStore } from "@structure-ai/viewmodel";
+import { makeSet } from "@structure-ai/migrations";
 import { Effect, Schema } from "effect";
 
 const AccountView = ViewModel.define({
@@ -49,9 +49,9 @@ const program = Effect.gen(function* () {
 | Export | What it is |
 | --- | --- |
 | `ViewModel.define({ name, table?, idField?, fields })` | Definition: Schema fields → columns (snake_case names, portable SQL types derived from the schema AST). Throws `InvalidViewModel` listing every problem. `ViewModel.Of<typeof def>` / `EncodedOf` type helpers. |
-| `ViewModel.createTableSql(def)` / `ViewModel.migration(def, id)` | Generated DDL (`CREATE TABLE IF NOT EXISTS`, PK on the id column) as a string or as a `@structure/migrations` migration. |
+| `ViewModel.createTableSql(def)` / `ViewModel.migration(def, id)` | Generated DDL (`CREATE TABLE IF NOT EXISTS`, PK on the id column) as a string or as a `@structure-ai/migrations` migration. |
 | `ViewStore.make(def)` / `ViewStore.layer(tag, def)` | Typed store over `SqlClient`: `get` (fails `NotFound`), `findById`, `find(criteria, { orderBy, order, limit, offset })`, `findOne`, `count`, `upsert`/`upsertMany` (ON CONFLICT id DO UPDATE), `patch` (read-merge-write; the projection is the single writer), `remove` (idempotent), `truncate`. Criteria are equality-AND on encoded values; `null` compiles to `IS NULL`. |
-| `ViewProjection.make({ name, view, registry, when })` | Hydration built on `@structure/eventsourcing` projections: handlers `(event, store, { stored, live })`; returns `{ projection, catchup, run, rebuild }` — `rebuild` truncates the table and replays with `live: false`. |
+| `ViewProjection.make({ name, view, registry, when })` | Hydration built on `@structure-ai/eventsourcing` projections: handlers `(event, store, { stored, live })`; returns `{ projection, catchup, run, rebuild }` — `rebuild` truncates the table and replays with `live: false`. |
 
 ## Storage classes
 

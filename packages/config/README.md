@@ -1,4 +1,4 @@
-# @structure/config
+# @structure-ai/config
 
 Typed environment + configuration management on Effect `Config`. Settings are defined once and yield both a validated, immutable config value and a rendered settings reference. Startup validation reports **all** issues together, then fails before the process accepts work.
 
@@ -7,7 +7,7 @@ Precedence (highest wins): explicit overrides → environment variables → JSON
 ## Usage
 
 ```ts
-import { load, Settings, toLayer } from "@structure/config";
+import { load, Settings, toLayer } from "@structure-ai/config";
 import { Context, Duration, Effect } from "effect";
 
 const settings = Settings.struct({

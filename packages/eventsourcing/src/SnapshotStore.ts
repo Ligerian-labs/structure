@@ -25,7 +25,7 @@ export interface SnapshotStoreService {
 }
 
 /** Service tag for the snapshot store port. */
-export class SnapshotStore extends Context.Tag("@structure/eventsourcing/SnapshotStore")<
+export class SnapshotStore extends Context.Tag("@structure-ai/eventsourcing/SnapshotStore")<
   SnapshotStore,
   SnapshotStoreService
 >() {}

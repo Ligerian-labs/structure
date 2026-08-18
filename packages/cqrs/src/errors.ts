@@ -1,4 +1,4 @@
-import type { FailureClass } from "@structure/domain";
+import type { FailureClass } from "@structure-ai/domain";
 import { Data } from "effect";
 
 /**

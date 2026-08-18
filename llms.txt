@@ -1,23 +1,23 @@
 # structure
 
-> Effect-based TypeScript framework monorepo for agent-focused backend software. Bun workspaces; packages import as `@structure/<name>` via workspace references. Every package: `src/index.ts` is the public API, `README.md` documents it, `test/` shows working usage.
+> Effect-based TypeScript framework monorepo for agent-focused backend software. Bun workspaces; packages import as `@structure-ai/<name>` via workspace references. Every package: `src/index.ts` is the public API, `README.md` documents it, `test/` shows working usage.
 
 ## Packages
 
-- [@structure/config](packages/config/README.md): settings DSL (Settings.string/int/port/url/duration/secret/literal/optional/struct/nested), load() with precedence overrides→env→file→dotenv→defaults, all-errors-at-once ConfigLoadError, renderDocs() markdown settings table.
-- [@structure/observability](packages/observability/README.md): layer() for structured JSON logging + OTLP export, ServiceMeta, Correlation.within/scoped for correlation ids on logs+spans, Metrics.boundary/track for traffic-errors-latency.
-- [@structure/domain](packages/domain/README.md): EntityId.define branded ids, ValueObject.define schema values, Aggregate.define decider (initial/decide/evolve) + rehydrate/execute, DomainEvent.define, EventMetadata/Envelope, Repository port, errors InvariantViolation/NotFound/ConcurrencyConflict/ValidationFailed with FailureClass.
-- [@structure/cqrs](packages/cqrs/README.md): Command.define/Query.define with Schema payload+success, CommandBus/QueryBus dispatch with validation, Authorizer hook, IdempotencyStore, timeouts, spans+metrics per dispatch.
-- [@structure/eventsourcing](packages/eventsourcing/README.md): EventStore/SnapshotStore/CheckpointStore/Outbox/Inbox ports, EventRegistry codec with upcasters, AggregateStore (load/execute/executeWithRetry, optimistic concurrency), Projection catchup/run/rebuild, OutboxRelay with bounded retry + dead letters, in-memory layers for everything.
-- [@structure/eventsourcing-sqlite](packages/eventsourcing-sqlite/README.md): the same ports over bun:sqlite with transactional append + outbox.
-- [@structure/eventsourcing-pg](packages/eventsourcing-pg/README.md): the same ports over PostgreSQL via @effect/sql-pg.
-- [@structure/viewmodel](packages/viewmodel/README.md): ViewModel.define schema-defined read models (query-side ORM: typed ViewStore get/find/upsert/patch, generated table migrations via ViewModel.migration), ViewProjection.make event-driven hydration with catchup/run/rebuild.
-- [@structure/migrations](packages/migrations/README.md): defineMigration/makeSet ordered forward-only SQL migrations on @effect/sql Migrator (dialect-agnostic, lock-protected), run/status/layer, migrationsCommand CLI group via subpath ./cli.
-- [@structure/runtime](packages/runtime/README.md): Readiness service (flag + named checks), Shutdown coordinator (reverse-order bounded finalizers), AppRuntime.launch Bun entrypoint, config-invalid startup reporting.
-- [@structure/http](packages/http/README.md): HttpApi route/handler definitions, OpenAPI JSON + Swagger UI, /health/live|ready probes, error→response mapping without leaking internals, CQRS endpoint bridge, Bun serve with graceful shutdown.
-- [@structure/cli](packages/cli/README.md): defineCommand on @effect/cli, standard --log-level/--config-file flags, classified exit codes, runCli entrypoint.
-- [@structure/ai](packages/ai/README.md): LanguageModel layers for Anthropic/OpenAI from settings, generateText/generateObject with usage metrics, transient-only bounded retries, TestModel.layer for deterministic tests.
-- [@structure/mcp](packages/mcp/README.md): defineMcpServer with schema-typed tools/resources, CQRS command/query→tool bridge, stdio + HTTP transports.
+- [@structure-ai/config](packages/config/README.md): settings DSL (Settings.string/int/port/url/duration/secret/literal/optional/struct/nested), load() with precedence overrides→env→file→dotenv→defaults, all-errors-at-once ConfigLoadError, renderDocs() markdown settings table.
+- [@structure-ai/observability](packages/observability/README.md): layer() for structured JSON logging + OTLP export, ServiceMeta, Correlation.within/scoped for correlation ids on logs+spans, Metrics.boundary/track for traffic-errors-latency.
+- [@structure-ai/domain](packages/domain/README.md): EntityId.define branded ids, ValueObject.define schema values, Aggregate.define decider (initial/decide/evolve) + rehydrate/execute, DomainEvent.define, EventMetadata/Envelope, Repository port, errors InvariantViolation/NotFound/ConcurrencyConflict/ValidationFailed with FailureClass.
+- [@structure-ai/cqrs](packages/cqrs/README.md): Command.define/Query.define with Schema payload+success, CommandBus/QueryBus dispatch with validation, Authorizer hook, IdempotencyStore, timeouts, spans+metrics per dispatch.
+- [@structure-ai/eventsourcing](packages/eventsourcing/README.md): EventStore/SnapshotStore/CheckpointStore/Outbox/Inbox ports, EventRegistry codec with upcasters, AggregateStore (load/execute/executeWithRetry, optimistic concurrency), Projection catchup/run/rebuild, OutboxRelay with bounded retry + dead letters, in-memory layers for everything.
+- [@structure-ai/eventsourcing-sqlite](packages/eventsourcing-sqlite/README.md): the same ports over bun:sqlite with transactional append + outbox.
+- [@structure-ai/eventsourcing-pg](packages/eventsourcing-pg/README.md): the same ports over PostgreSQL via @effect/sql-pg.
+- [@structure-ai/viewmodel](packages/viewmodel/README.md): ViewModel.define schema-defined read models (query-side ORM: typed ViewStore get/find/upsert/patch, generated table migrations via ViewModel.migration), ViewProjection.make event-driven hydration with catchup/run/rebuild.
+- [@structure-ai/migrations](packages/migrations/README.md): defineMigration/makeSet ordered forward-only SQL migrations on @effect/sql Migrator (dialect-agnostic, lock-protected), run/status/layer, migrationsCommand CLI group via subpath ./cli.
+- [@structure-ai/runtime](packages/runtime/README.md): Readiness service (flag + named checks), Shutdown coordinator (reverse-order bounded finalizers), AppRuntime.launch Bun entrypoint, config-invalid startup reporting.
+- [@structure-ai/http](packages/http/README.md): HttpApi route/handler definitions, OpenAPI JSON + Swagger UI, /health/live|ready probes, error→response mapping without leaking internals, CQRS endpoint bridge, Bun serve with graceful shutdown.
+- [@structure-ai/cli](packages/cli/README.md): defineCommand on @effect/cli, standard --log-level/--config-file flags, classified exit codes, runCli entrypoint.
+- [@structure-ai/ai](packages/ai/README.md): LanguageModel layers for Anthropic/OpenAI from settings, generateText/generateObject with usage metrics, transient-only bounded retries, TestModel.layer for deterministic tests.
+- [@structure-ai/mcp](packages/mcp/README.md): defineMcpServer with schema-typed tools/resources, CQRS command/query→tool bridge, stdio + HTTP transports.
 
 ## Documentation
 

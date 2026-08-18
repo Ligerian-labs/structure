@@ -13,7 +13,7 @@ An aggregate is a decider: `initial` state, `decide` (accept/reject a command, e
 2. **Define the id and events:**
 
 ```ts
-import { Aggregate, DomainEvent, EntityId, InvariantViolation } from "@structure/domain";
+import { Aggregate, DomainEvent, EntityId, InvariantViolation } from "@structure-ai/domain";
 import { Effect, Schema } from "effect";
 
 export const InvoiceId = EntityId.define("InvoiceId");
@@ -41,7 +41,7 @@ export const Invoice = Aggregate.define<InvoiceState, InvoiceCommand, InvoiceEve
 });
 ```
 
-4. **Persist it event-sourced** (usual case): register the events in an `EventRegistry` and use `AggregateStore` from `@structure/eventsourcing`; use `executeWithRetry` for optimistic-concurrency retries. For simple state-stored contexts implement the `Repository` port from `@structure/domain` instead.
+4. **Persist it event-sourced** (usual case): register the events in an `EventRegistry` and use `AggregateStore` from `@structure-ai/eventsourcing`; use `executeWithRetry` for optimistic-concurrency retries. For simple state-stored contexts implement the `Repository` port from `@structure-ai/domain` instead.
 5. **Tests first-class:** decide-accepts (state + events asserted), decide-rejects (invariant), `Aggregate.rehydrate` from a history. Follow `packages/domain/test/domain.test.ts`.
 
 ## Rules

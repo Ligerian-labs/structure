@@ -1,6 +1,6 @@
 import * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
-import { ConcurrencyConflict } from "@structure/domain";
+import { ConcurrencyConflict } from "@structure-ai/domain";
 import {
   type AppendEvent,
   type AppendResult,
@@ -9,7 +9,7 @@ import {
   type OutboxMessage,
   type StoredEvent,
   type StoredEventMetadata,
-} from "@structure/eventsourcing";
+} from "@structure-ai/eventsourcing";
 import { Effect, Layer, Stream } from "effect";
 import { conflictIdentity, jsonText, toBigInt, toNumber } from "./internal.js";
 import { type AdapterOptions, type TableNames, tableNames } from "./schema.js";

@@ -6,8 +6,8 @@ import {
   EventStore,
   type EventStoreService,
   type StoredEventMetadata,
-} from "@structure/eventsourcing";
-import { layer as sqliteStores } from "@structure/eventsourcing-sqlite";
+} from "@structure-ai/eventsourcing";
+import { layer as sqliteStores } from "@structure-ai/eventsourcing-sqlite";
 import { Effect, Schema } from "effect";
 import { createTableSql, ViewModel, ViewProjection, ViewStore } from "../src/index.js";
 

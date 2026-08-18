@@ -1,5 +1,5 @@
 import * as SqlClient from "@effect/sql/SqlClient";
-import { type Snapshot, SnapshotStore } from "@structure/eventsourcing";
+import { type Snapshot, SnapshotStore } from "@structure-ai/eventsourcing";
 import { Effect, Layer, Option } from "effect";
 import { jsonText, toNumber } from "./internal.js";
 import { type AdapterOptions, tableNames } from "./schema.js";

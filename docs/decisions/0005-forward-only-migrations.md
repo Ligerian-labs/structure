@@ -9,7 +9,7 @@ Schema evolution needs ordering, bookkeeping, and concurrency safety. Down-migra
 
 ## Decision
 
-`@structure/migrations` wraps `@effect/sql`'s Migrator: integer-ordered, in-code Effect migrations, recorded in a bookkeeping table, lock-protected against concurrent runners. No `down` — mistakes roll forward as new migrations. Each `run` invocation executes in one transaction: a failing migration rolls back the whole batch. The package is dialect-agnostic (depends only on `@effect/sql`); apps bring their own `SqlClient` layer.
+`@structure-ai/migrations` wraps `@effect/sql`'s Migrator: integer-ordered, in-code Effect migrations, recorded in a bookkeeping table, lock-protected against concurrent runners. No `down` — mistakes roll forward as new migrations. Each `run` invocation executes in one transaction: a failing migration rolls back the whole batch. The package is dialect-agnostic (depends only on `@effect/sql`); apps bring their own `SqlClient` layer.
 
 ## Consequences
 

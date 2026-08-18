@@ -9,7 +9,7 @@ Event sourcing needs durable storage, but coupling the core package to a databas
 
 ## Decision
 
-`@structure/eventsourcing` defines the ports (`EventStore`, `SnapshotStore`, `CheckpointStore`, `Outbox`, `Inbox`) plus in-memory implementations; durable adapters ship as separate packages (`-sqlite` on `bun:sqlite`, `-pg` on `@effect/sql-pg`) implementing the identical observable behavior — the core package's tests are the behavioral spec. Appends are transactional with optimistic concurrency (`UNIQUE(stream_name, version)` as the race backstop), and `appendWithOutbox` writes events + outbox rows in one transaction.
+`@structure-ai/eventsourcing` defines the ports (`EventStore`, `SnapshotStore`, `CheckpointStore`, `Outbox`, `Inbox`) plus in-memory implementations; durable adapters ship as separate packages (`-sqlite` on `bun:sqlite`, `-pg` on `@effect/sql-pg`) implementing the identical observable behavior — the core package's tests are the behavioral spec. Appends are transactional with optimistic concurrency (`UNIQUE(stream_name, version)` as the race backstop), and `appendWithOutbox` writes events + outbox rows in one transaction.
 
 ## Consequences
 

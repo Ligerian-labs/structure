@@ -1,5 +1,5 @@
 /**
- * `@structure/http` — thin, opinionated bindings over `@effect/platform`
+ * `@structure-ai/http` — thin, opinionated bindings over `@effect/platform`
  * `HttpApi`: schema-typed routes with full inference, OpenAPI docs, health
  * probes, request correlation, problem-details error mapping, a CQRS bridge
  * and a graceful Bun server.

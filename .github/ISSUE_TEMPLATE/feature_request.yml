@@ -15,20 +15,20 @@ body:
     attributes:
       label: Target package
       options:
-        - "@structure/config"
-        - "@structure/observability"
-        - "@structure/domain"
-        - "@structure/cqrs"
-        - "@structure/eventsourcing"
-        - "@structure/eventsourcing-sqlite"
-        - "@structure/eventsourcing-pg"
-        - "@structure/viewmodel"
-        - "@structure/migrations"
-        - "@structure/runtime"
-        - "@structure/http"
-        - "@structure/cli"
-        - "@structure/ai"
-        - "@structure/mcp"
+        - "@structure-ai/config"
+        - "@structure-ai/observability"
+        - "@structure-ai/domain"
+        - "@structure-ai/cqrs"
+        - "@structure-ai/eventsourcing"
+        - "@structure-ai/eventsourcing-sqlite"
+        - "@structure-ai/eventsourcing-pg"
+        - "@structure-ai/viewmodel"
+        - "@structure-ai/migrations"
+        - "@structure-ai/runtime"
+        - "@structure-ai/http"
+        - "@structure-ai/cli"
+        - "@structure-ai/ai"
+        - "@structure-ai/mcp"
         - new package
         - repo tooling (turbo/biome/ci)
     validations:

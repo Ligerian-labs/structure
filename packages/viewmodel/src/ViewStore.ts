@@ -1,6 +1,6 @@
 import { SqlClient } from "@effect/sql/SqlClient";
 import type { Fragment } from "@effect/sql/Statement";
-import { NotFound } from "@structure/domain";
+import { NotFound } from "@structure-ai/domain";
 import { type Context, Effect, Layer, Option, Schema } from "effect";
 import type { ColumnSpec, ViewModelDef } from "./ViewModel.js";
 

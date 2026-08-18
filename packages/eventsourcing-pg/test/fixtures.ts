@@ -1,5 +1,5 @@
-import { Aggregate, DomainEvent, InvariantViolation } from "@structure/domain";
-import { EventRegistry, type StoredEventMetadata } from "@structure/eventsourcing";
+import { Aggregate, DomainEvent, InvariantViolation } from "@structure-ai/domain";
+import { EventRegistry, type StoredEventMetadata } from "@structure-ai/eventsourcing";
 import { Effect, Schema } from "effect";
 
 export const Incremented = DomainEvent.define("Incremented", { amount: Schema.Number });

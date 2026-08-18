@@ -1,5 +1,5 @@
 {
-  "name": "@structure/runtime",
+  "name": "@structure-ai/runtime",
   "version": "0.0.0",
   "description": "Application bootstrap: config-first startup, telemetry init, signal handling, graceful shutdown.",
   "license": "MIT",
@@ -27,8 +27,8 @@
     "effect": "catalog:",
     "@effect/platform": "catalog:",
     "@effect/platform-bun": "catalog:",
-    "@structure/config": "workspace:*",
-    "@structure/observability": "workspace:*"
+    "@structure-ai/config": "workspace:*",
+    "@structure-ai/observability": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

@@ -9,7 +9,7 @@ The query side of CQRS needs typed, queryable read models. General ORMs (relatio
 
 ## Decision
 
-`@structure/viewmodel` maps one Schema-defined view model to one table: typed store (`get`/`find`/`upsert`/`patch`/`remove`/`truncate`), generated DDL entering the normal migration set, and hydration exclusively via event projections (`ViewProjection`). No relations, no joins API, no change tracking. Each table has exactly one writer: its projection.
+`@structure-ai/viewmodel` maps one Schema-defined view model to one table: typed store (`get`/`find`/`upsert`/`patch`/`remove`/`truncate`), generated DDL entering the normal migration set, and hydration exclusively via event projections (`ViewProjection`). No relations, no joins API, no change tracking. Each table has exactly one writer: its projection.
 
 ## Consequences
 

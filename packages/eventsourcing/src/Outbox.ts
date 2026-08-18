@@ -48,7 +48,7 @@ export interface OutboxService {
 }
 
 /** Service tag for the outbox port. */
-export class Outbox extends Context.Tag("@structure/eventsourcing/Outbox")<
+export class Outbox extends Context.Tag("@structure-ai/eventsourcing/Outbox")<
   Outbox,
   OutboxService
 >() {}
@@ -174,7 +174,7 @@ export interface InboxService {
 }
 
 /** Service tag for the inbox port. */
-export class Inbox extends Context.Tag("@structure/eventsourcing/Inbox")<Inbox, InboxService>() {
+export class Inbox extends Context.Tag("@structure-ai/eventsourcing/Inbox")<Inbox, InboxService>() {
   /**
    * Runs `effect` only if `messageId` is new for `consumerId`, marking it
    * processed after success. Returns `Option.none` when the message was a

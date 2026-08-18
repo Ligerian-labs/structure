@@ -5,8 +5,8 @@ import type {
   EventRegistry,
   EventStore,
   StoredEvent,
-} from "@structure/eventsourcing";
-import { Projection } from "@structure/eventsourcing";
+} from "@structure-ai/eventsourcing";
+import { Projection } from "@structure-ai/eventsourcing";
 import { Effect, type Schema } from "effect";
 import type { ViewModelDef } from "./ViewModel.js";
 import * as ViewStore from "./ViewStore.js";
@@ -68,7 +68,7 @@ export interface ViewProjection<E extends { readonly _tag: string }, EH, R> {
 
 /**
  * Builds a {@link ViewProjection}: `Projection.make` from
- * `@structure/eventsourcing` wrapped so every handler receives the view
+ * `@structure-ai/eventsourcing` wrapped so every handler receives the view
  * model's typed {@link ViewStore.ViewStore} (constructed once per
  * `catchup`/`run`/`rebuild` invocation and closed over). Event types missing
  * from the registry are skipped; registered types without a handler are

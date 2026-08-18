@@ -5,7 +5,7 @@ import type { HttpApiDecodeError } from "@effect/platform/HttpApiError";
 import * as HttpApiGroup from "@effect/platform/HttpApiGroup";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import * as OpenApi from "@effect/platform/OpenApi";
-import { Readiness } from "@structure/runtime";
+import { Readiness } from "@structure-ai/runtime";
 import { Effect, type Layer, Schema } from "effect";
 
 /** Body of `GET /health/live`. */
@@ -38,7 +38,7 @@ export type Group = typeof group;
 
 /**
  * Implements the health endpoints for an api that includes {@link group}.
- * Requires `@structure/runtime` `Readiness`.
+ * Requires `@structure-ai/runtime` `Readiness`.
  *
  * ```ts
  * const api = Api.make("my-api").add(users).add(Health.group);

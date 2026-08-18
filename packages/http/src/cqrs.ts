@@ -6,8 +6,8 @@ import {
   type DispatchOptions,
   QueryBus,
   type QueryDefinition,
-} from "@structure/cqrs";
-import { Correlation } from "@structure/observability";
+} from "@structure-ai/cqrs";
+import { Correlation } from "@structure-ai/observability";
 import { type Duration, Effect, Schema } from "effect";
 import { type HttpProblem, toProblem, withDefaultErrors } from "./errors.js";
 

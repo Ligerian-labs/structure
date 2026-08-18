@@ -1,5 +1,5 @@
 {
-  "name": "@structure/domain",
+  "name": "@structure-ai/domain",
   "version": "0.0.0",
   "description": "DDD tactical bindings: branded ids, value objects, aggregates (decide/evolve), domain events, repository port, error taxonomy.",
   "license": "MIT",

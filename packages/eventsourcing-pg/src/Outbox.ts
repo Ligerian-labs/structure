@@ -1,5 +1,5 @@
 import * as SqlClient from "@effect/sql/SqlClient";
-import { Inbox, Outbox, type OutboxEntry, type OutboxStatus } from "@structure/eventsourcing";
+import { Inbox, Outbox, type OutboxEntry, type OutboxStatus } from "@structure-ai/eventsourcing";
 import { Effect, Layer } from "effect";
 import { jsonText, toNumber } from "./internal.js";
 import { type AdapterOptions, tableNames } from "./schema.js";

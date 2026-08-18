@@ -1,12 +1,12 @@
-# @structure/ai
+# @structure-ai/ai
 
 Provider-agnostic LLM bindings on `@effect/ai` for agentic apps: typed calls with structured output, per-call deadlines, bounded retries on transient failures only, token metrics — and a deterministic scripted model so nothing in your tests touches the network. API keys stay `Redacted`; prompt bodies never land in logs or spans.
 
 ## Usage
 
 ```ts
-import { aiSettings, generateObject, generateText, layerFromSettings, TestModel } from "@structure/ai";
-import { load } from "@structure/config";
+import { aiSettings, generateObject, generateText, layerFromSettings, TestModel } from "@structure-ai/ai";
+import { load } from "@structure-ai/config";
 import { Effect, Schema } from "effect";
 
 const program = Effect.gen(function* () {
@@ -25,7 +25,7 @@ const program = Effect.gen(function* () {
 
 | Export | What it is |
 | --- | --- |
-| `aiSettings` | `@structure/config` settings: provider (anthropic\|openai), model, `AI_API_KEY` secret, base URL, timeout (60s), max retries (2). |
+| `aiSettings` | `@structure-ai/config` settings: provider (anthropic\|openai), model, `AI_API_KEY` secret, base URL, timeout (60s), max retries (2). |
 | `layerAnthropic` / `layerOpenAi` / `layerFromSettings` | `LanguageModel` layers (HTTP via fetch; no SDKs). |
 | `generateText(opts)` | `Effect<{ text, usage: { inputTokens, outputTokens } }, AiCallError, LanguageModel>`. |
 | `generateObject({ schema, ... })` | Structured output decoded against your Schema; malformed output is a typed failure, not a defect. |

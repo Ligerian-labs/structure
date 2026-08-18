@@ -18,7 +18,7 @@ export interface ShutdownOptions {
  * registration order. Each finalizer is bounded by `finalizerTimeout`; a slow
  * or failing finalizer is logged and skipped so it never blocks the rest.
  */
-export class Shutdown extends Context.Tag("@structure/runtime/Shutdown")<
+export class Shutdown extends Context.Tag("@structure-ai/runtime/Shutdown")<
   Shutdown,
   {
     readonly isShuttingDown: Effect.Effect<boolean>;

@@ -1,5 +1,5 @@
 {
-  "name": "@structure/mcp",
+  "name": "@structure-ai/mcp",
   "version": "0.0.0",
   "description": "MCP server bindings: expose Schema-typed tools, resources, and CQRS commands/queries to coding agents over stdio or HTTP.",
   "license": "MIT",
@@ -30,7 +30,7 @@
     "@effect/rpc": "catalog:",
     "@effect/platform": "catalog:",
     "@effect/platform-bun": "catalog:",
-    "@structure/cqrs": "workspace:*"
+    "@structure-ai/cqrs": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

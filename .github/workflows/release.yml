@@ -83,11 +83,11 @@ jobs:
           for name in config observability domain cqrs eventsourcing \
                       eventsourcing-sqlite eventsourcing-pg viewmodel migrations \
                       runtime http cli ai mcp; do
-            if [ -n "$(npm view "@structure/$name@$VERSION" version 2>/dev/null)" ]; then
-              echo "@structure/$name@$VERSION already on npm, skipping"
+            if [ -n "$(npm view "@structure-ai/$name@$VERSION" version 2>/dev/null)" ]; then
+              echo "@structure-ai/$name@$VERSION already on npm, skipping"
               continue
             fi
-            echo "Publishing @structure/$name@$VERSION (dist-tag: $DIST_TAG)"
+            echo "Publishing @structure-ai/$name@$VERSION (dist-tag: $DIST_TAG)"
             (cd "packages/$name" && bun publish --tag "$DIST_TAG")
           done
 

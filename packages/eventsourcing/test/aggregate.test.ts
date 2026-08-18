@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ConcurrencyConflict } from "@structure/domain";
+import { ConcurrencyConflict } from "@structure-ai/domain";
 import { Chunk, Effect, Layer, Option, Ref, Stream } from "effect";
 import {
   AggregateStore,

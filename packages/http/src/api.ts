@@ -7,7 +7,7 @@ import * as OpenApi from "@effect/platform/OpenApi";
  * Define an API. Thin, stable alias over `@effect/platform` `HttpApi`.
  *
  * ```ts
- * import { Api, ApiGroup, ApiEndpoint, annotate } from "@structure/http";
+ * import { Api, ApiGroup, ApiEndpoint, annotate } from "@structure-ai/http";
  * import { Schema } from "effect";
  *
  * const users = ApiGroup.make("users").add(

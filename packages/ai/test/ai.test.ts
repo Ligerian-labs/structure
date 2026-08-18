@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AiError } from "@effect/ai";
-import { Metrics } from "@structure/observability";
+import { Metrics } from "@structure-ai/observability";
 import { Chunk, Effect, Option, Schema, Stream } from "effect";
 import {
   classifyAiError,

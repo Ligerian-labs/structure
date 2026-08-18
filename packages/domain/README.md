@@ -1,11 +1,11 @@
-# @structure/domain
+# @structure-ai/domain
 
-DDD tactical building blocks. An aggregate is a *decider*: `decide` accepts or rejects a command against current state and emits events; `evolve` folds an event into state. The same definition drives state-stored persistence and event sourcing (`@structure/eventsourcing`).
+DDD tactical building blocks. An aggregate is a *decider*: `decide` accepts or rejects a command against current state and emits events; `evolve` folds an event into state. The same definition drives state-stored persistence and event sourcing (`@structure-ai/eventsourcing`).
 
 ## Usage
 
 ```ts
-import { Aggregate, DomainEvent, EntityId, InvariantViolation, ValueObject } from "@structure/domain";
+import { Aggregate, DomainEvent, EntityId, InvariantViolation, ValueObject } from "@structure-ai/domain";
 import { Effect, Schema } from "effect";
 
 const InvoiceId = EntityId.define("InvoiceId");

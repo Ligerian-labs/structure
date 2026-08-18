@@ -16,7 +16,7 @@ export interface CorrelationContext {
   readonly actor?: string;
 }
 
-const ref = globalValue("@structure/observability/Correlation", () =>
+const ref = globalValue("@structure-ai/observability/Correlation", () =>
   FiberRef.unsafeMake<CorrelationContext>({}),
 );
 

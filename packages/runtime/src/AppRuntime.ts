@@ -1,6 +1,6 @@
 import { Runtime } from "@effect/platform";
 import { BunRuntime } from "@effect/platform-bun";
-import { type ConfigIssue, ConfigLoadError } from "@structure/config";
+import { type ConfigIssue, ConfigLoadError } from "@structure-ai/config";
 import { Cause, Duration, Effect, Exit, type Layer, Option } from "effect";
 
 export interface LaunchOptions<R, LE> {

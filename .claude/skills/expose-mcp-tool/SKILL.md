@@ -12,7 +12,7 @@ The MCP server makes an app's capabilities callable by coding agents. Errors cro
 1. **Existing command/query? Bridge it** — one line, parameters and validation come from the definition:
 
 ```ts
-import { toolFromCommand, toolFromQuery } from "@structure/mcp";
+import { toolFromCommand, toolFromQuery } from "@structure-ai/mcp";
 
 const approve = toolFromCommand(ApproveInvoice); // tool name "approve-invoice"
 ```
@@ -20,7 +20,7 @@ const approve = toolFromCommand(ApproveInvoice); // tool name "approve-invoice"
 2. **Custom capability? Define a tool** with Schema parameters and success:
 
 ```ts
-import { defineTool } from "@structure/mcp";
+import { defineTool } from "@structure-ai/mcp";
 
 const search = defineTool({
   name: "search-invoices",

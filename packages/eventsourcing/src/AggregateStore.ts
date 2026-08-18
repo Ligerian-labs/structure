@@ -1,4 +1,4 @@
-import { Aggregate, type ConcurrencyConflict, EventMetadata } from "@structure/domain";
+import { Aggregate, type ConcurrencyConflict, EventMetadata } from "@structure-ai/domain";
 import { DateTime, Effect, Option, Predicate, Schema, Stream } from "effect";
 import type { EventDecodeError, EventRegistry } from "./codec.js";
 import { type AppendEvent, EventStore } from "./EventStore.js";

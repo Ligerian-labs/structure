@@ -188,7 +188,7 @@ const internal = (correlationId: string | undefined): InternalServerProblem =>
  * - anything else (including defects) → 500 with the correlation id only
  *
  * Discrimination is structural (by `_tag`), so any error following the
- * `@structure/domain` taxonomy maps correctly regardless of where it came from.
+ * `@structure-ai/domain` taxonomy maps correctly regardless of where it came from.
  */
 export const toProblem = (error: unknown, correlationId?: string): HttpProblem => {
   if (error instanceof BadRequestProblem) return error;

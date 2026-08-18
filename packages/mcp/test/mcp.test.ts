@@ -9,7 +9,7 @@ import {
   HandlerRegistry,
   Query,
   QueryHandler,
-} from "@structure/cqrs";
+} from "@structure-ai/cqrs";
 import { Effect, Layer, Schema } from "effect";
 import {
   defineResource,

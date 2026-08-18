@@ -1,11 +1,11 @@
-# @structure/runtime
+# @structure-ai/runtime
 
 Application bootstrap per the production contract: load and validate configuration first (reporting **all** issues, exiting non-zero before accepting work), then telemetry, then resources; on shutdown mark unready, drain finalizers in reverse order within a bounded grace period, exit deterministically.
 
 ## Usage
 
 ```ts
-import { launch, Readiness, Shutdown } from "@structure/runtime";
+import { launch, Readiness, Shutdown } from "@structure-ai/runtime";
 import { Duration, Effect, Layer } from "effect";
 
 const program = Effect.gen(function* () {
@@ -31,4 +31,4 @@ launch(program, {
 | `launch(program, { layers, gracePeriod? })` | Bun entrypoint (`BunRuntime.runMain`); `ConfigLoadError` prints every issue and exits 1; a hard deadline (default 30s) prevents hung teardown from blocking exit. |
 | `runToCompletion(program, layers)` | Testable variant returning `{ _tag: "Success" \| "ConfigInvalid" \| "Failed", ... }` instead of exiting the process. |
 
-`@structure/http`'s `/health/ready` endpoint consumes `Readiness.checkAll`.
+`@structure-ai/http`'s `/health/ready` endpoint consumes `Readiness.checkAll`.

@@ -12,7 +12,7 @@ Commands change state through one aggregate; queries read view models and never 
 1. **Define the message** (intent-named, Schema payload + success):
 
 ```ts
-import { Command } from "@structure/cqrs"; // or Query
+import { Command } from "@structure-ai/cqrs"; // or Query
 import { Schema } from "effect";
 
 export const ApproveInvoice = Command.define("ApproveInvoice", {
@@ -24,14 +24,14 @@ export const ApproveInvoice = Command.define("ApproveInvoice", {
 2. **Write the handler** — thin: authorize is the bus's job, business decisions are the aggregate's. A command handler loads/executes the aggregate (via `AggregateStore.executeWithRetry`) and returns a minimal ack (id, version, status). A query handler reads a `ViewStore` and returns the shaped result.
 
 ```ts
-import { CommandHandler, HandlerRegistry } from "@structure/cqrs";
+import { CommandHandler, HandlerRegistry } from "@structure-ai/cqrs";
 
 export const handlers = HandlerRegistry.layer(
   CommandHandler.make(ApproveInvoice, (payload, dispatch) => /* Effect */),
 );
 ```
 
-3. **Wire the bus:** provide `@structure/cqrs`'s convenience `layer` (both buses, allow-all authorizer, in-memory idempotency) with your `handlers`; replace the `Authorizer` layer when the action needs real authorization (authorize the action, not the endpoint).
+3. **Wire the bus:** provide `@structure-ai/cqrs`'s convenience `layer` (both buses, allow-all authorizer, in-memory idempotency) with your `handlers`; replace the `Authorizer` layer when the action needs real authorization (authorize the action, not the endpoint).
 4. **Expose it:**
    - HTTP: `HttpCqrs.command(ApproveInvoice)` as the endpoint handler, or `commandEndpoint(name, path, def)` one-liner (`packages/http/README.md`). Problem responses and OpenAPI come for free.
    - MCP: `toolFromCommand(ApproveInvoice)` (`packages/mcp/README.md`).

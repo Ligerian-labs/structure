@@ -1,5 +1,5 @@
 {
-  "name": "@structure/config",
+  "name": "@structure-ai/config",
   "version": "0.0.0",
   "description": "Typed env + configuration management on Effect Config: layered providers, startup validation, redacted secrets.",
   "license": "MIT",

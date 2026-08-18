@@ -1,7 +1,7 @@
 {
-  "name": "@structure/eventsourcing-sqlite",
+  "name": "@structure-ai/eventsourcing-sqlite",
   "version": "0.0.0",
-  "description": "SQLite (bun:sqlite) adapters for @structure/eventsourcing: event store, checkpoints, outbox, inbox.",
+  "description": "SQLite (bun:sqlite) adapters for @structure-ai/eventsourcing: event store, checkpoints, outbox, inbox.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -29,8 +29,8 @@
     "@effect/experimental": "catalog:",
     "@effect/sql": "catalog:",
     "@effect/sql-sqlite-bun": "catalog:",
-    "@structure/domain": "workspace:*",
-    "@structure/eventsourcing": "workspace:*"
+    "@structure-ai/domain": "workspace:*",
+    "@structure-ai/eventsourcing": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

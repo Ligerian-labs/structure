@@ -1,11 +1,11 @@
-# @structure/cli
+# @structure-ai/cli
 
 CLI command definitions on `@effect/cli` with the framework's config and observability pre-wired, and deterministic exit codes derived from the error taxonomy.
 
 ## Usage
 
 ```ts
-import { defineCommand, Options, runCli, standardOptions } from "@structure/cli";
+import { defineCommand, Options, runCli, standardOptions } from "@structure-ai/cli";
 import { Effect } from "effect";
 
 const migrate = defineCommand({

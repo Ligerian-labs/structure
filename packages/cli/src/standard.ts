@@ -1,6 +1,6 @@
 import { Options } from "@effect/cli";
-import type { LoadOptions } from "@structure/config";
-import { layer as observabilityLayer, type ServiceMeta } from "@structure/observability";
+import type { LoadOptions } from "@structure-ai/config";
+import { layer as observabilityLayer, type ServiceMeta } from "@structure-ai/observability";
 import { FiberRef, type Layer, type LogLevel, Option } from "effect";
 
 /** Accepted values for `--log-format`. */
@@ -83,7 +83,7 @@ export interface ServiceIdentity {
 export interface StandardWiring {
   /** Full observability stack (logger, minimum level, service identity). */
   readonly observability: Layer.Layer<ServiceMeta>;
-  /** Thread into `@structure/config` `load`/`toLayer` so `--config-file` takes effect. */
+  /** Thread into `@structure-ai/config` `load`/`toLayer` so `--config-file` takes effect. */
   readonly loadOptions: LoadOptions;
 }
 

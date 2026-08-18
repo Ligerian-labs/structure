@@ -11,7 +11,7 @@
       },
     },
     "packages/ai": {
-      "name": "@structure/ai",
+      "name": "@structure-ai/ai",
       "version": "0.0.0",
       "dependencies": {
         "@effect/ai": "catalog:",
@@ -19,8 +19,8 @@
         "@effect/ai-openai": "catalog:",
         "@effect/experimental": "catalog:",
         "@effect/platform": "catalog:",
-        "@structure/config": "workspace:*",
-        "@structure/observability": "workspace:*",
+        "@structure-ai/config": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -29,15 +29,15 @@
       },
     },
     "packages/cli": {
-      "name": "@structure/cli",
+      "name": "@structure-ai/cli",
       "version": "0.0.0",
       "dependencies": {
         "@effect/cli": "catalog:",
         "@effect/platform": "catalog:",
         "@effect/platform-bun": "catalog:",
-        "@structure/config": "workspace:*",
-        "@structure/observability": "workspace:*",
-        "@structure/runtime": "workspace:*",
+        "@structure-ai/config": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
+        "@structure-ai/runtime": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -46,7 +46,7 @@
       },
     },
     "packages/config": {
-      "name": "@structure/config",
+      "name": "@structure-ai/config",
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform": "catalog:",
@@ -58,11 +58,11 @@
       },
     },
     "packages/cqrs": {
-      "name": "@structure/cqrs",
+      "name": "@structure-ai/cqrs",
       "version": "0.0.0",
       "dependencies": {
-        "@structure/domain": "workspace:*",
-        "@structure/observability": "workspace:*",
+        "@structure-ai/domain": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -71,7 +71,7 @@
       },
     },
     "packages/domain": {
-      "name": "@structure/domain",
+      "name": "@structure-ai/domain",
       "version": "0.0.0",
       "dependencies": {
         "effect": "catalog:",
@@ -82,10 +82,10 @@
       },
     },
     "packages/eventsourcing": {
-      "name": "@structure/eventsourcing",
+      "name": "@structure-ai/eventsourcing",
       "version": "0.0.0",
       "dependencies": {
-        "@structure/domain": "workspace:*",
+        "@structure-ai/domain": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -94,15 +94,15 @@
       },
     },
     "packages/eventsourcing-pg": {
-      "name": "@structure/eventsourcing-pg",
+      "name": "@structure-ai/eventsourcing-pg",
       "version": "0.0.0",
       "dependencies": {
         "@effect/experimental": "catalog:",
         "@effect/platform": "catalog:",
         "@effect/sql": "catalog:",
         "@effect/sql-pg": "catalog:",
-        "@structure/domain": "workspace:*",
-        "@structure/eventsourcing": "workspace:*",
+        "@structure-ai/domain": "workspace:*",
+        "@structure-ai/eventsourcing": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -111,15 +111,15 @@
       },
     },
     "packages/eventsourcing-sqlite": {
-      "name": "@structure/eventsourcing-sqlite",
+      "name": "@structure-ai/eventsourcing-sqlite",
       "version": "0.0.0",
       "dependencies": {
         "@effect/experimental": "catalog:",
         "@effect/platform": "catalog:",
         "@effect/sql": "catalog:",
         "@effect/sql-sqlite-bun": "catalog:",
-        "@structure/domain": "workspace:*",
-        "@structure/eventsourcing": "workspace:*",
+        "@structure-ai/domain": "workspace:*",
+        "@structure-ai/eventsourcing": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -128,15 +128,15 @@
       },
     },
     "packages/http": {
-      "name": "@structure/http",
+      "name": "@structure-ai/http",
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform": "catalog:",
         "@effect/platform-bun": "catalog:",
-        "@structure/config": "workspace:*",
-        "@structure/cqrs": "workspace:*",
-        "@structure/observability": "workspace:*",
-        "@structure/runtime": "workspace:*",
+        "@structure-ai/config": "workspace:*",
+        "@structure-ai/cqrs": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
+        "@structure-ai/runtime": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -145,7 +145,7 @@
       },
     },
     "packages/mcp": {
-      "name": "@structure/mcp",
+      "name": "@structure-ai/mcp",
       "version": "0.0.0",
       "dependencies": {
         "@effect/ai": "catalog:",
@@ -153,7 +153,7 @@
         "@effect/platform": "catalog:",
         "@effect/platform-bun": "catalog:",
         "@effect/rpc": "catalog:",
-        "@structure/cqrs": "workspace:*",
+        "@structure-ai/cqrs": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -162,12 +162,12 @@
       },
     },
     "packages/migrations": {
-      "name": "@structure/migrations",
+      "name": "@structure-ai/migrations",
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform": "catalog:",
         "@effect/sql": "catalog:",
-        "@structure/cli": "workspace:*",
+        "@structure-ai/cli": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -178,7 +178,7 @@
       },
     },
     "packages/observability": {
-      "name": "@structure/observability",
+      "name": "@structure-ai/observability",
       "version": "0.0.0",
       "dependencies": {
         "@effect/opentelemetry": "catalog:",
@@ -193,7 +193,7 @@
         "@opentelemetry/sdk-trace-node": "catalog:",
         "@opentelemetry/sdk-trace-web": "catalog:",
         "@opentelemetry/semantic-conventions": "catalog:",
-        "@structure/config": "workspace:*",
+        "@structure-ai/config": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -202,13 +202,13 @@
       },
     },
     "packages/runtime": {
-      "name": "@structure/runtime",
+      "name": "@structure-ai/runtime",
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform": "catalog:",
         "@effect/platform-bun": "catalog:",
-        "@structure/config": "workspace:*",
-        "@structure/observability": "workspace:*",
+        "@structure-ai/config": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -217,20 +217,20 @@
       },
     },
     "packages/viewmodel": {
-      "name": "@structure/viewmodel",
+      "name": "@structure-ai/viewmodel",
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform": "catalog:",
         "@effect/sql": "catalog:",
-        "@structure/domain": "workspace:*",
-        "@structure/eventsourcing": "workspace:*",
-        "@structure/migrations": "workspace:*",
+        "@structure-ai/domain": "workspace:*",
+        "@structure-ai/eventsourcing": "workspace:*",
+        "@structure-ai/migrations": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
         "@effect/experimental": "catalog:",
         "@effect/sql-sqlite-bun": "catalog:",
-        "@structure/eventsourcing-sqlite": "workspace:*",
+        "@structure-ai/eventsourcing-sqlite": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
       },
@@ -411,33 +411,33 @@
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
-    "@structure/ai": ["@structure/ai@workspace:packages/ai"],
+    "@structure-ai/ai": ["@structure-ai/ai@workspace:packages/ai"],
 
-    "@structure/cli": ["@structure/cli@workspace:packages/cli"],
+    "@structure-ai/cli": ["@structure-ai/cli@workspace:packages/cli"],
 
-    "@structure/config": ["@structure/config@workspace:packages/config"],
+    "@structure-ai/config": ["@structure-ai/config@workspace:packages/config"],
 
-    "@structure/cqrs": ["@structure/cqrs@workspace:packages/cqrs"],
+    "@structure-ai/cqrs": ["@structure-ai/cqrs@workspace:packages/cqrs"],
 
-    "@structure/domain": ["@structure/domain@workspace:packages/domain"],
+    "@structure-ai/domain": ["@structure-ai/domain@workspace:packages/domain"],
 
-    "@structure/eventsourcing": ["@structure/eventsourcing@workspace:packages/eventsourcing"],
+    "@structure-ai/eventsourcing": ["@structure-ai/eventsourcing@workspace:packages/eventsourcing"],
 
-    "@structure/eventsourcing-pg": ["@structure/eventsourcing-pg@workspace:packages/eventsourcing-pg"],
+    "@structure-ai/eventsourcing-pg": ["@structure-ai/eventsourcing-pg@workspace:packages/eventsourcing-pg"],
 
-    "@structure/eventsourcing-sqlite": ["@structure/eventsourcing-sqlite@workspace:packages/eventsourcing-sqlite"],
+    "@structure-ai/eventsourcing-sqlite": ["@structure-ai/eventsourcing-sqlite@workspace:packages/eventsourcing-sqlite"],
 
-    "@structure/http": ["@structure/http@workspace:packages/http"],
+    "@structure-ai/http": ["@structure-ai/http@workspace:packages/http"],
 
-    "@structure/mcp": ["@structure/mcp@workspace:packages/mcp"],
+    "@structure-ai/mcp": ["@structure-ai/mcp@workspace:packages/mcp"],
 
-    "@structure/migrations": ["@structure/migrations@workspace:packages/migrations"],
+    "@structure-ai/migrations": ["@structure-ai/migrations@workspace:packages/migrations"],
 
-    "@structure/observability": ["@structure/observability@workspace:packages/observability"],
+    "@structure-ai/observability": ["@structure-ai/observability@workspace:packages/observability"],
 
-    "@structure/runtime": ["@structure/runtime@workspace:packages/runtime"],
+    "@structure-ai/runtime": ["@structure-ai/runtime@workspace:packages/runtime"],
 
-    "@structure/viewmodel": ["@structure/viewmodel@workspace:packages/viewmodel"],
+    "@structure-ai/viewmodel": ["@structure-ai/viewmodel@workspace:packages/viewmodel"],
 
     "@turbo/darwin-64": ["@turbo/darwin-64@2.10.10", "", { "os": "darwin", "cpu": "x64" }, "sha512-gFDD+wRP5hWxBRghGyEbjpbLOY7aIU/wvsnKdMM7odQcp/wHMrnI83p0FyxxMRZnFH9ZD+S59MvcpOC5b+nrCA=="],
 

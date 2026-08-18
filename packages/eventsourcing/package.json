@@ -1,5 +1,5 @@
 {
-  "name": "@structure/eventsourcing",
+  "name": "@structure-ai/eventsourcing",
   "version": "0.0.0",
   "description": "Event sourcing ports and runtime: event store, snapshots, projections with checkpoints, outbox/inbox, in-memory adapters.",
   "license": "MIT",
@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "effect": "catalog:",
-    "@structure/domain": "workspace:*"
+    "@structure-ai/domain": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

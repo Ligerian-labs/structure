@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { load } from "@structure/config";
+import { load } from "@structure-ai/config";
 import { Duration, Effect, Layer, Option, Redacted } from "effect";
 import { aiSettings, layerAnthropic, layerFromSettings, layerOpenAi } from "../src/index.js";
 

@@ -1,6 +1,6 @@
 import { Command, HelpDoc, ValidationError } from "@effect/cli";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
-import { ConfigLoadError } from "@structure/config";
+import { ConfigLoadError } from "@structure-ai/config";
 import { Cause, Effect, Exit, Option } from "effect";
 
 /** The command succeeded. */

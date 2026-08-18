@@ -5,7 +5,7 @@ import type * as HttpPlatform from "@effect/platform/HttpPlatform";
 import * as HttpServer from "@effect/platform/HttpServer";
 import type * as BunContext from "@effect/platform-bun/BunContext";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
-import { Readiness } from "@structure/runtime";
+import { Readiness } from "@structure-ai/runtime";
 import { type Duration, Effect, Layer } from "effect";
 import * as Middleware from "./middleware.js";
 
@@ -46,7 +46,7 @@ const graceful = (
  *
  * Provide the api implementation (`HttpApiBuilder.api(api)` + group layers),
  * optionally `Docs.layer()`, and `Readiness.layer` (usually via
- * `@structure/runtime`), then `Layer.launch` the result:
+ * `@structure-ai/runtime`), then `Layer.launch` the result:
  *
  * ```ts
  * serve({ port: 3000 }).pipe(

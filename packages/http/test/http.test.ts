@@ -6,9 +6,9 @@ import {
   HandlerRegistry,
   Query,
   QueryHandler,
-} from "@structure/cqrs";
-import { Correlation, layerSilent } from "@structure/observability";
-import { Readiness } from "@structure/runtime";
+} from "@structure-ai/cqrs";
+import { Correlation, layerSilent } from "@structure-ai/observability";
+import { Readiness } from "@structure-ai/runtime";
 import { Context, Effect, Exit, Layer, Ref, Schema, Scope } from "effect";
 import {
   Api,

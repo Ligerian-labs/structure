@@ -12,7 +12,7 @@ View models are the query side: denormalized, shaped for one consumer, disposabl
 1. **Define it** — Schema fields, an id field, one table:
 
 ```ts
-import { ViewModel } from "@structure/viewmodel";
+import { ViewModel } from "@structure-ai/viewmodel";
 import { Schema } from "effect";
 
 export const InvoiceListItem = ViewModel.define({
@@ -37,7 +37,7 @@ const migrations = makeSet([...existing, ViewModel.migration(InvoiceListItem, ne
 3. **Hydrate it from events** with a `ViewProjection` — handlers receive the typed store:
 
 ```ts
-import { ViewProjection } from "@structure/viewmodel";
+import { ViewProjection } from "@structure-ai/viewmodel";
 
 export const invoiceList = ViewProjection.make({
   name: "invoice-list",

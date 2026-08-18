@@ -1,7 +1,7 @@
 {
-  "name": "@structure/viewmodel",
+  "name": "@structure-ai/viewmodel",
   "version": "0.0.0",
-  "description": "Schema-defined view models over @effect/sql: typed read-model stores (query-side ORM), generated table migrations, and event-driven hydration via @structure/eventsourcing projections.",
+  "description": "Schema-defined view models over @effect/sql: typed read-model stores (query-side ORM), generated table migrations, and event-driven hydration via @structure-ai/eventsourcing projections.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -27,14 +27,14 @@
     "effect": "catalog:",
     "@effect/sql": "catalog:",
     "@effect/platform": "catalog:",
-    "@structure/domain": "workspace:*",
-    "@structure/eventsourcing": "workspace:*",
-    "@structure/migrations": "workspace:*"
+    "@structure-ai/domain": "workspace:*",
+    "@structure-ai/eventsourcing": "workspace:*",
+    "@structure-ai/migrations": "workspace:*"
   },
   "devDependencies": {
     "@effect/experimental": "catalog:",
     "@effect/sql-sqlite-bun": "catalog:",
-    "@structure/eventsourcing-sqlite": "workspace:*",
+    "@structure-ai/eventsourcing-sqlite": "workspace:*",
     "typescript": "catalog:",
     "@types/bun": "catalog:"
   }

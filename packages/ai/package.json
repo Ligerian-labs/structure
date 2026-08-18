@@ -1,5 +1,5 @@
 {
-  "name": "@structure/ai",
+  "name": "@structure-ai/ai",
   "version": "0.0.0",
   "description": "LLM provider bindings on @effect/ai: typed calls, structured output, resilience, token/cost observability, scripted test model.",
   "license": "MIT",
@@ -30,8 +30,8 @@
     "@effect/ai-openai": "catalog:",
     "@effect/experimental": "catalog:",
     "@effect/platform": "catalog:",
-    "@structure/config": "workspace:*",
-    "@structure/observability": "workspace:*"
+    "@structure-ai/config": "workspace:*",
+    "@structure-ai/observability": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

@@ -1,5 +1,5 @@
 {
-  "name": "@structure/cqrs",
+  "name": "@structure-ai/cqrs",
   "version": "0.0.0",
   "description": "Schema-typed command/query buses with validation, authorization, idempotency and tracing middleware.",
   "license": "MIT",
@@ -25,8 +25,8 @@
   },
   "dependencies": {
     "effect": "catalog:",
-    "@structure/domain": "workspace:*",
-    "@structure/observability": "workspace:*"
+    "@structure-ai/domain": "workspace:*",
+    "@structure-ai/observability": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

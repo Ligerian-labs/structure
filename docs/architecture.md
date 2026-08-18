@@ -1,6 +1,6 @@
 # Architecture
 
-How the `@structure/*` packages compose into an application, and the rules the composition obeys. Package-level APIs live in each package's README; this document owns the cross-package picture.
+How the `@structure-ai/*` packages compose into an application, and the rules the composition obeys. Package-level APIs live in each package's README; this document owns the cross-package picture.
 
 ## The flow of a command
 

@@ -7,7 +7,7 @@ import type {
   Inbox,
   Outbox,
   SnapshotStore,
-} from "@structure/eventsourcing";
+} from "@structure-ai/eventsourcing";
 import { Layer, Redacted } from "effect";
 import { checkpointStoreLayer } from "./CheckpointStore.js";
 import { eventStoreLayer } from "./EventStore.js";

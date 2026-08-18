@@ -1,4 +1,4 @@
-import { Aggregate, DomainEvent, InvariantViolation } from "@structure/domain";
+import { Aggregate, DomainEvent, InvariantViolation } from "@structure-ai/domain";
 import { Effect, Schema } from "effect";
 import { EventRegistry, type StoredEventMetadata } from "../src/index.js";
 

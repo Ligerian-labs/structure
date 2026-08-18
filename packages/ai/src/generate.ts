@@ -1,5 +1,5 @@
 import { type AiError, LanguageModel, Prompt, type Response } from "@effect/ai";
-import { Metrics } from "@structure/observability";
+import { Metrics } from "@structure-ai/observability";
 import { Data, Duration, Effect, Metric, Schedule, type Schema, Stream } from "effect";
 
 // =============================================================================

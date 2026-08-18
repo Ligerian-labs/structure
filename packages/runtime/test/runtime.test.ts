@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { Settings, toLayer } from "@structure/config";
-import { layerSilent } from "@structure/observability";
+import { Settings, toLayer } from "@structure-ai/config";
+import { layerSilent } from "@structure-ai/observability";
 import { Context, Duration, Effect, Fiber, Layer } from "effect";
 import { Readiness, runToCompletion, Shutdown, type ShutdownOptions } from "../src/index.js";
 
@@ -163,7 +163,7 @@ describe("Shutdown", () => {
   });
 });
 
-class AppConfig extends Context.Tag("@structure/runtime/test/AppConfig")<
+class AppConfig extends Context.Tag("@structure-ai/runtime/test/AppConfig")<
   AppConfig,
   { readonly port: number; readonly name: string }
 >() {}

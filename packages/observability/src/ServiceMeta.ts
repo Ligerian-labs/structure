@@ -4,7 +4,7 @@ import { Context, Layer } from "effect";
  * Identity of the running service, attached to every log record, span
  * resource, and metric export.
  */
-export class ServiceMeta extends Context.Tag("@structure/observability/ServiceMeta")<
+export class ServiceMeta extends Context.Tag("@structure-ai/observability/ServiceMeta")<
   ServiceMeta,
   {
     readonly name: string;

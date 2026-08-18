@@ -2,7 +2,7 @@ import * as HttpApiBuilder from "@effect/platform/HttpApiBuilder";
 import * as HttpApp from "@effect/platform/HttpApp";
 import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
-import { Correlation, Metrics } from "@structure/observability";
+import { Correlation, Metrics } from "@structure-ai/observability";
 import { Cause, Clock, Effect, type Layer, Option } from "effect";
 import { defaultErrorResponse, HttpProblemSchema } from "./errors.js";
 

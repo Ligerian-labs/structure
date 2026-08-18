@@ -1,4 +1,4 @@
-import { Settings } from "@structure/config";
+import { Settings } from "@structure-ai/config";
 
 /**
  * Standard observability settings. Nest under a prefix if the host app

@@ -1,5 +1,5 @@
 import * as SqlClient from "@effect/sql/SqlClient";
-import { CheckpointStore } from "@structure/eventsourcing";
+import { CheckpointStore } from "@structure-ai/eventsourcing";
 import { Effect, Layer } from "effect";
 import { toBigInt } from "./internal.js";
 import { type AdapterOptions, tableNames } from "./schema.js";

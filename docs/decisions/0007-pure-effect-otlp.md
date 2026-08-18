@@ -9,7 +9,7 @@
 
 ## Decision
 
-`@structure/observability` exports traces, metrics, and logs through `Otlp.layerJson` over `FetchHttpClient`. When no `OTLP_URL` is configured, the exporter layer is simply absent — the app runs with local logging only.
+`@structure-ai/observability` exports traces, metrics, and logs through `Otlp.layerJson` over `FetchHttpClient`. When no `OTLP_URL` is configured, the exporter layer is simply absent — the app runs with local logging only.
 
 ## Consequences
 

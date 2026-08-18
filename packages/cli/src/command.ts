@@ -9,7 +9,7 @@ import type * as Types from "effect/Types";
  *
  * @example
  * ```ts
- * import { Args, Options } from "@structure/cli";
+ * import { Args, Options } from "@structure-ai/cli";
  * import { Schema } from "effect";
  *
  * const count = Options.integer("count").pipe(Options.withDefault(1));
@@ -58,7 +58,7 @@ export interface CommandDefinition<
  *
  * @example
  * ```ts
- * import { defineCommand, Options, Args } from "@structure/cli";
+ * import { defineCommand, Options, Args } from "@structure-ai/cli";
  * import { Effect } from "effect";
  *
  * const greet = defineCommand({

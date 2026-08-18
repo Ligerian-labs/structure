@@ -1,8 +1,8 @@
 # Operations
 
-How an app built on `@structure/*` runs, and what to do when it misbehaves. Symptom-first where possible.
+How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. Symptom-first where possible.
 
-## Startup order (owned by `@structure/runtime`)
+## Startup order (owned by `@structure-ai/runtime`)
 
 1. Load + validate configuration — `ConfigLoadError` prints **every** issue and exits 1 before any work is accepted.
 2. Initialize telemetry (`Observability.layer`; export is off when `OTLP_URL` is unset — the app still runs).

@@ -1,5 +1,5 @@
 import { SqlClient } from "@effect/sql/SqlClient";
-import { defineMigration, type Migration } from "@structure/migrations";
+import { defineMigration, type Migration } from "@structure-ai/migrations";
 import { Data, Effect, Option, Schema } from "effect";
 import * as AST from "effect/SchemaAST";
 
@@ -266,7 +266,7 @@ export const createTableSql = <Fields extends Schema.Struct.Fields>(
 };
 
 /**
- * The `@structure/migrations` migration (named `create_<table>`) that
+ * The `@structure-ai/migrations` migration (named `create_<table>`) that
  * creates the view model's table. Add it to the application's migration set;
  * this is how view-model tables enter the schema.
  */

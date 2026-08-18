@@ -1,11 +1,11 @@
-# @structure/eventsourcing
+# @structure-ai/eventsourcing
 
-Event sourcing on top of `@structure/domain` deciders: ports for the event store, snapshots, checkpoints, outbox, and inbox; an aggregate runtime with optimistic concurrency; projections with checkpoints and rebuild; an outbox relay with bounded retries and dead-lettering. In-memory implementations of every port ship for tests and as the starting shape — swap in `@structure/eventsourcing-sqlite` or `-pg` for durability without touching domain code.
+Event sourcing on top of `@structure-ai/domain` deciders: ports for the event store, snapshots, checkpoints, outbox, and inbox; an aggregate runtime with optimistic concurrency; projections with checkpoints and rebuild; an outbox relay with bounded retries and dead-lettering. In-memory implementations of every port ship for tests and as the starting shape — swap in `@structure-ai/eventsourcing-sqlite` or `-pg` for durability without touching domain code.
 
 ## Usage
 
 ```ts
-import { AggregateStore, EventRegistry, InMemoryAll, Projection } from "@structure/eventsourcing";
+import { AggregateStore, EventRegistry, InMemoryAll, Projection } from "@structure-ai/eventsourcing";
 import { Effect } from "effect";
 
 const registry = EventRegistry.make([

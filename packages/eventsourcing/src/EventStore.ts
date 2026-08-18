@@ -1,4 +1,4 @@
-import type { ConcurrencyConflict, EventMetadata } from "@structure/domain";
+import type { ConcurrencyConflict, EventMetadata } from "@structure-ai/domain";
 import { Context, type Effect, type Schema, type Stream } from "effect";
 
 /**
@@ -79,7 +79,7 @@ export interface EventStoreService {
 }
 
 /** Service tag for the event store port. */
-export class EventStore extends Context.Tag("@structure/eventsourcing/EventStore")<
+export class EventStore extends Context.Tag("@structure-ai/eventsourcing/EventStore")<
   EventStore,
   EventStoreService
 >() {}

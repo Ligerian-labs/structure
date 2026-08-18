@@ -60,7 +60,7 @@ const errorResult = (message: string): McpSchema.CallToolResult =>
 
 /**
  * Type-erased tool specification shared by {@link defineTool} and the CQRS
- * bridge. Internal to @structure/mcp.
+ * bridge. Internal to @structure-ai/mcp.
  */
 export interface ErasedToolSpec<R> {
   readonly name: string;

@@ -1,5 +1,5 @@
 {
-  "name": "@structure/observability",
+  "name": "@structure-ai/observability",
   "version": "0.0.0",
   "description": "Structured logging, correlation context, OpenTelemetry tracing and metrics layers.",
   "license": "MIT",
@@ -37,7 +37,7 @@
     "@opentelemetry/semantic-conventions": "catalog:",
     "@opentelemetry/exporter-trace-otlp-http": "catalog:",
     "@opentelemetry/exporter-metrics-otlp-http": "catalog:",
-    "@structure/config": "workspace:*"
+    "@structure-ai/config": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

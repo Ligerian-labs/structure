@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DomainEvent } from "@structure/domain";
+import { DomainEvent } from "@structure-ai/domain";
 import { Effect, Either, Schema } from "effect";
 import { EventRegistry } from "../src/index.js";
 

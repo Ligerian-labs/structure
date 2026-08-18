@@ -1,4 +1,4 @@
-import { type Setting, Settings } from "@structure/config";
+import { type Setting, Settings } from "@structure-ai/config";
 import { Duration } from "effect";
 
 /**

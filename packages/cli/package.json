@@ -1,5 +1,5 @@
 {
-  "name": "@structure/cli",
+  "name": "@structure-ai/cli",
   "version": "0.0.0",
   "description": "CLI command definitions on @effect/cli with config/observability pre-wired and classified exit codes.",
   "license": "MIT",
@@ -28,9 +28,9 @@
     "@effect/cli": "catalog:",
     "@effect/platform": "catalog:",
     "@effect/platform-bun": "catalog:",
-    "@structure/config": "workspace:*",
-    "@structure/observability": "workspace:*",
-    "@structure/runtime": "workspace:*"
+    "@structure-ai/config": "workspace:*",
+    "@structure-ai/observability": "workspace:*",
+    "@structure-ai/runtime": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

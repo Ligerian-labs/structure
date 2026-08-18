@@ -19,7 +19,7 @@ export interface ReadinessReport {
  * every registered check passes. Check failures or defects are reported as
  * not-ok and never crash the probe.
  */
-export class Readiness extends Context.Tag("@structure/runtime/Readiness")<
+export class Readiness extends Context.Tag("@structure-ai/runtime/Readiness")<
   Readiness,
   {
     readonly isReady: Effect.Effect<boolean>;

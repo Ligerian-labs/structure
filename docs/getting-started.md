@@ -2,11 +2,11 @@
 
 One small application, end to end: a bank `Account` that accepts deposits, projected into a queryable view, exposed over HTTP with OpenAPI docs and health probes. Each step names the package that owns it; exact signatures live in that package's README and tests.
 
-## 1. Settings (`@structure/config`)
+## 1. Settings (`@structure-ai/config`)
 
 ```ts
-import { Settings } from "@structure/config";
-import { observabilitySettings } from "@structure/observability";
+import { Settings } from "@structure-ai/config";
+import { observabilitySettings } from "@structure-ai/observability";
 
 export const settings = Settings.struct({
   http: Settings.nested("HTTP", Settings.struct({ port: Settings.port("PORT", { default: 3000 }) })),
@@ -16,10 +16,10 @@ export const settings = Settings.struct({
 
 Loading validates everything at startup and reports **all** problems before the app accepts work.
 
-## 2. Domain (`@structure/domain`)
+## 2. Domain (`@structure-ai/domain`)
 
 ```ts
-import { Aggregate, DomainEvent, EntityId, InvariantViolation } from "@structure/domain";
+import { Aggregate, DomainEvent, EntityId, InvariantViolation } from "@structure-ai/domain";
 import { Effect, Schema } from "effect";
 
 export const AccountId = EntityId.define("AccountId");
@@ -58,10 +58,10 @@ export const Account = Aggregate.define<AccountState, AccountCommand, AccountEve
 });
 ```
 
-## 3. Event persistence (`@structure/eventsourcing` + an adapter)
+## 3. Event persistence (`@structure-ai/eventsourcing` + an adapter)
 
 ```ts
-import { AggregateStore, EventRegistry } from "@structure/eventsourcing";
+import { AggregateStore, EventRegistry } from "@structure-ai/eventsourcing";
 
 export const registry = EventRegistry.make([
   { schema: AccountOpened, schemaVersion: 1 },
@@ -71,12 +71,12 @@ export const registry = EventRegistry.make([
 // store.executeWithRetry(id, command, { correlationId }) — retries only ConcurrencyConflict
 ```
 
-Provide the ports with `InMemoryAll` (tests) or the all-in-one sqlite/pg layer (`@structure/eventsourcing-sqlite` / `-pg`).
+Provide the ports with `InMemoryAll` (tests) or the all-in-one sqlite/pg layer (`@structure-ai/eventsourcing-sqlite` / `-pg`).
 
-## 4. Command (`@structure/cqrs`)
+## 4. Command (`@structure-ai/cqrs`)
 
 ```ts
-import { Command, CommandHandler, HandlerRegistry, layer as cqrsLayer } from "@structure/cqrs";
+import { Command, CommandHandler, HandlerRegistry, layer as cqrsLayer } from "@structure-ai/cqrs";
 import { Effect, Schema } from "effect";
 
 export const Deposit = Command.define("Deposit", {
@@ -99,11 +99,11 @@ export const handlers = HandlerRegistry.layer(
 
 The bus validates payload shape, authorizes the action, handles idempotency keys, and traces the dispatch — the handler stays thin.
 
-## 5. Read model (`@structure/viewmodel` + `@structure/migrations`)
+## 5. Read model (`@structure-ai/viewmodel` + `@structure-ai/migrations`)
 
 ```ts
-import { makeSet } from "@structure/migrations";
-import { ViewModel, ViewProjection } from "@structure/viewmodel";
+import { makeSet } from "@structure-ai/migrations";
+import { ViewModel, ViewProjection } from "@structure-ai/viewmodel";
 import { Schema } from "effect";
 
 export const AccountView = ViewModel.define({
@@ -130,17 +130,17 @@ export const accountsProjection = ViewProjection.make({
 
 Queries read `ViewStore.make(AccountView)` — never the event streams.
 
-## 6. HTTP (`@structure/http`)
+## 6. HTTP (`@structure-ai/http`)
 
 Declare the api with the `Api`/`ApiGroup` helpers, mount the command via the CQRS bridge (`HttpCqrs.command(Deposit)` as the endpoint handler), and compose `Health.layer` (readiness-backed `/health/*`) and `Docs.layer` (`/docs` + `/openapi.json`). `serve({ port })` runs it on Bun with graceful shutdown. The complete, working wiring is `packages/http/test/http.test.ts` — copy it.
 
-## 7. Launch (`@structure/runtime`)
+## 7. Launch (`@structure-ai/runtime`)
 
 ```ts
-import { load } from "@structure/config";
-import * as Observability from "@structure/observability";
-import { launch } from "@structure/runtime";
-import { run as runMigrations } from "@structure/migrations";
+import { load } from "@structure-ai/config";
+import * as Observability from "@structure-ai/observability";
+import { launch } from "@structure-ai/runtime";
+import { run as runMigrations } from "@structure-ai/migrations";
 ```
 
 `launch(program, { layers })` boots in the production order — validate config (all errors at once, exit 1) → telemetry → resources → ready — and drains within a grace period on shutdown. Run `runMigrations(migrations)` only in the process your deployment policy allows (deploy job, `migrations up` CLI command, or the single writer's startup).

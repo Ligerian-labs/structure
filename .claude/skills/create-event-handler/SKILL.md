@@ -6,7 +6,7 @@ description: React to domain events in a @structure-based app - projections that
 # Create an event handler
 
 Two shapes, pick deliberately:
-- **Projection** — updates a read model from events (no external side effects, safe to replay). Use `ViewProjection` (`@structure/viewmodel`) when the target is a view-model table, or raw `Projection` (`@structure/eventsourcing`) for anything else.
+- **Projection** — updates a read model from events (no external side effects, safe to replay). Use `ViewProjection` (`@structure-ai/viewmodel`) when the target is a view-model table, or raw `Projection` (`@structure-ai/eventsourcing`) for anything else.
 - **Consumer** — triggers side effects (send email, call an API, dispatch a follow-up command). Must be idempotent and must distinguish live delivery from replay.
 
 Reference: `packages/eventsourcing/README.md`, `packages/viewmodel/README.md`.
@@ -17,7 +17,7 @@ Reference: `packages/eventsourcing/README.md`, `packages/viewmodel/README.md`.
 2. Define handlers keyed by event tag:
 
 ```ts
-import { Projection } from "@structure/eventsourcing";
+import { Projection } from "@structure-ai/eventsourcing";
 
 const invoiceStats = Projection.make({
   name: "invoice-stats", // checkpoint identity — never rename casually
