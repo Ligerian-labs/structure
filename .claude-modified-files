@@ -33,3 +33,13 @@
 /Users/valentindosimont/workspace/structure/packages/observability/src/layer.ts
 /Users/valentindosimont/workspace/structure/packages/observability/src/index.ts
 /Users/valentindosimont/workspace/structure/packages/observability/test/observability.test.ts
+/Users/valentindosimont/workspace/structure/packages/domain/src/errors.ts
+/Users/valentindosimont/workspace/structure/packages/domain/src/EntityId.ts
+/Users/valentindosimont/workspace/structure/packages/domain/src/ValueObject.ts
+/Users/valentindosimont/workspace/structure/packages/domain/src/DomainEvent.ts
+/Users/valentindosimont/workspace/structure/packages/domain/src/EntityId.ts
+/Users/valentindosimont/workspace/structure/packages/domain/src/Aggregate.ts
+/Users/valentindosimont/workspace/structure/packages/domain/src/Repository.ts
+/Users/valentindosimont/workspace/structure/packages/domain/src/index.ts
+/Users/valentindosimont/workspace/structure/packages/domain/test/domain.test.ts
+/Users/valentindosimont/workspace/structure/packages/domain/test/domain.test.ts
