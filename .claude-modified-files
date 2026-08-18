@@ -19,3 +19,17 @@
 /Users/valentindosimont/workspace/structure/packages/config/src/index.ts
 /Users/valentindosimont/workspace/structure/packages/config/test/config.test.ts
 /Users/valentindosimont/workspace/structure/packages/config/src/errors.ts
+/Users/valentindosimont/workspace/structure/packages/config/src/Settings.ts
+/Users/valentindosimont/workspace/structure/packages/config/src/Settings.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/ServiceMeta.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/Correlation.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/Logging.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/Logging.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/Logging.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/Logging.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/Metrics.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/Otlp.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/settings.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/layer.ts
+/Users/valentindosimont/workspace/structure/packages/observability/src/index.ts
+/Users/valentindosimont/workspace/structure/packages/observability/test/observability.test.ts

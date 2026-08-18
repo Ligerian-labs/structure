@@ -1,4 +1,4 @@
-import { Config, type Duration, type LogLevel, type Redacted } from "effect";
+import { Config, type Duration, type LogLevel, type Option, type Redacted } from "effect";
 
 /**
  * A setting couples an Effect `Config` with the metadata needed to document
@@ -102,6 +102,12 @@ export const secret = (
   options?: Pick<SettingOptions<never>, "description">,
 ): Setting<Redacted.Redacted<string>> =>
   make(name, "secret", Config.redacted(name), options, String, true);
+
+/** Marks a setting as optional: absent values load as `Option.none()`. */
+export const optional = <A>(setting: Setting<A>): Setting<Option.Option<A>> => ({
+  config: Config.option(setting.config),
+  docs: setting.docs.map((d) => ({ ...d, required: false })),
+});
 
 /**
  * Combines named settings into one typed, immutable configuration object.
