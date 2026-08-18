@@ -50,4 +50,4 @@ Task-specific step-by-step guides live in `.claude/skills/*/SKILL.md`: create-ag
 
 ## Contributing
 
-Full contribution flow (issues → branch → tests-first → verification gates → PR) is in [CONTRIBUTING.md](CONTRIBUTING.md). CI (`.github/workflows/ci.yml`) enforces lint, typecheck, tests, the Postgres adapter suite, and conventional PR titles. Never add AI/generated-by attribution to commits or PRs.
+Full contribution flow (issues → branch → tests-first → verification gates → PR) is in [CONTRIBUTING.md](CONTRIBUTING.md). CI (`.github/workflows/ci.yml`) enforces lint, typecheck, tests, the Postgres adapter suite, and conventional PR titles. Releases are tag-driven: pushing `vX.Y.Z` publishes all packages to npm and creates a GitHub release (`.github/workflows/release.yml`; details in CONTRIBUTING.md) — PRs never bump versions. Never add AI/generated-by attribution to commits or PRs.

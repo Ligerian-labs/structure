@@ -2,10 +2,22 @@
   "name": "@structure/config",
   "version": "0.0.0",
   "description": "Typed env + configuration management on Effect Config: layered providers, startup validation, redacted secrets.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/config"
+  },
   "exports": {
     ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

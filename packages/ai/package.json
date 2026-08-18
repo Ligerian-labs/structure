@@ -2,10 +2,22 @@
   "name": "@structure/ai",
   "version": "0.0.0",
   "description": "LLM provider bindings on @effect/ai: typed calls, structured output, resilience, token/cost observability, scripted test model.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/ai"
+  },
   "exports": {
     ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -2,10 +2,22 @@
   "name": "@structure/cqrs",
   "version": "0.0.0",
   "description": "Schema-typed command/query buses with validation, authorization, idempotency and tracing middleware.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/cqrs"
+  },
   "exports": {
     ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

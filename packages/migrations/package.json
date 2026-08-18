@@ -2,11 +2,23 @@
   "name": "@structure/migrations",
   "version": "0.0.0",
   "description": "Versioned, ordered SQL migrations on @effect/sql Migrator: in-code Effect migrations, status reporting, CLI command group, explicit startup layer.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/migrations"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./cli": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

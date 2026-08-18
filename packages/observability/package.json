@@ -2,10 +2,22 @@
   "name": "@structure/observability",
   "version": "0.0.0",
   "description": "Structured logging, correlation context, OpenTelemetry tracing and metrics layers.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/observability"
+  },
   "exports": {
     ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -2,10 +2,22 @@
   "name": "@structure/eventsourcing-pg",
   "version": "0.0.0",
   "description": "PostgreSQL (@effect/sql-pg) adapters for @structure/eventsourcing: event store, checkpoints, outbox, inbox.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/eventsourcing-pg"
+  },
   "exports": {
     ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

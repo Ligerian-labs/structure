@@ -2,10 +2,22 @@
   "name": "@structure/domain",
   "version": "0.0.0",
   "description": "DDD tactical bindings: branded ids, value objects, aggregates (decide/evolve), domain events, repository port, error taxonomy.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/domain"
+  },
   "exports": {
     ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

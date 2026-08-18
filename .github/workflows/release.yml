@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    name: Verify, publish to npm, create GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Parse version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag must be vX.Y.Z or vX.Y.Z-prerelease, got: $GITHUB_REF_NAME"
+            exit 1
+          fi
+          case "$VERSION" in
+            *-*) DIST_TAG=next; PRERELEASE=true ;;
+            *)   DIST_TAG=latest; PRERELEASE=false ;;
+          esac
+          {
+            echo "version=$VERSION"
+            echo "dist-tag=$DIST_TAG"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint (biome)
+        run: bun run lint
+      - name: Typecheck (tsc per package)
+        run: bun run typecheck
+      - name: Test (bun test per package, pg suite included)
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+        run: bun run test
+
+      - name: Stamp tag version into package manifests
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for manifest in packages/*/package.json; do
+            jq --arg v "$VERSION" '.version = $v' "$manifest" > "$manifest.tmp"
+            mv "$manifest.tmp" "$manifest"
+          done
+          for dir in packages/*/; do
+            cp LICENSE "$dir"
+          done
+
+      - name: Publish packages to npm (dependency order)
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIST_TAG: ${{ steps.version.outputs.dist-tag }}
+        run: |
+          for name in config observability domain cqrs eventsourcing \
+                      eventsourcing-sqlite eventsourcing-pg viewmodel migrations \
+                      runtime http cli ai mcp; do
+            if [ -n "$(npm view "@structure/$name@$VERSION" version 2>/dev/null)" ]; then
+              echo "@structure/$name@$VERSION already on npm, skipping"
+              continue
+            fi
+            echo "Publishing @structure/$name@$VERSION (dist-tag: $DIST_TAG)"
+            (cd "packages/$name" && bun publish --tag "$DIST_TAG")
+          done
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists, skipping"
+            exit 0
+          fi
+          EXTRA_FLAGS=""
+          if [ "$PRERELEASE" = "true" ]; then
+            EXTRA_FLAGS="--prerelease"
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            $EXTRA_FLAGS
