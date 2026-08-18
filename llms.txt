@@ -11,6 +11,7 @@
 - [@structure/eventsourcing](packages/eventsourcing/README.md): EventStore/SnapshotStore/CheckpointStore/Outbox/Inbox ports, EventRegistry codec with upcasters, AggregateStore (load/execute/executeWithRetry, optimistic concurrency), Projection catchup/run/rebuild, OutboxRelay with bounded retry + dead letters, in-memory layers for everything.
 - [@structure/eventsourcing-sqlite](packages/eventsourcing-sqlite/README.md): the same ports over bun:sqlite with transactional append + outbox.
 - [@structure/eventsourcing-pg](packages/eventsourcing-pg/README.md): the same ports over PostgreSQL via @effect/sql-pg.
+- [@structure/viewmodel](packages/viewmodel/README.md): ViewModel.define schema-defined read models (query-side ORM: typed ViewStore get/find/upsert/patch, generated table migrations via ViewModel.migration), ViewProjection.make event-driven hydration with catchup/run/rebuild.
 - [@structure/migrations](packages/migrations/README.md): defineMigration/makeSet ordered forward-only SQL migrations on @effect/sql Migrator (dialect-agnostic, lock-protected), run/status/layer, migrationsCommand CLI group via subpath ./cli.
 - [@structure/runtime](packages/runtime/README.md): Readiness service (flag + named checks), Shutdown coordinator (reverse-order bounded finalizers), AppRuntime.launch Bun entrypoint, config-invalid startup reporting.
 - [@structure/http](packages/http/README.md): HttpApi route/handler definitions, OpenAPI JSON + Swagger UI, /health/live|ready probes, error→response mapping without leaking internals, CQRS endpoint bridge, Bun serve with graceful shutdown.
@@ -20,5 +21,6 @@
 
 ## Conventions
 
-- [CLAUDE.md](CLAUDE.md): commands, hard rules, dependency direction, VCS conventions.
+- [AGENTS.md](AGENTS.md): commands, package map, hard rules, dependency direction, VCS conventions (CLAUDE.md imports it).
 - [README.md](README.md): human overview and design rules.
+- Skills in `.claude/skills/*/SKILL.md`: step-by-step recipes — create-aggregate, create-command, create-event-handler, create-view-model, add-migration, read-app-state, expose-mcp-tool.

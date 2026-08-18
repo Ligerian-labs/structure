@@ -15,6 +15,7 @@ Monorepo of small, independently importable packages under the `@structure/*` sc
 | `@structure/eventsourcing` | Event store / snapshot / checkpoint / outbox / inbox ports, aggregate runtime with optimistic concurrency, projections with checkpoints and rebuild, in-memory adapters. |
 | `@structure/eventsourcing-sqlite` | Durable adapters over `bun:sqlite`. |
 | `@structure/eventsourcing-pg` | Durable adapters over PostgreSQL (`@effect/sql-pg`). |
+| `@structure/viewmodel` | Schema-defined read models (query-side "ORM"): typed stores, generated table migrations, and event-driven hydration with rebuild. |
 | `@structure/migrations` | Versioned, ordered, forward-only SQL migrations (dialect-agnostic over `@effect/sql`), with status reporting and a ready-made CLI command group. |
 | `@structure/runtime` | App bootstrap: config-first startup, readiness checks, shutdown coordinator with bounded finalizers, Bun entrypoint. |
 | `@structure/http` | Routes/handlers on `@effect/platform` HttpApi: OpenAPI + Swagger UI, health probes, error mapping, CQRS bridge, Bun server with graceful shutdown. |
@@ -39,4 +40,4 @@ bun run test       # turbo run test (bun test per package)
 - Every boundary is loggable (structured, correlated), measurable (traffic/errors/latency), and traceable; telemetry failure never takes down the workload.
 - Failures are classified (`transient` / `permanent` / `conflict`); only transient failures are retried, with bounded backoff and jitter.
 
-See `llms.txt` for a machine-oriented index and each package's `README.md` for its API.
+See `llms.txt` for a machine-oriented index and each package's `README.md` for its API. Conventions for coding agents live in `AGENTS.md`; task recipes (create an aggregate, a command, a view model, ...) live in `.claude/skills/`.
