@@ -1,0 +1,27 @@
+{
+  "name": "@structure/eventsourcing-pg",
+  "version": "0.0.0",
+  "description": "PostgreSQL (@effect/sql-pg) adapters for @structure/eventsourcing: event store, checkpoints, outbox, inbox.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/platform": "catalog:",
+    "@effect/experimental": "catalog:",
+    "@effect/sql": "catalog:",
+    "@effect/sql-pg": "catalog:",
+    "@structure/domain": "workspace:*",
+    "@structure/eventsourcing": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

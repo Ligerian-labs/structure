@@ -1,0 +1,22 @@
+{
+  "name": "@structure/config",
+  "version": "0.0.0",
+  "description": "Typed env + configuration management on Effect Config: layered providers, startup validation, redacted secrets.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/platform": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

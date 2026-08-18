@@ -1,0 +1,10 @@
+node_modules/
+.turbo/
+dist/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+thoughts/

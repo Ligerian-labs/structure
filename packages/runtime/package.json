@@ -1,0 +1,25 @@
+{
+  "name": "@structure/runtime",
+  "version": "0.0.0",
+  "description": "Application bootstrap: config-first startup, telemetry init, signal handling, graceful shutdown.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/platform": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@structure/config": "workspace:*",
+    "@structure/observability": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

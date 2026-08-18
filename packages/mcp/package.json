@@ -1,0 +1,27 @@
+{
+  "name": "@structure/mcp",
+  "version": "0.0.0",
+  "description": "MCP server bindings: expose Schema-typed tools, resources, and CQRS commands/queries to coding agents over stdio or HTTP.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/ai": "catalog:",
+    "@effect/experimental": "catalog:",
+    "@effect/rpc": "catalog:",
+    "@effect/platform": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@structure/cqrs": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

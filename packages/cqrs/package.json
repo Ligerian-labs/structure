@@ -1,0 +1,23 @@
+{
+  "name": "@structure/cqrs",
+  "version": "0.0.0",
+  "description": "Schema-typed command/query buses with validation, authorization, idempotency and tracing middleware.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@structure/domain": "workspace:*",
+    "@structure/observability": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

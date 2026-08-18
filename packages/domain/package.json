@@ -1,0 +1,21 @@
+{
+  "name": "@structure/domain",
+  "version": "0.0.0",
+  "description": "DDD tactical bindings: branded ids, value objects, aggregates (decide/evolve), domain events, repository port, error taxonomy.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

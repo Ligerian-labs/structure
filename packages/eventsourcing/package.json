@@ -1,0 +1,22 @@
+{
+  "name": "@structure/eventsourcing",
+  "version": "0.0.0",
+  "description": "Event sourcing ports and runtime: event store, snapshots, projections with checkpoints, outbox/inbox, in-memory adapters.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@structure/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@structure/http",
+  "version": "0.0.0",
+  "description": "HTTP routes and handlers on @effect/platform HttpApi: OpenAPI docs, health probes, error mapping, CQRS bridge, Bun server.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/platform": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@structure/config": "workspace:*",
+    "@structure/observability": "workspace:*",
+    "@structure/cqrs": "workspace:*",
+    "@structure/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

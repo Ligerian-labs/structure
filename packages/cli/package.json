@@ -1,0 +1,27 @@
+{
+  "name": "@structure/cli",
+  "version": "0.0.0",
+  "description": "CLI command definitions on @effect/cli with config/observability pre-wired and classified exit codes.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/cli": "catalog:",
+    "@effect/platform": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@structure/config": "workspace:*",
+    "@structure/observability": "workspace:*",
+    "@structure/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}
