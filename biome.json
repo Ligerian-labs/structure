@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/node_modules/**", "!**/.turbo/**", "!thoughts/**"]
+    "includes": ["**", "!**/node_modules", "!**/.turbo", "!thoughts"]
   },
   "formatter": {
     "enabled": true,
@@ -17,7 +17,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "style": {
         "noNonNullAssertion": "error",
         "useImportType": "error"

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Layer, Logger, LogLevel } from "effect";
+import { Effect, Logger, LogLevel } from "effect";
 import {
   Correlation,
   type LogRecord,

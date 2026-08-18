@@ -4,7 +4,9 @@
   "type": "module",
   "packageManager": "bun@1.3.14",
   "workspaces": {
-    "packages": ["packages/*"],
+    "packages": [
+      "packages/*"
+    ],
     "catalog": {
       "effect": "^3.22.1",
       "@effect/platform": "^0.97.1",
