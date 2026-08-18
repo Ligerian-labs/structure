@@ -161,6 +161,22 @@
         "typescript": "catalog:",
       },
     },
+    "packages/migrations": {
+      "name": "@structure/migrations",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/platform": "catalog:",
+        "@effect/sql": "catalog:",
+        "@structure/cli": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/experimental": "catalog:",
+        "@effect/sql-sqlite-bun": "catalog:",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/observability": {
       "name": "@structure/observability",
       "version": "0.0.0",
@@ -395,6 +411,8 @@
     "@structure/http": ["@structure/http@workspace:packages/http"],
 
     "@structure/mcp": ["@structure/mcp@workspace:packages/mcp"],
+
+    "@structure/migrations": ["@structure/migrations@workspace:packages/migrations"],
 
     "@structure/observability": ["@structure/observability@workspace:packages/observability"],
 

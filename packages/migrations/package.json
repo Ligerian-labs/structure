@@ -1,0 +1,27 @@
+{
+  "name": "@structure/migrations",
+  "version": "0.0.0",
+  "description": "Versioned, ordered SQL migrations on @effect/sql Migrator: in-code Effect migrations, status reporting, CLI command group, explicit startup layer.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/sql": "catalog:",
+    "@effect/platform": "catalog:",
+    "@structure/cli": "workspace:*"
+  },
+  "devDependencies": {
+    "@effect/experimental": "catalog:",
+    "@effect/sql-sqlite-bun": "catalog:",
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}
