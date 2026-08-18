@@ -216,6 +216,25 @@
         "typescript": "catalog:",
       },
     },
+    "packages/viewmodel": {
+      "name": "@structure/viewmodel",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/platform": "catalog:",
+        "@effect/sql": "catalog:",
+        "@structure/domain": "workspace:*",
+        "@structure/eventsourcing": "workspace:*",
+        "@structure/migrations": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/experimental": "catalog:",
+        "@effect/sql-sqlite-bun": "catalog:",
+        "@structure/eventsourcing-sqlite": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
   },
   "catalog": {
     "@effect/ai": "^0.37.0",
@@ -417,6 +436,8 @@
     "@structure/observability": ["@structure/observability@workspace:packages/observability"],
 
     "@structure/runtime": ["@structure/runtime@workspace:packages/runtime"],
+
+    "@structure/viewmodel": ["@structure/viewmodel@workspace:packages/viewmodel"],
 
     "@turbo/darwin-64": ["@turbo/darwin-64@2.10.10", "", { "os": "darwin", "cpu": "x64" }, "sha512-gFDD+wRP5hWxBRghGyEbjpbLOY7aIU/wvsnKdMM7odQcp/wHMrnI83p0FyxxMRZnFH9ZD+S59MvcpOC5b+nrCA=="],
 
