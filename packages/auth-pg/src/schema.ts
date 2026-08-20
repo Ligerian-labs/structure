@@ -1,0 +1,167 @@
+import { AuthStoreError } from "@structure-ai/auth";
+import type { SQL } from "bun";
+import { Effect } from "effect";
+
+export interface AdapterOptions {
+  /** Prefix prepended to every table name. Defaults to `auth_`. */
+  readonly tablePrefix?: string;
+}
+
+export interface TableNames {
+  readonly users: string;
+  readonly passwords: string;
+  readonly tokens: string;
+  readonly sessions: string;
+  readonly oauthStates: string;
+  readonly oauthIdentities: string;
+  readonly passkeyChallenges: string;
+  readonly passkeys: string;
+}
+
+export const tableNames = (options: AdapterOptions = {}): TableNames => {
+  const prefix = options.tablePrefix ?? "auth_";
+  return {
+    users: `${prefix}users`,
+    passwords: `${prefix}passwords`,
+    tokens: `${prefix}tokens`,
+    sessions: `${prefix}sessions`,
+    oauthStates: `${prefix}oauth_states`,
+    oauthIdentities: `${prefix}oauth_identities`,
+    passkeyChallenges: `${prefix}passkey_challenges`,
+    passkeys: `${prefix}passkeys`,
+  };
+};
+
+/** Creates the complete auth schema in one transaction. Run from the designated migrator. */
+export const migrate = (
+  sql: SQL,
+  options: AdapterOptions = {},
+): Effect.Effect<void, AuthStoreError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const tables = tableNames(options);
+      await sql.begin(async (tx) => {
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.users)} (
+            tenant_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            email TEXT,
+            email_verified BOOLEAN NOT NULL,
+            display_name TEXT,
+            created_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, id),
+            UNIQUE (tenant_id, email)
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.passwords)} (
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            email TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, user_id),
+            UNIQUE (tenant_id, email),
+            FOREIGN KEY (tenant_id, user_id)
+              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.tokens)} (
+            tenant_id TEXT NOT NULL,
+            purpose TEXT NOT NULL CHECK (
+              purpose IN ('email-verification', 'magic-link', 'password-reset')
+            ),
+            token_hash TEXT NOT NULL,
+            email TEXT NOT NULL,
+            user_id TEXT,
+            expires_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, purpose, token_hash),
+            UNIQUE (tenant_id, purpose, email)
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.sessions)} (
+            tenant_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, token_hash),
+            UNIQUE (tenant_id, id),
+            FOREIGN KEY (tenant_id, user_id)
+              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthStates)} (
+            tenant_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            state_hash TEXT NOT NULL,
+            code_verifier TEXT NOT NULL,
+            redirect_uri TEXT NOT NULL,
+            return_to TEXT,
+            expires_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, state_hash)
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthIdentities)} (
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            email TEXT,
+            created_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, provider, subject),
+            FOREIGN KEY (tenant_id, user_id)
+              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.passkeyChallenges)} (
+            tenant_id TEXT NOT NULL,
+            purpose TEXT NOT NULL CHECK (purpose IN ('registration', 'authentication')),
+            challenge_hash TEXT NOT NULL,
+            user_id TEXT,
+            expires_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, purpose, challenge_hash)
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.passkeys)} (
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            credential_id TEXT NOT NULL,
+            public_key TEXT NOT NULL,
+            algorithm TEXT NOT NULL CHECK (algorithm IN ('ES256', 'RS256', 'Ed25519')),
+            counter BIGINT NOT NULL CHECK (counter >= 0),
+            transports TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, credential_id),
+            FOREIGN KEY (tenant_id, user_id)
+              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
+          )
+        `;
+        await tx`
+          CREATE INDEX IF NOT EXISTS ${tx(`${tables.sessions}_user_idx`)}
+          ON ${tx(tables.sessions)} (tenant_id, user_id)
+        `;
+        await tx`
+          CREATE INDEX IF NOT EXISTS ${tx(`${tables.sessions}_expiry_idx`)}
+          ON ${tx(tables.sessions)} (expires_at)
+        `;
+        await tx`
+          CREATE INDEX IF NOT EXISTS ${tx(`${tables.tokens}_expiry_idx`)}
+          ON ${tx(tables.tokens)} (expires_at)
+        `;
+        await tx`
+          CREATE INDEX IF NOT EXISTS ${tx(`${tables.passkeys}_user_idx`)}
+          ON ${tx(tables.passkeys)} (tenant_id, user_id)
+        `;
+      });
+    },
+    catch: (cause) => new AuthStoreError({ operation: "migrate-postgres-auth", cause }),
+  });

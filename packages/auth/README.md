@@ -130,7 +130,7 @@ Magic-link/reset/verification emails land on application pages. Those pages POST
 - `addOAuthIdentity` and `addPasskey` enforce tenant-scoped credential uniqueness.
 - counters may only be updated after successful signature verification.
 
-A durable adapter must preserve those semantics and may fail with `AuthStoreError`; it must never store raw one-time/session tokens or OAuth client secrets. `inMemoryAuthStore` is deterministic enough for local development and tests, but is neither durable nor a cross-instance rate limiter.
+A durable adapter must preserve those semantics and may fail with `AuthStoreError`; it must never store raw one-time/session tokens or OAuth client secrets. `@structure-ai/auth-sqlite` and `@structure-ai/auth-pg` provide Bun-native implementations with explicit schema migration functions. `inMemoryAuthStore` is deterministic enough for local development and tests, but is neither durable nor a cross-instance rate limiter.
 
 ## Account linking
 

@@ -11,12 +11,12 @@ Authentication handles bearer credentials and external identities; silently perm
 
 ## Decision
 
-`@structure-ai/auth` implements the narrowly supported protocol mechanics with Bun Argon2id and Web Crypto, while applications own persistence and policy through explicit Effect ports. Every persisted key is tenant-scoped; opaque tokens are stored only by digest; OAuth linking is deny-by-default; WebAuthn supports only none/packed-self attestation and ES256/RS256/Ed25519, rejecting every unsupported format or algorithm.
+`@structure-ai/auth` implements the narrowly supported protocol mechanics with Bun Argon2id and Web Crypto, while applications own persistence and policy through explicit Effect ports. Every persisted key is tenant-scoped; opaque tokens are stored only by digest; OAuth linking is deny-by-default; WebAuthn supports only none/packed-self attestation and ES256/RS256/Ed25519, rejecting every unsupported format or algorithm. Optional `auth-sqlite` and `auth-pg` packages implement the storage port with Bun's built-in SQL clients, preserving the dependency boundary without duplicating persistence in each application.
 
 ## Consequences
 
 - Applications get one tested password, link, session, passkey, and OAuth lifecycle without an auth-library dependency or provider SDK.
-- Storage adapters must implement documented atomic consumption, uniqueness, password-change/session-revocation, and counter-update boundaries; the in-memory adapter is not production persistence.
+- Applications may use the supplied SQLite/PostgreSQL adapters or implement the documented atomic consumption, uniqueness, password-change/session-revocation, and counter-update boundaries for another store; the in-memory adapter is not production persistence.
 - Provider configuration, tenant routing, rate limiting, email, audit, origin policy, HTTP, and account linking remain replaceable without forking the protocol core.
 - The package owns more security-sensitive code and requires focused review, conformance fixtures, and prompt maintenance when WebAuthn, OAuth, Bun crypto, or provider contracts change.
 - Certificate/enterprise attestation, algorithms beyond ES256/RS256/Ed25519, authorization/RBAC, and application profile modeling are deliberately excluded.

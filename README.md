@@ -23,6 +23,8 @@ Monorepo of small, independently importable packages under the `@structure-ai/*`
 | `@structure-ai/ai` | LLM provider bindings on `@effect/ai` (Anthropic/OpenAI): typed calls, structured output, bounded retries, token/cost metrics, deterministic test model. |
 | `@structure-ai/mcp` | MCP server bindings: expose schema-typed tools/resources and CQRS messages to coding agents over stdio or HTTP. |
 | `@structure-ai/auth` | Tenant-aware passwords, magic links, passkeys, OAuth, opaque sessions, and extensible storage/policy ports without auth-library dependencies. |
+| `@structure-ai/auth-sqlite` | Durable `AuthStore` over Bun-native SQLite with atomic token consumption and transactional credential changes. |
+| `@structure-ai/auth-pg` | Durable `AuthStore` over Bun-native PostgreSQL with the same tenant and transaction guarantees. |
 
 ## Commands
 
