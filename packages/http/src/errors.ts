@@ -30,6 +30,12 @@ export class BadRequestProblem extends Schema.Class<BadRequestProblem>("BadReque
   HttpApiSchema.annotations({ status: 400 }),
 ) {}
 
+/** 401: no (or no valid) principal; authenticating may help. */
+export class UnauthorizedProblem extends Schema.Class<UnauthorizedProblem>("UnauthorizedProblem")(
+  problemFields,
+  HttpApiSchema.annotations({ status: 401 }),
+) {}
+
 /** 403: the action was understood but is not allowed for this actor. */
 export class ForbiddenProblem extends Schema.Class<ForbiddenProblem>("ForbiddenProblem")(
   problemFields,
@@ -61,6 +67,7 @@ export class InternalServerProblem extends Schema.Class<InternalServerProblem>(
 /** Union of every problem response this package produces. */
 export type HttpProblem =
   | BadRequestProblem
+  | UnauthorizedProblem
   | ForbiddenProblem
   | NotFoundProblem
   | ConflictProblem
@@ -70,6 +77,7 @@ export type HttpProblem =
 /** Schema union of all problems — usable with `addError` on api/group/endpoint. */
 export const HttpProblemSchema = Schema.Union(
   BadRequestProblem,
+  UnauthorizedProblem,
   ForbiddenProblem,
   NotFoundProblem,
   ConflictProblem,
@@ -82,15 +90,17 @@ export const problemStatus = (problem: HttpProblem): number =>
   HttpApiSchema.getStatusError(
     problem instanceof BadRequestProblem
       ? BadRequestProblem
-      : problem instanceof ForbiddenProblem
-        ? ForbiddenProblem
-        : problem instanceof NotFoundProblem
-          ? NotFoundProblem
-          : problem instanceof ConflictProblem
-            ? ConflictProblem
-            : problem instanceof GatewayTimeoutProblem
-              ? GatewayTimeoutProblem
-              : InternalServerProblem,
+      : problem instanceof UnauthorizedProblem
+        ? UnauthorizedProblem
+        : problem instanceof ForbiddenProblem
+          ? ForbiddenProblem
+          : problem instanceof NotFoundProblem
+            ? NotFoundProblem
+            : problem instanceof ConflictProblem
+              ? ConflictProblem
+              : problem instanceof GatewayTimeoutProblem
+                ? GatewayTimeoutProblem
+                : InternalServerProblem,
   );
 
 /**
@@ -180,7 +190,9 @@ const internal = (correlationId: string | undefined): InternalServerProblem =>
  * internals:
  *
  * - `ValidationFailed` → 400 with the issues list
- * - `Unauthorized`     → 403
+ * - `Unauthenticated`  → 401 (no usable principal; `@structure-ai/authorization`)
+ * - `Unauthorized`     → 403 (bus-level denial; `@structure-ai/cqrs`)
+ * - `PermissionDenied` → 403 (policy denial; `@structure-ai/authorization`)
  * - `NotFound`         → 404 (entity + id)
  * - `ConcurrencyConflict` → 409
  * - `DispatchTimeout`  → 504
@@ -192,6 +204,7 @@ const internal = (correlationId: string | undefined): InternalServerProblem =>
  */
 export const toProblem = (error: unknown, correlationId?: string): HttpProblem => {
   if (error instanceof BadRequestProblem) return error;
+  if (error instanceof UnauthorizedProblem) return error;
   if (error instanceof ForbiddenProblem) return error;
   if (error instanceof NotFoundProblem) return error;
   if (error instanceof ConflictProblem) return error;
@@ -214,6 +227,20 @@ export const toProblem = (error: unknown, correlationId?: string): HttpProblem =
       return new ForbiddenProblem({
         error: "Unauthorized",
         message: tag === undefined ? "not allowed" : `not allowed to dispatch "${tag}"`,
+        ...withCorrelation,
+      });
+    }
+    case "Unauthenticated":
+      return new UnauthorizedProblem({
+        error: "Unauthenticated",
+        message: "authentication required",
+        ...withCorrelation,
+      });
+    case "PermissionDenied": {
+      const permission = stringField(error, "permission");
+      return new ForbiddenProblem({
+        error: "PermissionDenied",
+        message: permission === undefined ? "not allowed" : `not allowed: "${permission}"`,
         ...withCorrelation,
       });
     }

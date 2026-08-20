@@ -80,7 +80,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           DIST_TAG: ${{ steps.version.outputs.dist-tag }}
         run: |
-          for name in config observability domain cqrs eventsourcing \
+          for name in config observability domain auth auth-sqlite auth-pg cqrs authorization eventsourcing \
                       eventsourcing-sqlite eventsourcing-pg viewmodel migrations \
                       runtime http cli ai mcp; do
             if [ -n "$(npm view "@structure-ai/$name@$VERSION" version 2>/dev/null)" ]; then

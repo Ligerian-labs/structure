@@ -17,6 +17,7 @@ Effect-based framework monorepo for agent-focused backend software. Bun workspac
 | `@structure-ai/observability` | Structured logs, correlation ids, metrics, OTLP export. |
 | `@structure-ai/domain` | Aggregates (decider: `initial`/`decide`/`evolve`), entity ids, value objects, domain events, error taxonomy. |
 | `@structure-ai/cqrs` | Define commands/queries, register handlers, dispatch through the buses. |
+| `@structure-ai/authorization` | Define the roles × permissions matrix (`Policy.define`), attach a `Principal`, guard effects / the CQRS bus / HTTP routes. |
 | `@structure-ai/eventsourcing` | Event store, aggregate runtime, projections, outbox/inbox (in-memory adapters). |
 | `@structure-ai/eventsourcing-sqlite` / `-pg` | Durable adapters for the same ports. |
 | `@structure-ai/viewmodel` | Schema-defined read models: typed stores, generated table migrations, event-driven hydration. |
@@ -33,7 +34,7 @@ Every package: `src/index.ts` is the public API, `README.md` documents it, `test
 
 ## Recipes (skills)
 
-Task-specific step-by-step guides live in `.claude/skills/*/SKILL.md`: create-aggregate, create-command, create-event-handler, create-view-model, add-migration, read-app-state, expose-mcp-tool. Follow them when doing the matching task.
+Task-specific step-by-step guides live in `.claude/skills/*/SKILL.md`: create-aggregate, create-command, create-event-handler, create-view-model, add-migration, read-app-state, expose-mcp-tool, restrict-access. Follow them when doing the matching task.
 
 ## Hard rules
 
@@ -41,7 +42,7 @@ Task-specific step-by-step guides live in `.claude/skills/*/SKILL.md`: create-ag
 - ESM only; local imports use the `.js` suffix; `exports` maps point at TypeScript source (`./src/index.ts`) — no build step.
 - Shared dependency versions live in the root `package.json` `workspaces.catalog`; packages reference them as `"catalog:"`. Internal deps are `"workspace:*"`.
 - No `any`, no non-null assertions (Biome errors). Tagged errors (`Data.TaggedError`) with a `classification` field (`transient` | `permanent` | `conflict`).
-- Dependency direction (no cycles): config ← observability ← everything; domain ← cqrs ← eventsourcing ← sql adapters ← viewmodel; auth ← auth SQL adapters; migrations and auth are standalone foundations (their Effect dependency aside); runtime ← http/cli; ai and mcp are leaves.
+- Dependency direction (no cycles): config ← observability ← everything; domain ← cqrs ← eventsourcing ← sql adapters ← viewmodel; cqrs ← authorization (http/mcp never depend on it — apps compose; authorization never depends on auth); auth ← auth SQL adapters; migrations and auth are standalone foundations (their Effect dependency aside); runtime ← http/cli; ai and mcp are leaves.
 - Never log secrets or prompt bodies; secrets are `Redacted` from config to call site.
 - Commands are intent-named; queries never mutate; business rules live in `decide`, not in handlers; cross-aggregate effects go through events (outbox → projection/consumer), never through another context's tables.
 - Tests are `bun test` in `packages/<pkg>/test/`, no network, no real providers; sqlite tests may use `:memory:`; pg tests must skip unless `DATABASE_URL` is set.

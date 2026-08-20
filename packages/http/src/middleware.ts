@@ -74,7 +74,9 @@ export const metrics = <E, R>(app: HttpApp.Default<E, R>): HttpApp.Default<E, R>
 /** Error tags this package knows how to render as problem responses. */
 const knownTags: ReadonlySet<string> = new Set([
   "ValidationFailed",
+  "Unauthenticated",
   "Unauthorized",
+  "PermissionDenied",
   "NotFound",
   "ConcurrencyConflict",
   "DispatchTimeout",

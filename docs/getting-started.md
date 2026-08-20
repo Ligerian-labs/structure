@@ -99,6 +99,19 @@ export const handlers = HandlerRegistry.layer(
 
 The bus validates payload shape, authorizes the action, handles idempotency keys, and traces the dispatch — the handler stays thin.
 
+To authorize for real, declare a policy and build the bus `Authorizer` from it (`@structure-ai/authorization`); the HTTP layer attaches the caller's `Principal` per request and the same policy guards any route or tool:
+
+```ts
+import { CqrsAuthorization, HttpAuthorization, Policy } from "@structure-ai/authorization";
+
+export const policy = Policy.define({
+  resources: { account: ["deposit", "read"] },
+  roles: { teller: { grants: ["account:deposit", "account:read"] }, auditor: { grants: ["account:read"] } },
+});
+const AuthorizerLive = CqrsAuthorization.rules(policy).message(Deposit, "account:deposit").layer; // replaces Authorizer.allowAll
+const PrincipalLive = HttpAuthorization.layer(HttpAuthorization.fromBearer(lookupSession)); // token → Option<Principal>
+```
+
 ## 5. Read model (`@structure-ai/viewmodel` + `@structure-ai/migrations`)
 
 ```ts

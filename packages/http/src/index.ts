@@ -37,6 +37,7 @@ export {
   problemResponse,
   problemStatus,
   toProblem,
+  UnauthorizedProblem,
   withDefaultErrors,
 } from "./errors.js";
 export * as Health from "./health.js";

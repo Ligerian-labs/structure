@@ -12,6 +12,7 @@ Monorepo of small, independently importable packages under the `@structure-ai/*`
 | `@structure-ai/observability` | Structured JSON logging, correlation context (correlation/causation/request ids), boundary metrics, OTLP export of traces/metrics/logs. |
 | `@structure-ai/domain` | DDD tactical bindings: branded entity ids, schema value objects, decider-style aggregates (`decide`/`evolve`), domain events, repository port, classified error taxonomy. |
 | `@structure-ai/cqrs` | Schema-typed command/query buses: boundary validation, authorization hook, idempotency keys, tracing + metrics per dispatch. |
+| `@structure-ai/authorization` | Typed roles × permissions matrix (inheritance, wildcards, conditional grants, scoped roles), fiber-propagated principal, guards for effects, the CQRS bus and HTTP routes, 401/403 semantics. |
 | `@structure-ai/eventsourcing` | Event store / snapshot / checkpoint / outbox / inbox ports, aggregate runtime with optimistic concurrency, projections with checkpoints and rebuild, in-memory adapters. |
 | `@structure-ai/eventsourcing-sqlite` | Durable adapters over `bun:sqlite`. |
 | `@structure-ai/eventsourcing-pg` | Durable adapters over PostgreSQL (`@effect/sql-pg`). |

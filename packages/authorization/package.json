@@ -1,0 +1,37 @@
+{
+  "name": "@structure-ai/authorization",
+  "version": "0.0.0",
+  "description": "Typed role/permission matrices (RBAC with conditions and scopes), principal propagation, and guards for effects, CQRS dispatch and HTTP.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/authorization"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@effect/platform": "catalog:",
+    "@structure-ai/cqrs": "workspace:*",
+    "@structure-ai/domain": "workspace:*",
+    "@structure-ai/observability": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

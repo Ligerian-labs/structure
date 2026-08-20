@@ -20,7 +20,9 @@ import {
   HttpApiBuilder,
   HttpCqrs,
   HttpServer,
+  problemStatus,
   serveTest,
+  toProblem,
 } from "../src/index.js";
 
 // --- message definitions -----------------------------------------------------
@@ -248,5 +250,32 @@ describe("docs", () => {
     const response = await fetch(`${baseUrl}/docs`);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
+  });
+});
+
+describe("problem mapping", () => {
+  test("authorization errors map structurally: Unauthenticated → 401, PermissionDenied → 403, Unauthorized → 403", () => {
+    const unauthenticated = toProblem(
+      { _tag: "Unauthenticated", permission: "invoice:approve" },
+      "corr-1",
+    );
+    expect(problemStatus(unauthenticated)).toBe(401);
+    expect(unauthenticated.error).toBe("Unauthenticated");
+    expect(unauthenticated.correlationId).toBe("corr-1");
+
+    const denied = toProblem({
+      _tag: "PermissionDenied",
+      permission: "invoice:approve",
+      principal: "bob",
+      reason: "no role of [viewer] grants it",
+    });
+    expect(problemStatus(denied)).toBe(403);
+    expect(denied.error).toBe("PermissionDenied");
+    expect(denied.message).toBe('not allowed: "invoice:approve"');
+    // The decision reason stays server-side.
+    expect(JSON.stringify(denied)).not.toContain("viewer");
+
+    const busDenied = toProblem({ _tag: "Unauthorized", tag: "ApproveInvoice" });
+    expect(problemStatus(busDenied)).toBe(403);
   });
 });

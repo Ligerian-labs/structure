@@ -63,6 +63,21 @@
         "typescript": "catalog:",
       },
     },
+    "packages/authorization": {
+      "name": "@structure-ai/authorization",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/platform": "catalog:",
+        "@structure-ai/cqrs": "workspace:*",
+        "@structure-ai/domain": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/cli": {
       "name": "@structure-ai/cli",
       "version": "0.0.0",
@@ -453,6 +468,8 @@
     "@structure-ai/auth-pg": ["@structure-ai/auth-pg@workspace:packages/auth-pg"],
 
     "@structure-ai/auth-sqlite": ["@structure-ai/auth-sqlite@workspace:packages/auth-sqlite"],
+
+    "@structure-ai/authorization": ["@structure-ai/authorization@workspace:packages/authorization"],
 
     "@structure-ai/cli": ["@structure-ai/cli@workspace:packages/cli"],
 

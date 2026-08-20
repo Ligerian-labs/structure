@@ -8,6 +8,7 @@
 - [@structure-ai/observability](packages/observability/README.md): layer() for structured JSON logging + OTLP export, ServiceMeta, Correlation.within/scoped for correlation ids on logs+spans, Metrics.boundary/track for traffic-errors-latency.
 - [@structure-ai/domain](packages/domain/README.md): EntityId.define branded ids, ValueObject.define schema values, Aggregate.define decider (initial/decide/evolve) + rehydrate/execute, DomainEvent.define, EventMetadata/Envelope, Repository port, errors InvariantViolation/NotFound/ConcurrencyConflict/ValidationFailed with FailureClass.
 - [@structure-ai/cqrs](packages/cqrs/README.md): Command.define/Query.define with Schema payload+success, CommandBus/QueryBus dispatch with validation, Authorizer hook, IdempotencyStore, timeouts, spans+metrics per dispatch.
+- [@structure-ai/authorization](packages/authorization/README.md): Policy.define typed resources×actions→permissions with roles (inherits, `res:*`/`*` wildcards, conditional grants via Condition.owner/sameTenant/…, scoped role assignments), Principal.within fiber propagation, policy.decide/can/check/require + toMarkdown matrix, Authorization service layer, CqrsAuthorization.rules → bus Authorizer layer (deny unmapped), HttpAuthorization.layer/fromBearer/requirePermission, errors Unauthenticated(401)/PermissionDenied(403)/InvalidPolicy.
 - [@structure-ai/eventsourcing](packages/eventsourcing/README.md): EventStore/SnapshotStore/CheckpointStore/Outbox/Inbox ports, EventRegistry codec with upcasters, AggregateStore (load/execute/executeWithRetry, optimistic concurrency), Projection catchup/run/rebuild, OutboxRelay with bounded retry + dead letters, in-memory layers for everything.
 - [@structure-ai/eventsourcing-sqlite](packages/eventsourcing-sqlite/README.md): the same ports over bun:sqlite with transactional append + outbox.
 - [@structure-ai/eventsourcing-pg](packages/eventsourcing-pg/README.md): the same ports over PostgreSQL via @effect/sql-pg.
@@ -28,11 +29,11 @@
 - [docs/getting-started.md](docs/getting-started.md): one app end to end across all packages.
 - [docs/architecture.md](docs/architecture.md): command flow, dependency direction, consistency model, error taxonomy.
 - [docs/operations.md](docs/operations.md): startup, migrations policy, health, shutdown, telemetry alerts, recovery procedures.
-- [docs/decisions/](docs/decisions/README.md): ADRs 0001-0008 — why the system is shaped this way.
+- [docs/decisions/](docs/decisions/README.md): ADRs 0001-0010 — why the system is shaped this way.
 
 ## Conventions
 
 - [AGENTS.md](AGENTS.md): commands, package map, hard rules, dependency direction, VCS conventions (CLAUDE.md imports it).
 - [CONTRIBUTING.md](CONTRIBUTING.md): contribution flow for humans and agents — issues, branches, tests-first, verification gates, PR template; CI mirrors the same gates.
 - [README.md](README.md): human overview and design rules.
-- Skills in `.claude/skills/*/SKILL.md`: step-by-step recipes — create-aggregate, create-command, create-event-handler, create-view-model, add-migration, read-app-state, expose-mcp-tool.
+- Skills in `.claude/skills/*/SKILL.md`: step-by-step recipes — create-aggregate, create-command, create-event-handler, create-view-model, add-migration, read-app-state, expose-mcp-tool, restrict-access.
