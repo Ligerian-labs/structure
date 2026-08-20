@@ -18,6 +18,7 @@
 - [@structure-ai/cli](packages/cli/README.md): defineCommand on @effect/cli, standard --log-level/--config-file flags, classified exit codes, runCli entrypoint.
 - [@structure-ai/ai](packages/ai/README.md): LanguageModel layers for Anthropic/OpenAI from settings, generateText/generateObject with usage metrics, transient-only bounded retries, TestModel.layer for deterministic tests.
 - [@structure-ai/mcp](packages/mcp/README.md): defineMcpServer with schema-typed tools/resources, CQRS command/query→tool bridge, stdio + HTTP transports.
+- [@structure-ai/auth](packages/auth/README.md): tenant-aware password lifecycle, magic links, passkeys, Google/GitHub/X/LinkedIn OAuth, opaque sessions, Web Request handler, storage/policy/rate-limit/audit ports, in-memory test adapter; no external auth dependencies.
 
 ## Documentation
 

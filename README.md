@@ -22,6 +22,7 @@ Monorepo of small, independently importable packages under the `@structure-ai/*`
 | `@structure-ai/cli` | CLI commands on `@effect/cli` with config/observability pre-wired and classified exit codes. |
 | `@structure-ai/ai` | LLM provider bindings on `@effect/ai` (Anthropic/OpenAI): typed calls, structured output, bounded retries, token/cost metrics, deterministic test model. |
 | `@structure-ai/mcp` | MCP server bindings: expose schema-typed tools/resources and CQRS messages to coding agents over stdio or HTTP. |
+| `@structure-ai/auth` | Tenant-aware passwords, magic links, passkeys, OAuth, opaque sessions, and extensible storage/policy ports without auth-library dependencies. |
 
 ## Commands
 

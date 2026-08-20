@@ -28,6 +28,17 @@
         "typescript": "catalog:",
       },
     },
+    "packages/auth": {
+      "name": "@structure-ai/auth",
+      "version": "0.0.0",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/cli": {
       "name": "@structure-ai/cli",
       "version": "0.0.0",
@@ -412,6 +423,8 @@
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
     "@structure-ai/ai": ["@structure-ai/ai@workspace:packages/ai"],
+
+    "@structure-ai/auth": ["@structure-ai/auth@workspace:packages/auth"],
 
     "@structure-ai/cli": ["@structure-ai/cli@workspace:packages/cli"],
 
