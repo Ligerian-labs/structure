@@ -6,7 +6,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 
 1. Load + validate configuration — `ConfigLoadError` prints **every** issue and exits 1 before any work is accepted.
 2. Initialize telemetry (`Observability.layer`; export is off when `OTLP_URL` is unset — the app still runs).
-3. Establish resources (SQL client, event store, buses).
+3. Establish resources (SQL client, event store, buses, durable auth store/rate limiter when auth is enabled).
 4. `Readiness.setReady` — only now does `/health/ready` return 200.
 
 ## Health
@@ -20,6 +20,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 - Exactly **one** process per environment may migrate: a deploy job, the `migrations up` CLI command, or a designated single writer's startup layer. Every other instance starts without the migration layer.
 - `migrations status` (or `status(set)`) answers "which migrations ran here".
 - Incompatible changes: expand → migrate/backfill → switch readers/writers → contract, each step a separate migration, deployed separately.
+- `auth-sqlite.migrate` and `auth-pg.migrate` bootstrap their initial schemas transactionally; call them from the same single migration owner, then construct `makeAuthStore` in serving processes without migrating.
 
 ## Shutdown
 
@@ -34,6 +35,9 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 | Outbox pending age / dead letters > 0 | Integration events not leaving; dead letters carry the last error text |
 | `ai_tokens_*_total` spikes | LLM cost anomaly |
 | Log records with `level: ERROR` | Every one carries the cause once, at the owning boundary |
+| Auth rate-limit denials by stable action | Credential stuffing, mail abuse, or insufficient limiter capacity; never label by email/user/token |
+| Auth dependency failures and OAuth provider latency | Mail/provider/storage degradation affecting sign-in journeys |
+| Expired auth tokens/sessions/challenges awaiting cleanup | Retention job failure or store growth; raw bearer values must never be present |
 
 ## Recovery procedures
 
@@ -42,6 +46,9 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 - **Repeated `ConcurrencyConflict` on one aggregate** — a hot aggregate. `executeWithRetry` absorbs incidental races; sustained conflict is a modeling signal (aggregate too big), not a retry-tuning problem.
 - **Poisoned event (fails a projection handler)** — the projection halts at its checkpoint (at-least-once, pre-checkpoint failure). Fix the handler or add an upcaster for the event's schema version, redeploy, and the projection resumes from the checkpoint.
 - **Duplicate deliveries downstream** — verify the consumer wraps effects in `Inbox.dedupe`; the transport is at-least-once on purpose.
+- **Auth token/session store growth** — delete expired digests and consumed tombstones with a bounded tenant-aware job. Never inspect or log raw incoming bearer values while diagnosing cleanup.
+- **OAuth provider outage** — preserve password, magic-link, and passkey paths; provider HTTP has one bounded attempt and no nested retry. Alert on the provider/action aggregate, not identities.
+- **Suspected credential compromise** — revoke all user sessions atomically, rotate affected OAuth/provider/mail credentials, preserve safe audit events, and follow the application's user notification procedure.
 
 ## Environments
 

@@ -40,9 +40,16 @@ flowchart TD
     migrations --> viewmodel
     runtime --> http & cli
     cqrs --> mcp
+    auth --> authsqlite[auth-sqlite] & authpg[auth-pg]
 ```
 
-No cycles; `migrations` is standalone (its CLI group aside); `ai` and `mcp` are leaves. A PR that needs to violate this direction is redesigning the system and needs an ADR.
+No cycles; `migrations` and `auth` are standalone foundations (`auth` depends only on Effect), while the auth SQL adapters depend on `auth` and Bun's built-in database clients. `ai` and `mcp` are leaves. Auth applications inject tenant configuration, persistence, mail, audit, rate limits, and external HTTP at composition time rather than coupling authentication to another context's tables. A PR that needs to violate this direction is redesigning the system and needs an ADR.
+
+## Authentication boundary
+
+`@structure-ai/auth` owns credentials, external identities, verification tokens, WebAuthn challenges/passkeys, and opaque sessions. Tenant ID participates in every uniqueness and lookup key. Applications own profile data and authorization decisions; they refer to the authenticated user ID instead of reading or extending auth storage directly.
+
+Durable `AuthStore` implementations preserve the package's atomic commands: identity creation with uniqueness, one-time consumption, password replacement with session revocation, and passkey counter advancement. `auth-sqlite` and `auth-pg` implement that contract with Bun-native SQL, tenant-leading keys, transactions, and compare-and-set updates. Account linking is an explicit application policy and defaults to denied—even when a provider reports the same verified email.
 
 ## Consistency model
 

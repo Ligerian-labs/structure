@@ -26,6 +26,8 @@ Effect-based framework monorepo for agent-focused backend software. Bun workspac
 | `@structure-ai/cli` | Typed CLI commands with classified exit codes. |
 | `@structure-ai/ai` | LLM calls (Anthropic/OpenAI) with structured output, retries, test model. |
 | `@structure-ai/mcp` | Expose tools/resources/commands to coding agents over MCP. |
+| `@structure-ai/auth` | Passwords, magic links, passkeys, OAuth, sessions, and tenant-aware auth extension ports. |
+| `@structure-ai/auth-sqlite` / `-pg` | Durable Bun-native adapters for the `AuthStore` port. |
 
 Every package: `src/index.ts` is the public API, `README.md` documents it, `test/` shows working usage. Machine index: `llms.txt`. Cross-package narrative (getting started, architecture, operations, ADRs) lives in `docs/` — see `docs/index.md` for what lives where; update the matching doc in the same PR as a cross-package or contract change.
 
@@ -39,7 +41,7 @@ Task-specific step-by-step guides live in `.claude/skills/*/SKILL.md`: create-ag
 - ESM only; local imports use the `.js` suffix; `exports` maps point at TypeScript source (`./src/index.ts`) — no build step.
 - Shared dependency versions live in the root `package.json` `workspaces.catalog`; packages reference them as `"catalog:"`. Internal deps are `"workspace:*"`.
 - No `any`, no non-null assertions (Biome errors). Tagged errors (`Data.TaggedError`) with a `classification` field (`transient` | `permanent` | `conflict`).
-- Dependency direction (no cycles): config ← observability ← everything; domain ← cqrs ← eventsourcing ← sql adapters ← viewmodel; migrations is standalone (cli group aside); runtime ← http/cli; ai and mcp are leaves.
+- Dependency direction (no cycles): config ← observability ← everything; domain ← cqrs ← eventsourcing ← sql adapters ← viewmodel; auth ← auth SQL adapters; migrations and auth are standalone foundations (their Effect dependency aside); runtime ← http/cli; ai and mcp are leaves.
 - Never log secrets or prompt bodies; secrets are `Redacted` from config to call site.
 - Commands are intent-named; queries never mutate; business rules live in `decide`, not in handlers; cross-aggregate effects go through events (outbox → projection/consumer), never through another context's tables.
 - Tests are `bun test` in `packages/<pkg>/test/`, no network, no real providers; sqlite tests may use `:memory:`; pg tests must skip unless `DATABASE_URL` is set.

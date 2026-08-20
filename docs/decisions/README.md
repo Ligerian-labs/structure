@@ -12,3 +12,4 @@ Numbered, immutable once accepted; reversing a decision means a new ADR marking 
 | [0006](0006-viewmodel-not-an-orm.md) | View models are a query-side mapper, not a general ORM |
 | [0007](0007-pure-effect-otlp.md) | Telemetry export via pure-Effect OTLP, not the OTel JS SDK |
 | [0008](0008-agent-consumable-repo.md) | The repository is a first-class interface for coding agents |
+| [0009](0009-auth-without-auth-dependencies.md) | Authentication protocols behind application-owned ports, without auth dependencies |
