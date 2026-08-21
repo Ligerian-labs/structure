@@ -11,6 +11,46 @@ export interface RunOptions {
 
 const DEFAULT_TABLE = "effect_sql_migrations";
 
+const locked = () =>
+  new Migrator.MigrationError({
+    reason: "locked",
+    message: "Migrations already running",
+  });
+
+const field = (value: unknown, key: PropertyKey): unknown =>
+  typeof value === "object" && value !== null
+    ? (value as Readonly<Record<PropertyKey, unknown>>)[key]
+    : undefined;
+
+const isMissingTable = (error: SqlError): boolean => {
+  const cause = error.cause;
+  const code = field(cause, "code");
+  const errno = field(cause, "errno");
+  const number = field(cause, "number");
+  const message = field(cause, "message");
+  return (
+    code === "42P01" ||
+    code === "ER_NO_SUCH_TABLE" ||
+    code === "UNKNOWN_TABLE" ||
+    code === "60" ||
+    errno === 1146 ||
+    number === 208 ||
+    number === 60 ||
+    (errno === 1 && typeof message === "string" && message.startsWith("no such table:"))
+  );
+};
+
+const readAppliedIds = (
+  table: string,
+): Effect.Effect<ReadonlyArray<number>, SqlError, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql`SELECT migration_id FROM ${sql(table)}`.pipe(
+      Effect.map((rows) => rows.map((row) => Number(row.migration_id))),
+      Effect.catchIf(isMissingTable, () => Effect.succeed<ReadonlyArray<number>>([])),
+    );
+  });
+
 /**
  * Applies every pending migration in id order, inside the Migrator's
  * transactional bookkeeping. Returns the `[id, name]` pairs actually applied
@@ -26,9 +66,38 @@ export const run = (
   Migrator.MigrationError | SqlError,
   SqlClient.SqlClient
 > =>
-  Migrator.make({})({
-    loader: set.loader,
-    ...(options.table !== undefined ? { table: options.table } : {}),
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const table = options.table ?? DEFAULT_TABLE;
+    const migrate = Migrator.make({})({
+      loader: set.loader,
+      ...(options.table !== undefined ? { table: options.table } : {}),
+    });
+    return yield* sql.onDialectOrElse({
+      pg: () =>
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ readonly acquired: boolean }>`
+              SELECT pg_try_advisory_xact_lock(hashtext(${table})) AS acquired
+            `;
+            if (rows[0]?.acquired !== true) {
+              return yield* locked();
+            }
+            return yield* migrate;
+          }),
+        ),
+      orElse: () =>
+        Effect.gen(function* () {
+          const appliedBefore = yield* readAppliedIds(table);
+          const latestBefore = appliedBefore.reduce((latest, id) => Math.max(latest, id), 0);
+          const hadPending = set.migrations.some((migration) => migration.id > latestBefore);
+          const applied = yield* migrate;
+          if (hadPending && applied.length === 0) {
+            return yield* locked();
+          }
+          return applied;
+        }),
+    });
   }).pipe(
     Effect.tap((applied) =>
       applied.length === 0
@@ -65,13 +134,8 @@ export const status = (
   options: RunOptions = {},
 ): Effect.Effect<MigrationStatus, SqlError, SqlClient.SqlClient> =>
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
     const table = options.table ?? DEFAULT_TABLE;
-    const rows = yield* sql`SELECT migration_id FROM ${sql(table)}`.pipe(
-      Effect.map((r) => r.map((row) => Number(row.migration_id))),
-      Effect.catchAll(() => Effect.succeed<ReadonlyArray<number>>([])),
-    );
-    const appliedIds = new Set(rows);
+    const appliedIds = new Set(yield* readAppliedIds(table));
     const applied = set.migrations
       .filter((m) => appliedIds.has(m.id))
       .map((m) => ({ id: m.id, name: m.name }));
