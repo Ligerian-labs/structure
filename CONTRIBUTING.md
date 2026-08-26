@@ -33,7 +33,7 @@ Bun ≥ 1.3 (isolated workspace installs). Postgres tests skip unless `DATABASE_
 
 ## Notes for coding agents
 
-- Read `AGENTS.md`, then the README of every package you touch. Task recipes (create an aggregate, a command, a view model, a migration…) are in `.claude/skills/*/SKILL.md` — follow them for matching tasks.
+- Read `AGENTS.md`, then the README of every package you touch. Task recipes (create an aggregate, a command, a view model, a migration…) are in `.agents/skills/*/SKILL.md` — follow them for matching tasks.
 - Effect APIs move fast: verify signatures against `packages/<pkg>/node_modules/<dep>/dist/dts/*.d.ts`. IDE/LSP diagnostics in this repo are unreliable; only `tsc` and `bun test` count.
 - State what you verified versus what you inferred; flag uncertainty as `[inferred — verify]` in issues and PR bodies.
 - Do not include AI/generated-by attribution in commits, PR titles, or bodies.

@@ -14,7 +14,7 @@ Living documentation for the framework. "Living" means every document here has a
 | What are the repo conventions and hard rules? | [`AGENTS.md`](../AGENTS.md) |
 | How do I contribute? | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
 | Machine-readable package index | [`llms.txt`](../llms.txt) |
-| Step-by-step task recipes | `.claude/skills/*/SKILL.md` |
+| Step-by-step task recipes | `.agents/skills/*/SKILL.md` |
 
 ## Contents
 
