@@ -37,11 +37,42 @@ const ListItems = Query.define("ListItems", {
   success: Schema.Struct({ items: Schema.Array(Schema.String) }),
 });
 
+// Business failure schemas: an app-specific tag and one colliding with the
+// middleware taxonomy tag `InvariantViolation`.
+class Backordered extends Schema.TaggedError<Backordered>()("Backordered", {
+  sku: Schema.String,
+}) {}
+
+class OrdersClosed extends Schema.TaggedError<OrdersClosed>()("InvariantViolation", {
+  rule: Schema.String,
+}) {}
+
+class OutOfStock extends Schema.TaggedError<OutOfStock>()("OutOfStock", {
+  sku: Schema.String,
+}) {}
+
+const PlaceOrder = Command.define("PlaceOrder", {
+  payload: Schema.Struct({ name: Schema.String, sku: Schema.String }),
+  success: Schema.Struct({
+    accepted: Schema.Literal(true),
+    idempotencyKey: Schema.optional(Schema.String),
+  }),
+  failure: Schema.Union(Backordered, OrdersClosed),
+});
+
+const CheckStock = Query.define("CheckStock", {
+  payload: Schema.Struct({ sku: Schema.String }),
+  success: Schema.Struct({ available: Schema.Boolean }),
+  failure: OutOfStock,
+});
+
 // --- api definition ----------------------------------------------------------
 
 const items = ApiGroup.make("items")
   .add(HttpCqrs.commandEndpoint("addItem", "/items", AddItem))
   .add(HttpCqrs.queryEndpoint("listItems", "/items", ListItems))
+  .add(HttpCqrs.commandEndpoint("placeOrder", "/orders", PlaceOrder))
+  .add(HttpCqrs.queryEndpoint("checkStock", "/stock", CheckStock))
   .add(ApiEndpoint.get("boom", "/boom").addSuccess(Schema.String))
   .add(
     ApiEndpoint.get("whoami", "/whoami").addSuccess(
@@ -65,12 +96,31 @@ const registry = HandlerRegistry.layer(
     ),
   ),
   QueryHandler.make(ListItems, () => Effect.map(Ref.get(state), (all) => ({ items: all }))),
+  CommandHandler.make(PlaceOrder, (payload, dispatch) =>
+    payload.name === "backordered"
+      ? Effect.fail(new Backordered({ sku: payload.sku }))
+      : payload.name === "closed"
+        ? Effect.fail(new OrdersClosed({ rule: "orders are closed" }))
+        : Effect.succeed({
+            accepted: true as const,
+            ...(dispatch.idempotencyKey !== undefined && {
+              idempotencyKey: dispatch.idempotencyKey,
+            }),
+          }),
+  ),
+  QueryHandler.make(CheckStock, (payload) =>
+    payload.sku === "sku-gone"
+      ? Effect.fail(new OutOfStock({ sku: payload.sku }))
+      : Effect.succeed({ available: true }),
+  ),
 );
 
 const ItemsLive = HttpApiBuilder.group(api, "items", (handlers) =>
   handlers
     .handle("addItem", HttpCqrs.command(AddItem))
     .handle("listItems", HttpCqrs.query(ListItems))
+    .handle("placeOrder", HttpCqrs.command(PlaceOrder))
+    .handle("checkStock", HttpCqrs.query(CheckStock))
     .handle("boom", () => Effect.die(new Error("secret internal detail")))
     .handle("whoami", () =>
       Effect.map(Correlation.current, (context) => ({
@@ -200,6 +250,58 @@ describe("correlation", () => {
     expect(body.correlationId).toBe("corr-abc-123");
     expect(response.headers.get("x-correlation-id")).toBe("corr-abc-123");
     expect(response.headers.get("x-request-id")).toBe("req-42");
+  });
+});
+
+describe("business failures", () => {
+  test("a declared business failure returns 422 with the encoded failure body", async () => {
+    const response = await fetch(`${baseUrl}/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "backordered", sku: "sku-7" }),
+    });
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { _tag: string; sku: string };
+    expect(body._tag).toBe("Backordered");
+    expect(body.sku).toBe("sku-7");
+  });
+
+  test("a declared failure whose tag collides with a taxonomy tag keeps its contract", async () => {
+    const response = await fetch(`${baseUrl}/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "closed", sku: "sku-7" }),
+    });
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { _tag: string; rule: string };
+    expect(body._tag).toBe("InvariantViolation");
+    expect(body.rule).toBe("orders are closed");
+  });
+
+  test("a query business failure returns 422 with the encoded failure body", async () => {
+    const response = await fetch(`${baseUrl}/stock?sku=sku-gone`);
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { _tag: string; sku: string };
+    expect(body._tag).toBe("OutOfStock");
+  });
+
+  test("x-idempotency-key is forwarded to the dispatch envelope", async () => {
+    const response = await fetch(`${baseUrl}/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-idempotency-key": "idem-42" },
+      body: JSON.stringify({ name: "ok", sku: "sku-1" }),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { accepted: boolean; idempotencyKey?: string };
+    expect(body.accepted).toBe(true);
+    expect(body.idempotencyKey).toBe("idem-42");
+  });
+
+  test("declared failure schemas are documented in openapi.json", async () => {
+    const response = await fetch(`${baseUrl}/openapi.json`);
+    const spec = await response.text();
+    expect(spec).toContain("Backordered");
+    expect(spec).toContain("OutOfStock");
   });
 });
 
