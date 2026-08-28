@@ -25,6 +25,7 @@ Effect-based framework monorepo for agent-focused backend software. Bun workspac
 | `@structure-ai/runtime` | Readiness checks, shutdown coordinator, Bun entrypoint. |
 | `@structure-ai/http` | HttpApi endpoints, OpenAPI docs, health probes, CQRS endpoint bridge (declared business failures → 422), Bun server. |
 | `@structure-ai/client` | Typed API client derived from an `Api` type: correlation ids, bearer tokens, per-attempt deadlines, bounded jittered retries on transient transport failures. |
+| `@structure-ai/bdd` | Gherkin feature tests compiled into `bun test` cases: typed Effect step definitions, per-scenario worlds with exit-capturing dispatch/query, schema-decoded tables, owned eventual consistency. |
 | `@structure-ai/cli` | Typed CLI commands with classified exit codes. |
 | `@structure-ai/ai` | LLM calls (Anthropic/OpenAI) with structured output, retries, test model. |
 | `@structure-ai/mcp` | Expose tools/resources/commands to coding agents over MCP. |
