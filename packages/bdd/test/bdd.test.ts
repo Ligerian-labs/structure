@@ -151,3 +151,60 @@ describe("feature wiring", () => {
     }
   });
 });
+
+// --- text conventions ----------------------------------------------------------
+
+describe("text conventions", () => {
+  test("norm collapses locale whitespace (incl. narrow no-break)", async () => {
+    const { norm } = await import("../src/index.js");
+    expect(norm("4\u202F200,00\u00A0€")).toBe("4 200,00 €");
+    expect(norm("  simple   text  ")).toBe("simple text");
+  });
+
+  test("ddMmYyyyToIso converts and validates", async () => {
+    const { ddMmYyyyToIso } = await import("../src/index.js");
+    expect(ddMmYyyyToIso("05/03/2022")).toBe("2022-03-05");
+    expect(ddMmYyyyToIso("12/08/1990")).toBe("1990-08-12");
+    expect(() => ddMmYyyyToIso("2022-03-05")).toThrow(/dd\/MM\/yyyy/);
+  });
+});
+
+// --- null literal in tables ------------------------------------------------------
+
+describe("DataTable nullLiteral", () => {
+  test("cells equal to the literal decode to null", async () => {
+    const { Schema } = await import("effect");
+    const schema = Schema.Struct({ email: Schema.String, referral: Schema.NullOr(Schema.String) });
+    const rows = await Effect.runPromise(
+      new DataTable([
+        ["email", "referral"],
+        ["a@test.dev", "NULL"],
+        ["b@test.dev", "friends"],
+      ]).rows(schema, { nullLiteral: "NULL" }),
+    );
+    expect(rows).toEqual([
+      { email: "a@test.dev", referral: null },
+      { email: "b@test.dev", referral: "friends" },
+    ]);
+  });
+});
+
+// --- world.attempt ---------------------------------------------------------------
+
+describe("ScenarioWorld.attempt", () => {
+  test("records any effect's outcome like a dispatch", async () => {
+    const { Effect: E, Context, Exit } = await import("effect");
+    const { ScenarioWorld } = await import("../src/index.js");
+
+    class W extends ScenarioWorld<never> {}
+    const program = E.gen(function* () {
+      const world = new W(yield* E.scope, Context.empty());
+      const first = yield* world.attempt(E.succeed("ok"));
+      yield* world.attempt(E.fail({ _tag: "Boom" as const }));
+      return { success: Exit.isSuccess(first), failureTag: world.failureTags()[0] };
+    });
+    const result = await E.runPromise(E.scoped(program));
+    expect(result.success).toBe(true);
+    expect(result.failureTag).toBe("Boom");
+  });
+});

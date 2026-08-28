@@ -51,12 +51,26 @@ export class DataTable {
    * Decodes each data row through a struct schema and returns the typed
    * values, failing with every issue at once when a cell does not conform —
    * so a malformed feature table points at the offending field.
+   *
+   * `nullLiteral` (default: none): cells exactly equal to the literal are
+   * mapped to `null` before decoding, so `Schema.NullOr(...)` fields express
+   * absence in tables the business edits.
    */
   rows<S extends Schema.Struct.Fields>(
     schema: Schema.Struct<S>,
+    options?: { readonly nullLiteral?: string },
   ): Effect.Effect<ReadonlyArray<Schema.Schema.Type<Schema.Struct<S>>>, ParseResult.ParseError> {
+    const nullLiteral = options?.nullLiteral;
     const decode = Schema.decodeUnknown(schema);
-    return Effect.forEach(this.hashes(), (hash) => decode(hash)) as unknown as Effect.Effect<
+    const rows =
+      nullLiteral === undefined
+        ? this.hashes()
+        : this.hashes().map((row) =>
+            Object.fromEntries(
+              Object.entries(row).map(([key, cell]) => [key, cell === nullLiteral ? null : cell]),
+            ),
+          );
+    return Effect.forEach(rows, (row) => decode(row)) as unknown as Effect.Effect<
       ReadonlyArray<Schema.Schema.Type<Schema.Struct<S>>>,
       ParseResult.ParseError
     >;

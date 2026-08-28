@@ -75,6 +75,18 @@ export abstract class ScenarioWorld<R> {
   readonly use = <A, E>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, never> =>
     Effect.provide(effect, this.#context);
 
+  /**
+   * Runs any app effect and captures its exit — the twin of
+   * {@link dispatch}/{@link query} for effects that do not travel the bus
+   * (auth-service calls, direct port access). The outcome is recorded like
+   * a dispatch, so `expectFailure`/`expectSuccess` and `failureTags` work
+   * uniformly across both.
+   */
+  readonly attempt = <A, E>(
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<Exit.Exit<A, E>, never, never> =>
+    Effect.map(Effect.exit(this.use(effect)), (exit) => this.#record(exit));
+
   readonly #record = <A, E>(exit: Exit.Exit<A, E>): Exit.Exit<A, E> => {
     (this.outcomes as Array<Exit.Exit<unknown, unknown>>).push(exit);
     return exit;

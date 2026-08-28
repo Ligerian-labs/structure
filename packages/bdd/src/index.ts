@@ -11,6 +11,13 @@
  */
 
 export {
+  type RecordedAuthEmail,
+  registerVerifiedCustomer,
+  signInPassword,
+  TestAuth,
+  type TestAuth as TestAuthService,
+} from "./auth.js";
+export {
   compileExpression,
   type ExpressionParams,
   Given,
@@ -23,4 +30,5 @@ export {
 } from "./steps.js";
 export { defineFeatureSuite, type FeatureSuiteOptions } from "./suite.js";
 export { DataTable, dataTableFromCells } from "./tables.js";
+export { ddMmYyyyToIso, norm } from "./text.js";
 export { ScenarioWorld, type WorldMissing } from "./world.js";

@@ -21,6 +21,6 @@ Wiring is loud: undefined or ambiguous steps fail at load time with `file:line` 
 
 Easier: one runner, typed steps, PM-authored features in any dialect, converged state guaranteed under `Then`, no bridges or casts, tag filtering via `bun test --test-name-pattern`.
 
-Harder: we own hook semantics and matcher behavior (bounded: ~400 lines); step parameters support the built-in cucumber expression types only (`{string}`, `{int}`, `{float}`, `{bigint}`, `{word}` — custom parameter types are strings); escaped braces in expression text are not modeled at the type level.
+Harder: we own hook semantics and matcher behavior (bounded: ~400 lines); `@structure-ai/auth` became a dependency of the package for the auth test kit (real service over in-memory doubles, recording sender) — consumers that skip auth still pull it; step parameters support the built-in cucumber expression types only (`{string}`, `{int}`, `{float}`, `{bigint}`, `{word}` — custom parameter types are strings); escaped braces in expression text are not modeled at the type level.
 
 Revisit trigger: a need for cucumber ecosystem interop (formatters, CI plugins) or custom parameter-type transforms would justify extending the expression layer — still without adopting the runner.

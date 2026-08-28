@@ -85,6 +85,7 @@
         "@cucumber/cucumber-expressions": "catalog:",
         "@cucumber/gherkin": "catalog:",
         "@cucumber/messages": "catalog:",
+        "@structure-ai/auth": "workspace:*",
         "@structure-ai/cqrs": "workspace:*",
         "@structure-ai/eventsourcing": "workspace:*",
         "effect": "catalog:",
