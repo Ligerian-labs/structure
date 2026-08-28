@@ -95,6 +95,23 @@
         "typescript": "catalog:",
       },
     },
+    "packages/client": {
+      "name": "@structure-ai/client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/platform": "catalog:",
+        "@structure-ai/observability": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@structure-ai/cqrs": "workspace:*",
+        "@structure-ai/http": "workspace:*",
+        "@structure-ai/runtime": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/config": {
       "name": "@structure-ai/config",
       "version": "0.0.0",
@@ -472,6 +489,8 @@
     "@structure-ai/authorization": ["@structure-ai/authorization@workspace:packages/authorization"],
 
     "@structure-ai/cli": ["@structure-ai/cli@workspace:packages/cli"],
+
+    "@structure-ai/client": ["@structure-ai/client@workspace:packages/client"],
 
     "@structure-ai/config": ["@structure-ai/config@workspace:packages/config"],
 

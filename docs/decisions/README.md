@@ -15,3 +15,4 @@ Numbered, immutable once accepted; reversing a decision means a new ADR marking 
 | [0009](0009-auth-without-auth-dependencies.md) | Authentication protocols behind application-owned ports, without auth dependencies |
 | [0010](0010-authorization-as-typed-policy-value.md) | Authorization is a typed, fail-closed policy value; transports adapt to it |
 | [0011](0011-cross-agent-skills-directory.md) | Task skills live canonically in `.agents/skills/`; Claude Code via local symlink |
+| [0012](0012-typed-client-without-codegen.md) | Typed API clients are derived from the `Api` type, never generated; business failures are declared wire contracts (422) |

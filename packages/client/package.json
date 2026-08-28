@@ -1,0 +1,39 @@
+{
+  "name": "@structure-ai/client",
+  "version": "0.0.0",
+  "description": "Typed API client derived from an HttpApi definition: correlation ids, bearer tokens, per-attempt timeouts, and bounded jittered retries on transient transport failures.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/client"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/platform": "catalog:",
+    "@structure-ai/observability": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@structure-ai/cqrs": "workspace:*",
+    "@structure-ai/http": "workspace:*",
+    "@structure-ai/runtime": "workspace:*"
+  }
+}

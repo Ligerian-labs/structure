@@ -68,6 +68,7 @@ Every framework error is a `Data.TaggedError` carrying `classification`:
 | `transient` | Timeouts, throttling, transport | Yes, bounded backoff + jitter | 504 / exit 75 |
 | `permanent` | Validation, invariants, not-found, authn/authz | Never | 400/401/403/404 / exit 1 |
 | `conflict` | Optimistic concurrency lost | Reload then retry the whole command | 409 / exit 1 |
+| declared business failure | A command/query's declared `failure` schema | Never (caller decides) | 422, `_tag`-discriminated body |
 
 The classification is decided where the error is born and preserved across layers — retry policies, HTTP status mapping, and CLI exit codes all read it instead of guessing from error types.
 
@@ -78,5 +79,5 @@ The classification is decided where the error is born and preserved across layer
 | Config validation (all errors at once, fail before work) | `config` at startup, via `runtime` |
 | Correlation ids on logs + spans | `observability` (`Correlation`), injected at the edge |
 | Traffic/error/latency metrics per boundary | `Metrics.track` at bus, HTTP, AI call sites |
-| Retries | One owner per operation: `executeWithRetry` (conflicts), `OutboxRelay` (publishing), `ai` (transient LLM failures). Never nested. |
+| Retries | One owner per operation: `executeWithRetry` (conflicts), `OutboxRelay` (publishing), `ai` (transient LLM failures), `client` (transport, for typed API calls). Never nested. |
 | Secrets | `Redacted` from `Settings.secret` to call site; never logged |
