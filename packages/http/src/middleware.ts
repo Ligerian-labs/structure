@@ -4,6 +4,7 @@ import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import { Correlation, Metrics } from "@structure-ai/observability";
 import { Cause, Clock, Effect, type Layer, Option } from "effect";
+import { DeclaredBusinessFailure } from "./cqrs.js";
 import { defaultErrorResponse, HttpProblemSchema } from "./errors.js";
 
 /**
@@ -98,8 +99,9 @@ const isKnownError = (u: unknown): boolean =>
  * Error boundary: renders the framework error taxonomy (and unknown routes)
  * as problem-details responses and turns defects into a 500 carrying only
  * the correlation id — the cause is logged server-side, never sent. Errors
- * it does not know (an app's custom endpoint error schemas) are re-failed so
- * the platform's schema-based encoding still applies to them.
+ * it does not know (an app's custom endpoint error schemas, and the bridge's
+ * declared business failures) are re-failed so the platform's schema-based
+ * encoding still applies to them.
  */
 export const problems = <E, R>(app: HttpApp.Default<E, R>): HttpApp.Default<E, R> =>
   Effect.catchAllCause(app, (cause) =>
@@ -111,6 +113,14 @@ export const problems = <E, R>(app: HttpApp.Default<E, R>): HttpApp.Default<E, R
         // A defect: log the full cause here, hide the details from the wire.
         yield* Effect.logError("http request defect", cause);
         return defaultErrorResponse(undefined, context.correlationId);
+      }
+      // A declared business failure from the CQRS bridge: unwrap and re-fail
+      // the inner error so the platform encodes it via the endpoint's
+      // declared failure schema (422), skipping taxonomy mapping — which
+      // would otherwise flatten failures whose `_tag` collides with a
+      // taxonomy tag into generic problems.
+      if (failure.value instanceof DeclaredBusinessFailure) {
+        return yield* Effect.fail(failure.value.failure as E);
       }
       return isKnownError(failure.value)
         ? defaultErrorResponse(failure.value, context.correlationId)
