@@ -15,7 +15,7 @@ import {
   Projection,
 } from "@structure-ai/eventsourcing";
 import { Context, Effect, Layer, type Schema, type Scope } from "effect";
-import { ScenarioWorld } from "../../src/index.js";
+import { ScenarioWorld, TestAuth, type TestAuth as TestAuthService } from "../../src/index.js";
 import {
   AlreadyBooked,
   InvalidPeriod,
@@ -168,6 +168,21 @@ export type WorldServices =
  * scenario state the step definitions share.
  */
 export class FixtureWorld extends ScenarioWorld<WorldServices> {
+  /** The in-memory auth stack (real service, recorded e-mails). */
+  readonly testAuth: TestAuthService;
+  registeredProfiles: Array<{ readonly email: string; readonly birthdateIso: string }> = [];
+  /** Session tokens per e-mail, recorded by sign-in steps. */
+  readonly sessionTokens = new Map<string, string>();
+
+  constructor(
+    scope: Scope.Scope,
+    context: Context.Context<WorldServices>,
+    testAuth: TestAuthService,
+  ) {
+    super(scope, context);
+    this.testAuth = testAuth;
+  }
+
   lastReservation?: { readonly reservationId: string; readonly totalAmount: string };
   pendingRequest?: { readonly from: string; readonly to: string };
   policyNote?: string;
@@ -191,7 +206,12 @@ export const buildTestWorld = (scope: Scope.Scope): Effect.Effect<FixtureWorld, 
       DoublesLive(mails),
     ).pipe(Layer.provideMerge(InMemoryAll));
     const context = yield* Layer.buildWithScope(worldLayer, scope);
-    return new FixtureWorld(scope, context);
+    const testAuth = TestAuth.make({
+      tenantId: "fixture",
+      baseUrl: new URL("http://localhost:3000"),
+      tenant: { password: { minLength: 6 } },
+    });
+    return new FixtureWorld(scope, context, testAuth);
   }).pipe(Effect.orDie) as Effect.Effect<FixtureWorld, never, never>;
 
 /**

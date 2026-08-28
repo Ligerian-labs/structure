@@ -85,6 +85,7 @@ One fresh world per scenario, built inside a suite-owned `Scope` (in-memory stor
 | --- | --- |
 | `dispatch(command, payload, { actor, idempotencyKey })` | Dispatches on the `CommandBus` and **records the exit** — business failures never throw, `Then` steps assert them. Requires `CommandBus` in `R`. |
 | `query(queryDef, payload)` | Same for queries (`QueryBus` in `R`). |
+| `attempt(effect)` | The exit-capturing twin for effects that do not travel the bus (auth-service calls, direct port access): runs any app effect, records its outcome — `expectFailure`/`expectSuccess` work uniformly. |
 | `expectSuccess()` / `expectFailure(tag, message?)` | Assert the last outcome; throw (fail the scenario) on mismatch. |
 | `failureTags()` | `_tag`s of every recorded failure, in order. |
 | `events()` | Every stored event, in global order (`EventStore` in `R`). |
@@ -92,6 +93,30 @@ One fresh world per scenario, built inside a suite-owned `Scope` (in-memory stor
 | `use(effect)` | Provides the world's services to any app effect. |
 
 Eventual consistency is the framework's problem: a `drain` hook (outbox relay, projection catch-up) runs **after every step** by default, so `Then` steps always observe converged state. Disable per suite (`drainAfterStep: false`) and drain manually from steps if a scenario needs finer control.
+
+## The auth kit
+
+Registration/sign-in flows are the same in every `@structure-ai/auth` app, so the framework ships them ready-wired over in-memory doubles:
+
+```ts
+import { TestAuth, registerVerifiedCustomer } from "@structure-ai/bdd";
+
+// one per world — the real auth service, in-memory store, recorded e-mails
+const testAuth = TestAuth.make({ tenantId: "my-app", baseUrl: new URL("http://localhost:3000") });
+
+// register → capture verification e-mail → verify → userId (dies on test bugs)
+const userId = yield* registerVerifiedCustomer({ testAuth, email, password });
+```
+
+`TestAuth` exposes the real `AuthService` + `AuthHandler` with `emails` — every sent e-mail with its unwrapped one-time token — so `Given ... is logged in` steps become three lines instead of fifty. `signInPassword({ testAuth, email, password })` records-style sign-in for fixture paths; raw service calls through `world.attempt` keep tagged errors (`InvalidCredentials`, …) assertable.
+
+## Text conventions
+
+Feature tables carry business formatting; two helpers keep steps honest:
+
+- `norm(s)` — whitespace-normalized comparison (fr-FR money emits narrow no-break spaces).
+- `ddMmYyyyToIso("05/03/2022")` → `"2022-03-05"` — the dd/MM/yyyy convention of business tables, validated.
+- `table.rows(schema, { nullLiteral: "NULL" })` — table cells express absence for `Schema.NullOr(...)` fields.
 
 ## Loud wiring
 
@@ -106,5 +131,7 @@ A feature file is a contract: every step must match exactly one definition. Suit
 | `ScenarioWorld<R>` | Base world: typed dispatch/query with exit capture, actors, events, `use`. |
 | `DataTable` | `hashes()` raw rows; `rows(Schema.Struct)` typed decode. |
 | `ExpressionParams<S>` | The parameter tuple derived from an expression literal (type-level). |
+| `TestAuth` / `registerVerifiedCustomer` / `signInPassword` | The auth test kit: real service over in-memory store, recording sender, verified registration. |
+| `norm` / `ddMmYyyyToIso` | Feature-text conventions: locale-safe comparison, dd/MM/yyyy → ISO. |
 
-Dependencies: `@cucumber/gherkin` (parser + pickles, dialects), `@cucumber/cucumber-expressions` (matching) — libraries, not a runner. The fixture app under `test/` is a full working example (event store, outbox-driven mails, projection-backed query, business failures, a French feature with an outline); its features are the package's own test suite.
+Dependencies: `@cucumber/gherkin` (parser + pickles, dialects), `@cucumber/cucumber-expressions` (matching) — libraries, not a runner; `@structure-ai/auth` for the test kit. The fixture app under `test/` is a full working example (event store, outbox-driven mails, projection-backed query, business failures, a French feature with an outline); its features are the package's own test suite.

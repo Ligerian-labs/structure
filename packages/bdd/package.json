@@ -28,6 +28,7 @@
     "@cucumber/gherkin": "catalog:",
     "@cucumber/cucumber-expressions": "catalog:",
     "@cucumber/messages": "catalog:",
+    "@structure-ai/auth": "workspace:*",
     "@structure-ai/cqrs": "workspace:*",
     "@structure-ai/eventsourcing": "workspace:*"
   },

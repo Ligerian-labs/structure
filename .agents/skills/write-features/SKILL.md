@@ -27,9 +27,10 @@ test/
 
 ## Conventions
 
-- **Asserting failures**: dispatch/query record exits — never throw on business errors. `Then` steps call `world.expectFailure("Backordered")` / `expectFailure("ValidationFailed", "end date")`; successes via `world.expectSuccess()` and the typed value the step captured.
+- **Asserting failures**: dispatch/query/attempt record exits — never throw on business errors. `Then` steps call `world.expectFailure("Backordered")` / `expectFailure("ValidationFailed", "end date")`; successes via `world.expectSuccess()` and the typed value the step captured. `world.attempt(effect)` extends the same capture to non-bus calls (auth service, ports).
 - **Actors**: `world.signIn(email, userId)` in a `Given`, dispatches run as `world.currentActor`.
-- **Money/dates in features**: locale formatting emits non-breaking spaces — compare with `s.replace(/\s+/g, " ").trim()` on both sides (see the package's fixture steps).
+- **Auth flows**: use the auth kit — `TestAuth.make({ tenantId, baseUrl })` once per world (real `AuthService` over in-memory store, recorded e-mails with unwrapped tokens), `registerVerifiedCustomer({ testAuth, email, password })` for the register-verify-sign-in `Given`, `signInPassword` for fixture sign-ins, and raw service calls through `world.attempt` when a scenario asserts a tagged auth failure (`InvalidCredentials`, ...).
+- **Money/dates in features**: use the shipped conventions — `norm()` for locale-safe comparison (fr-FR money emits narrow no-break spaces) and `ddMmYyyyToIso()` for the dd/MM/yyyy table convention. Express absence in tables with `NULL` + `table.rows(schema, { nullLiteral: "NULL" })`.
 - **Business steps stay business-y**: app-specific English (or French) sentences bound to typed commands; do not expose `{json}` payloads or command tags to feature files.
 - **Wiring is loud**: an undefined or ambiguous step fails the suite at load with `file:line`; there are no silent skips. `@wip` scenarios are todo and exempt.
 - **Dialects**: `# language: fr` at the top of a feature; step-definition keywords stay `Given/When/Then`.
