@@ -1,0 +1,38 @@
+{
+  "name": "@structure-ai/bdd",
+  "version": "0.0.0",
+  "description": "Gherkin feature testing on bun test: Effect-native step definitions, per-scenario worlds with typed dispatch/query, schema-decoded data tables, and owned eventual consistency.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/bdd"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@cucumber/gherkin": "catalog:",
+    "@cucumber/cucumber-expressions": "catalog:",
+    "@cucumber/messages": "catalog:",
+    "@structure-ai/cqrs": "workspace:*",
+    "@structure-ai/eventsourcing": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}
