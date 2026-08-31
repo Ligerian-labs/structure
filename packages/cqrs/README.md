@@ -33,7 +33,7 @@ const program = Effect.gen(function* () {
 | --- | --- |
 | `Command.define(tag, { payload, success, failure? })` / `Query.define` | Intent-named message definitions; `failure` types the handler's error channel (in-process only). |
 | `CommandHandler.make` / `QueryHandler.make` | Bind a definition to a handler `(payload, dispatch) => Effect`; `dispatch` carries messageId, correlationId, causationId, actor, idempotencyKey. |
-| `HandlerRegistry.layer(...registrations)` | Collects handlers (duplicate tag = defect at build time); resolves handler service requirements at layer build. |
+| `HandlerRegistry.layer(...registrations)` | Collects handlers (duplicate tag = defect at build time); captures handler service requirements from the context at build — satisfy them with `Layer.provideMerge`, not `Layer.provide`, or the services are spent building the registry and missing from the runtime context (missing-service defects at dispatch, invisible to the type checker). |
 | `CommandBus` / `QueryBus` (+ `.layer`, convenience `layer`) | `dispatch(definition, input, { idempotencyKey?, actor?, timeout? })`. |
 | `Authorizer` (+ `allowAll`) | Hook authorizing the requested action (tag/kind/actor/payload), not the endpoint. |
 | `IdempotencyStore` (+ `inMemory`) | Completed keys replay the cached success without re-running the handler. Durable exactly-once belongs to `@structure-ai/eventsourcing`'s inbox. |
