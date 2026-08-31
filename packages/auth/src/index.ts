@@ -17,12 +17,19 @@ export {
   AuthValidationError,
   EmailNotVerified,
   IdentityConflict,
+  InvalidAuthRoutes,
   InvalidAuthToken,
   InvalidCredentials,
   RateLimitExceeded,
   UnsupportedPasskey,
 } from "./errors.js";
-export { type AuthHandler, type AuthHandlerOptions, makeAuthHandler } from "./http.js";
+export {
+  type AuthHandler,
+  type AuthHandlerOptions,
+  type AuthRouteId,
+  type AuthRouteViolation,
+  makeAuthHandler,
+} from "./http.js";
 export type {
   AuthEmail,
   AuthSession,

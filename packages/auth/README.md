@@ -41,10 +41,12 @@ const auth = makeAuth({
   audit: applicationAuditSink,
 });
 
-const { handler } = makeAuthHandler(auth, {
-  // Resolve tenant from trusted host/routing data, never a JSON body field.
-  resolveTenant: (request) => resolveTenantFromHost(request),
-});
+const { handler } = await Effect.runPromise(
+  makeAuthHandler(auth, {
+    // Resolve tenant from trusted host/routing data, never a JSON body field.
+    resolveTenant: (request) => resolveTenantFromHost(request),
+  }),
+);
 ```
 
 `allowAllRateLimiter` is exported for tests and local prototypes. Production composition must provide a durable/shared limiter appropriate to its topology.
@@ -96,27 +98,46 @@ Password reset and magic-link request methods deliberately return no account-exi
 
 ## HTTP routes
 
-`makeAuthHandler` defaults to `/auth`, accepts JSON bodies up to 64 KiB, checks mutation origins, resolves the tenant through the caller, maps errors without internal causes, and sets `Cache-Control: no-store`.
+`makeAuthHandler` validates its route table at construction and returns `Effect<AuthHandler, InvalidAuthRoutes>`. It accepts JSON bodies up to 64 KiB, checks mutation origins, resolves the tenant through the caller, maps errors without internal causes, and sets `Cache-Control: no-store`. Routes default to the `/auth` namespace (`basePath` moves it).
 
-| Method | Path |
-| --- | --- |
-| POST | `/auth/register/password` |
-| POST | `/auth/verify-email` |
-| POST | `/auth/email-verification/request` |
-| POST | `/auth/sign-in/password` |
-| POST | `/auth/sign-out` |
-| GET | `/auth/session` |
-| POST | `/auth/password/reset/request` |
-| POST | `/auth/password/reset/complete` |
-| POST | `/auth/password/change` |
-| POST | `/auth/magic-link/request` |
-| POST | `/auth/magic-link/consume` |
-| POST | `/auth/oauth/:provider/start` |
-| GET | `/auth/oauth/:provider/callback` |
-| POST | `/auth/passkeys/register/options` |
-| POST | `/auth/passkeys/register/verify` |
-| POST | `/auth/passkeys/authenticate/options` |
-| POST | `/auth/passkeys/authenticate/verify` |
+| Route id | Method | Default path |
+| --- | --- | --- |
+| `registerPassword` | POST | `/auth/register/password` |
+| `verifyEmail` | POST | `/auth/verify-email` |
+| `requestEmailVerification` | POST | `/auth/email-verification/request` |
+| `signInPassword` | POST | `/auth/sign-in/password` |
+| `signOut` | POST | `/auth/sign-out` |
+| `getSession` | GET | `/auth/session` |
+| `requestPasswordReset` | POST | `/auth/password/reset/request` |
+| `resetPassword` | POST | `/auth/password/reset/complete` |
+| `changePassword` | POST | `/auth/password/change` |
+| `requestMagicLink` | POST | `/auth/magic-link/request` |
+| `consumeMagicLink` | POST | `/auth/magic-link/consume` |
+| `oauthStart` | POST | `/auth/oauth/:provider/start` |
+| `oauthCallback` | GET | `/auth/oauth/:provider/callback` |
+| `passkeyRegisterOptions` | POST | `/auth/passkeys/register/options` |
+| `passkeyRegisterVerify` | POST | `/auth/passkeys/register/verify` |
+| `passkeyAuthenticateOptions` | POST | `/auth/passkeys/authenticate/options` |
+| `passkeyAuthenticateVerify` | POST | `/auth/passkeys/authenticate/verify` |
+
+### Route overrides
+
+`routes` remaps individual paths through stable route ids. Values are absolute paths: an overridden route is served at exactly that path (its HTTP method unchanged) and leaves the base namespace; every other route keeps its default. `oauthStart` and `oauthCallback` overrides must contain exactly one `:provider` segment; all other routes accept literal paths only.
+
+```ts
+const { handler } = await Effect.runPromise(
+  makeAuthHandler(auth, {
+    resolveTenant: (request) => resolveTenantFromHost(request),
+    basePath: "/api/auth",
+    routes: {
+      signInPassword: "/login",
+      oauthStart: "/login/oauth/:provider/start",
+    },
+  }),
+);
+```
+
+Invalid shapes, unknown ids, and same-method path collisions (a `:provider` segment matches any single segment, including defaults) fail construction with every violation aggregated in `InvalidAuthRoutes` — overrides never shadow each other silently at runtime. Renaming paths changes neither cookie paths nor the origin/tenant/error envelope. Route ids are contract-stable; renaming an id is a breaking change.
 
 Magic-link/reset/verification emails land on application pages. Those pages POST the token to the matching endpoint so link scanners do not consume credentials merely by fetching a URL.
 
@@ -161,12 +182,12 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 | Export group | Purpose |
 | --- | --- |
 | `makeAuth`, `AuthService`, `MakeAuthOptions` | Main Effect workflow service. |
-| `makeAuthHandler`, `AuthHandlerOptions` | Web-standard transport adapter. |
+| `makeAuthHandler`, `AuthHandlerOptions`, `AuthRouteId`, `AuthRouteViolation` | Web-standard transport adapter with configurable route paths. |
 | `AuthStore`, `inMemoryAuthStore` | Persistence port and development/test adapter. |
 | `argon2id`, `PasswordHasher` | Bun Argon2id implementation and replacement port. |
 | `OAuthProvider*`, `builtInOAuthProvider`, `fetchOAuthHttpClient` | Provider definitions, tenant resolver, exchange/profile engine, HTTP port. |
 | `verifyPasskeyRegistration`, `verifyPasskeyAuthentication` | Strict WebAuthn/COSE verification used by the service. |
 | `RateLimiter`, `AuthAuditSink`, `AccountLinkPolicy`, `EmailSender` | Application policy and side-effect ports. |
-| `Auth*Error`, `RateLimitExceeded`, `UnsupportedPasskey` | Classified safe failures. |
+| `Auth*Error`, `InvalidAuthRoutes`, `RateLimitExceeded`, `UnsupportedPasskey` | Classified safe failures. |
 
 See `test/` for executable password, magic-link, OAuth, passkey, rate-limit/audit, and HTTP examples.

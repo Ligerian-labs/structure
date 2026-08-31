@@ -6,6 +6,7 @@ import {
   AuthValidationError,
   EmailNotVerified,
   IdentityConflict,
+  InvalidAuthRoutes,
   InvalidAuthToken,
   InvalidCredentials,
   RateLimitExceeded,
@@ -20,6 +21,16 @@ export interface AuthHandlerOptions {
     request: Request,
   ) => Effect.Effect<TenantId, AuthDependencyError | AuthValidationError>;
   readonly basePath?: string;
+  /**
+   * Absolute path overrides for individual routes, keyed by stable route id.
+   * An overridden route is served at exactly the given path (its fixed HTTP
+   * method unchanged) and leaves the `basePath` namespace; every other route
+   * keeps its default `${basePath}/...` path. `oauthStart` and `oauthCallback`
+   * overrides must contain exactly one `:provider` segment; all other routes
+   * accept literal paths only. Invalid shapes and same-method path collisions
+   * fail construction with `InvalidAuthRoutes`.
+   */
+  readonly routes?: Partial<Record<AuthRouteId, string>>;
   readonly maxBodyBytes?: number;
   readonly allowOrigin?: (
     tenantId: TenantId,
@@ -168,13 +179,196 @@ const errorResponse = (error: AuthServiceError): Response => {
   return jsonResponse(503, { error: "AuthUnavailable", message: "Authentication is unavailable" });
 };
 
-const routeParts = (pathname: string, basePath: string): ReadonlyArray<string> | undefined => {
-  if (pathname !== basePath && !pathname.startsWith(`${basePath}/`)) return undefined;
-  return pathname
-    .slice(basePath.length)
+const PROVIDER_PARAM = ":provider";
+const OAUTH_ROUTES: ReadonlySet<string> = new Set(["oauthStart", "oauthCallback"]);
+
+const AUTH_ROUTE_IDS = [
+  "registerPassword",
+  "verifyEmail",
+  "requestEmailVerification",
+  "signInPassword",
+  "signOut",
+  "getSession",
+  "requestPasswordReset",
+  "resetPassword",
+  "changePassword",
+  "requestMagicLink",
+  "consumeMagicLink",
+  "oauthStart",
+  "oauthCallback",
+  "passkeyRegisterOptions",
+  "passkeyRegisterVerify",
+  "passkeyAuthenticateOptions",
+  "passkeyAuthenticateVerify",
+] as const;
+
+export type AuthRouteId = (typeof AUTH_ROUTE_IDS)[number];
+
+type RouteMethod = "GET" | "POST";
+
+interface CompiledRoute {
+  readonly id: AuthRouteId;
+  readonly method: RouteMethod;
+  readonly segments: ReadonlyArray<string>;
+}
+
+export interface AuthRouteViolation {
+  readonly route: string;
+  readonly reason: string;
+}
+
+const DEFAULT_ROUTE_SUFFIXES: Readonly<Record<AuthRouteId, readonly [RouteMethod, string]>> = {
+  registerPassword: ["POST", "register/password"],
+  verifyEmail: ["POST", "verify-email"],
+  requestEmailVerification: ["POST", "email-verification/request"],
+  signInPassword: ["POST", "sign-in/password"],
+  signOut: ["POST", "sign-out"],
+  getSession: ["GET", "session"],
+  requestPasswordReset: ["POST", "password/reset/request"],
+  resetPassword: ["POST", "password/reset/complete"],
+  changePassword: ["POST", "password/change"],
+  requestMagicLink: ["POST", "magic-link/request"],
+  consumeMagicLink: ["POST", "magic-link/consume"],
+  oauthStart: ["POST", `oauth/${PROVIDER_PARAM}/start`],
+  oauthCallback: ["GET", `oauth/${PROVIDER_PARAM}/callback`],
+  passkeyRegisterOptions: ["POST", "passkeys/register/options"],
+  passkeyRegisterVerify: ["POST", "passkeys/register/verify"],
+  passkeyAuthenticateOptions: ["POST", "passkeys/authenticate/options"],
+  passkeyAuthenticateVerify: ["POST", "passkeys/authenticate/verify"],
+};
+
+const isAuthRouteId = (value: string): value is AuthRouteId =>
+  (AUTH_ROUTE_IDS as readonly string[]).includes(value);
+
+const overrideSegments = (path: string): ReadonlyArray<string> => path.slice(1).split("/");
+
+const overridePathProblem = (path: string): string | undefined => {
+  if (path === "" || !path.startsWith("/")) return "must be a literal path starting with /";
+  if (path.includes("?") || path.includes("#")) {
+    return "must be a literal path without a query or fragment";
+  }
+  const segments = overrideSegments(path);
+  if (segments.some((segment) => segment.length === 0)) {
+    return "must be a literal path without empty segments";
+  }
+  if (segments.some((segment) => segment.includes(":") && segment !== PROVIDER_PARAM)) {
+    return `only the ${PROVIDER_PARAM} parameter segment is supported`;
+  }
+  return undefined;
+};
+
+const patternsOverlap = (a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean =>
+  a.length === b.length &&
+  a.every((segment, index) => {
+    const other = b[index];
+    if (other === undefined) return false;
+    return segment === other || segment === PROVIDER_PARAM || other === PROVIDER_PARAM;
+  });
+
+const compileRoutes = (
+  basePath: string,
+  overrides: Partial<Record<AuthRouteId, string>> | undefined,
+): {
+  readonly routes: ReadonlyArray<CompiledRoute>;
+  readonly violations: ReadonlyArray<AuthRouteViolation>;
+} => {
+  const violations: Array<AuthRouteViolation> = [];
+  const overridden = new Map<AuthRouteId, ReadonlyArray<string>>();
+
+  for (const [id, value] of Object.entries(overrides ?? {})) {
+    if (!isAuthRouteId(id)) {
+      violations.push({ route: id, reason: "is not a known auth route id" });
+      continue;
+    }
+    if (typeof value !== "string") {
+      violations.push({ route: id, reason: "override must be a string" });
+      continue;
+    }
+    const problem = overridePathProblem(value);
+    if (problem !== undefined) {
+      violations.push({ route: id, reason: problem });
+      continue;
+    }
+    const segments = overrideSegments(value);
+    const providerCount = segments.filter((segment) => segment === PROVIDER_PARAM).length;
+    if (OAUTH_ROUTES.has(id) ? providerCount !== 1 : providerCount !== 0) {
+      violations.push({
+        route: id,
+        reason: OAUTH_ROUTES.has(id)
+          ? `must contain exactly one ${PROVIDER_PARAM} segment`
+          : `must not contain a ${PROVIDER_PARAM} segment`,
+      });
+      continue;
+    }
+    overridden.set(id, segments);
+  }
+
+  const baseSegments: ReadonlyArray<string> = basePath
     .split("/")
-    .filter((part) => part.length > 0)
-    .map(decodeURIComponent);
+    .filter((segment) => segment.length > 0);
+  const routes: ReadonlyArray<CompiledRoute> = AUTH_ROUTE_IDS.map((id) => {
+    const [method, suffix] = DEFAULT_ROUTE_SUFFIXES[id];
+    return {
+      id,
+      method,
+      segments: overridden.get(id) ?? [...baseSegments, ...suffix.split("/")],
+    };
+  });
+
+  for (let i = 0; i < routes.length; i++) {
+    for (let j = i + 1; j < routes.length; j++) {
+      const first = routes[i];
+      const second = routes[j];
+      if (first === undefined || second === undefined) continue;
+      if (first.method !== second.method || !patternsOverlap(first.segments, second.segments)) {
+        continue;
+      }
+      violations.push({
+        route: first.id,
+        reason: `path /${first.segments.join("/")} (${first.method}) is claimed by both ${first.id} and ${second.id}`,
+      });
+    }
+  }
+
+  return { routes, violations };
+};
+
+const decodeSegment = (segment: string): string => {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+};
+
+const matchRoute = (
+  routes: ReadonlyArray<CompiledRoute>,
+  method: string,
+  segments: ReadonlyArray<string>,
+): { readonly route: CompiledRoute; readonly provider?: string } | undefined => {
+  for (const route of routes) {
+    if (route.method !== method || route.segments.length !== segments.length) continue;
+    let provider: string | undefined;
+    let matches = true;
+    for (let index = 0; index < route.segments.length; index++) {
+      const pattern = route.segments[index];
+      const segment = segments[index];
+      if (pattern === undefined || segment === undefined) {
+        matches = false;
+        break;
+      }
+      if (pattern === PROVIDER_PARAM) {
+        provider = segment;
+        continue;
+      }
+      if (pattern !== segment) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return { route, ...(provider === undefined ? {} : { provider }) };
+  }
+  return undefined;
 };
 
 const defaultOrigin = (
@@ -183,18 +377,28 @@ const defaultOrigin = (
   request: Request,
 ): Effect.Effect<boolean> => Effect.succeed(origin === new URL(request.url).origin);
 
-export const makeAuthHandler = (auth: AuthService, options: AuthHandlerOptions): AuthHandler => {
+export const makeAuthHandler = (
+  auth: AuthService,
+  options: AuthHandlerOptions,
+): Effect.Effect<AuthHandler, InvalidAuthRoutes> => {
   const basePath = (options.basePath ?? "/auth").replace(/\/$/u, "");
   const maxBodyBytes = options.maxBodyBytes ?? 64 * 1_024;
   const allowOrigin = options.allowOrigin ?? defaultOrigin;
+  const { routes, violations } = compileRoutes(basePath, options.routes);
+  if (violations.length > 0) {
+    return Effect.fail(new InvalidAuthRoutes({ violations }));
+  }
 
   const program = (request: Request): Effect.Effect<Response, AuthServiceError> =>
     Effect.gen(function* () {
       const tenantId = yield* options.resolveTenant(request);
-      const parts = routeParts(new URL(request.url).pathname, basePath);
-      if (parts === undefined) return jsonResponse(404, { error: "NotFound" });
-      const isOAuthCallback =
-        request.method === "GET" && parts[0] === "oauth" && parts[2] === "callback";
+      const segments = new URL(request.url).pathname
+        .split("/")
+        .filter((segment) => segment.length > 0)
+        .map(decodeSegment);
+      const matched = matchRoute(routes, request.method, segments);
+      if (matched === undefined) return jsonResponse(404, { error: "NotFound" });
+      const { route, provider } = matched;
       if (request.method !== "GET" && request.method !== "HEAD") {
         const origin = request.headers.get("origin");
         if (origin === null || !(yield* allowOrigin(tenantId, origin, request))) {
@@ -203,189 +407,195 @@ export const makeAuthHandler = (auth: AuthService, options: AuthHandlerOptions):
       }
       const cookie = yield* auth.sessionTokenFromCookie(tenantId, request.headers.get("cookie"));
 
-      if (request.method === "POST" && parts.join("/") === "register/password") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const email = yield* requiredString(body, "email");
-        const password = yield* requiredString(body, "password");
-        const displayName = yield* stringField(body, "displayName", true);
-        const user = yield* auth.registerPassword({
-          tenantId,
-          email,
-          password,
-          ...(displayName === undefined ? {} : { displayName }),
-        });
-        return jsonResponse(201, { user });
-      }
-      if (request.method === "POST" && parts.join("/") === "verify-email") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const user = yield* auth.verifyEmail(
-          tenantId,
-          Redacted.make(yield* requiredString(body, "token")),
-        );
-        return jsonResponse(200, { user });
-      }
-      if (request.method === "POST" && parts.join("/") === "email-verification/request") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        yield* auth.requestEmailVerification(tenantId, yield* requiredString(body, "email"));
-        return jsonResponse(202, { accepted: true });
-      }
-      if (request.method === "POST" && parts.join("/") === "sign-in/password") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const session = yield* auth.signInPassword(
-          tenantId,
-          yield* requiredString(body, "email"),
-          yield* requiredString(body, "password"),
-        );
-        return jsonResponse(
-          200,
-          { user: session.user, expiresAt: session.expiresAt },
-          {
-            "set-cookie": yield* auth.sessionCookie(tenantId, session),
-          },
-        );
-      }
-      if (request.method === "POST" && parts.join("/") === "sign-out") {
-        if (cookie !== undefined) yield* auth.signOut(tenantId, cookie);
-        return jsonResponse(
-          200,
-          { signedOut: true },
-          {
-            "set-cookie": yield* auth.sessionCookie(tenantId, undefined),
-          },
-        );
-      }
-      if (request.method === "GET" && parts.join("/") === "session") {
-        if (cookie === undefined) return jsonResponse(200, { session: null });
-        const session = yield* auth.getSession(tenantId, cookie);
-        return jsonResponse(200, { session: { user: session.user, expiresAt: session.expiresAt } });
-      }
-      if (request.method === "POST" && parts.join("/") === "password/reset/request") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        yield* auth.requestPasswordReset(tenantId, yield* requiredString(body, "email"));
-        return jsonResponse(202, { accepted: true });
-      }
-      if (request.method === "POST" && parts.join("/") === "password/reset/complete") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const session = yield* auth.resetPassword(
-          tenantId,
-          Redacted.make(yield* requiredString(body, "token")),
-          yield* requiredString(body, "newPassword"),
-        );
-        return jsonResponse(
-          200,
-          { user: session.user, expiresAt: session.expiresAt },
-          {
-            "set-cookie": yield* auth.sessionCookie(tenantId, session),
-          },
-        );
-      }
-      if (request.method === "POST" && parts.join("/") === "password/change") {
-        if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const session = yield* auth.changePassword(
-          tenantId,
-          cookie,
-          yield* requiredString(body, "currentPassword"),
-          yield* requiredString(body, "newPassword"),
-        );
-        return jsonResponse(
-          200,
-          { user: session.user, expiresAt: session.expiresAt },
-          {
-            "set-cookie": yield* auth.sessionCookie(tenantId, session),
-          },
-        );
-      }
-      if (request.method === "POST" && parts.join("/") === "magic-link/request") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        yield* auth.requestMagicLink(tenantId, yield* requiredString(body, "email"));
-        return jsonResponse(202, { accepted: true });
-      }
-      if (request.method === "POST" && parts.join("/") === "magic-link/consume") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const session = yield* auth.consumeMagicLink(
-          tenantId,
-          Redacted.make(yield* requiredString(body, "token")),
-        );
-        return jsonResponse(
-          200,
-          { user: session.user, expiresAt: session.expiresAt },
-          {
-            "set-cookie": yield* auth.sessionCookie(tenantId, session),
-          },
-        );
-      }
-      if (request.method === "POST" && parts[0] === "oauth" && parts[2] === "start") {
-        const provider = parts[1];
-        if (provider === undefined) {
-          return yield* new AuthValidationError({ field: "provider", reason: "is required" });
+      switch (route.id) {
+        case "registerPassword": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const email = yield* requiredString(body, "email");
+          const password = yield* requiredString(body, "password");
+          const displayName = yield* stringField(body, "displayName", true);
+          const user = yield* auth.registerPassword({
+            tenantId,
+            email,
+            password,
+            ...(displayName === undefined ? {} : { displayName }),
+          });
+          return jsonResponse(201, { user });
         }
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const returnTo = yield* stringField(body, "returnTo", true);
-        return jsonResponse(200, yield* auth.beginOAuth(tenantId, provider, returnTo));
-      }
-      if (isOAuthCallback) {
-        const provider = parts[1];
-        if (provider === undefined) {
-          return yield* new AuthValidationError({ field: "provider", reason: "is required" });
+        case "verifyEmail": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const user = yield* auth.verifyEmail(
+            tenantId,
+            Redacted.make(yield* requiredString(body, "token")),
+          );
+          return jsonResponse(200, { user });
         }
-        const url = new URL(request.url);
-        const state = url.searchParams.get("state");
-        const code = url.searchParams.get("code");
-        if (state === null || code === null) {
-          return yield* new AuthValidationError({
-            field: "oauth",
-            reason: "state and code are required",
+        case "requestEmailVerification": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          yield* auth.requestEmailVerification(tenantId, yield* requiredString(body, "email"));
+          return jsonResponse(202, { accepted: true });
+        }
+        case "signInPassword": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const session = yield* auth.signInPassword(
+            tenantId,
+            yield* requiredString(body, "email"),
+            yield* requiredString(body, "password"),
+          );
+          return jsonResponse(
+            200,
+            { user: session.user, expiresAt: session.expiresAt },
+            {
+              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+            },
+          );
+        }
+        case "signOut": {
+          if (cookie !== undefined) yield* auth.signOut(tenantId, cookie);
+          return jsonResponse(
+            200,
+            { signedOut: true },
+            {
+              "set-cookie": yield* auth.sessionCookie(tenantId, undefined),
+            },
+          );
+        }
+        case "getSession": {
+          if (cookie === undefined) return jsonResponse(200, { session: null });
+          const session = yield* auth.getSession(tenantId, cookie);
+          return jsonResponse(200, {
+            session: { user: session.user, expiresAt: session.expiresAt },
           });
         }
-        const completed = yield* auth.completeOAuth({
-          tenantId,
-          provider,
-          state: Redacted.make(state),
-          code: Redacted.make(code),
-          ...(cookie === undefined ? {} : { currentSessionToken: cookie }),
-        });
-        return jsonResponse(
-          200,
-          { user: completed.session.user, returnTo: completed.returnTo },
-          {
-            "set-cookie": yield* auth.sessionCookie(tenantId, completed.session),
-          },
-        );
-      }
-      if (request.method === "POST" && parts.join("/") === "passkeys/register/options") {
-        if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
-        return jsonResponse(200, yield* auth.beginPasskeyRegistration(tenantId, cookie));
-      }
-      if (request.method === "POST" && parts.join("/") === "passkeys/register/verify") {
-        if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
-        const body = yield* decodeBody(request, maxBodyBytes);
-        yield* auth.finishPasskeyRegistration(tenantId, cookie, yield* registrationResponse(body));
-        return jsonResponse(200, { registered: true });
-      }
-      if (request.method === "POST" && parts.join("/") === "passkeys/authenticate/options") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const email = yield* stringField(body, "email", true);
-        return jsonResponse(200, yield* auth.beginPasskeyAuthentication(tenantId, email));
-      }
-      if (request.method === "POST" && parts.join("/") === "passkeys/authenticate/verify") {
-        const body = yield* decodeBody(request, maxBodyBytes);
-        const session = yield* auth.finishPasskeyAuthentication(
-          tenantId,
-          yield* authenticationResponse(body),
-        );
-        return jsonResponse(
-          200,
-          { user: session.user, expiresAt: session.expiresAt },
-          {
-            "set-cookie": yield* auth.sessionCookie(tenantId, session),
-          },
-        );
+        case "requestPasswordReset": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          yield* auth.requestPasswordReset(tenantId, yield* requiredString(body, "email"));
+          return jsonResponse(202, { accepted: true });
+        }
+        case "resetPassword": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const session = yield* auth.resetPassword(
+            tenantId,
+            Redacted.make(yield* requiredString(body, "token")),
+            yield* requiredString(body, "newPassword"),
+          );
+          return jsonResponse(
+            200,
+            { user: session.user, expiresAt: session.expiresAt },
+            {
+              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+            },
+          );
+        }
+        case "changePassword": {
+          if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const session = yield* auth.changePassword(
+            tenantId,
+            cookie,
+            yield* requiredString(body, "currentPassword"),
+            yield* requiredString(body, "newPassword"),
+          );
+          return jsonResponse(
+            200,
+            { user: session.user, expiresAt: session.expiresAt },
+            {
+              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+            },
+          );
+        }
+        case "requestMagicLink": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          yield* auth.requestMagicLink(tenantId, yield* requiredString(body, "email"));
+          return jsonResponse(202, { accepted: true });
+        }
+        case "consumeMagicLink": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const session = yield* auth.consumeMagicLink(
+            tenantId,
+            Redacted.make(yield* requiredString(body, "token")),
+          );
+          return jsonResponse(
+            200,
+            { user: session.user, expiresAt: session.expiresAt },
+            {
+              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+            },
+          );
+        }
+        case "oauthStart": {
+          if (provider === undefined) {
+            return yield* new AuthValidationError({ field: "provider", reason: "is required" });
+          }
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const returnTo = yield* stringField(body, "returnTo", true);
+          return jsonResponse(200, yield* auth.beginOAuth(tenantId, provider, returnTo));
+        }
+        case "oauthCallback": {
+          if (provider === undefined) {
+            return yield* new AuthValidationError({ field: "provider", reason: "is required" });
+          }
+          const url = new URL(request.url);
+          const state = url.searchParams.get("state");
+          const code = url.searchParams.get("code");
+          if (state === null || code === null) {
+            return yield* new AuthValidationError({
+              field: "oauth",
+              reason: "state and code are required",
+            });
+          }
+          const completed = yield* auth.completeOAuth({
+            tenantId,
+            provider,
+            state: Redacted.make(state),
+            code: Redacted.make(code),
+            ...(cookie === undefined ? {} : { currentSessionToken: cookie }),
+          });
+          return jsonResponse(
+            200,
+            { user: completed.session.user, returnTo: completed.returnTo },
+            {
+              "set-cookie": yield* auth.sessionCookie(tenantId, completed.session),
+            },
+          );
+        }
+        case "passkeyRegisterOptions": {
+          if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
+          return jsonResponse(200, yield* auth.beginPasskeyRegistration(tenantId, cookie));
+        }
+        case "passkeyRegisterVerify": {
+          if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
+          const body = yield* decodeBody(request, maxBodyBytes);
+          yield* auth.finishPasskeyRegistration(
+            tenantId,
+            cookie,
+            yield* registrationResponse(body),
+          );
+          return jsonResponse(200, { registered: true });
+        }
+        case "passkeyAuthenticateOptions": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const email = yield* stringField(body, "email", true);
+          return jsonResponse(200, yield* auth.beginPasskeyAuthentication(tenantId, email));
+        }
+        case "passkeyAuthenticateVerify": {
+          const body = yield* decodeBody(request, maxBodyBytes);
+          const session = yield* auth.finishPasskeyAuthentication(
+            tenantId,
+            yield* authenticationResponse(body),
+          );
+          return jsonResponse(
+            200,
+            { user: session.user, expiresAt: session.expiresAt },
+            {
+              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+            },
+          );
+        }
       }
       return jsonResponse(404, { error: "NotFound" });
     });
 
-  return {
+  return Effect.succeed({
     handler: (request) =>
       Effect.runPromise(
         program(request).pipe(
@@ -400,5 +610,5 @@ export const makeAuthHandler = (auth: AuthService, options: AuthHandlerOptions):
           ),
         ),
       ),
-  };
+  });
 };

@@ -65,9 +65,11 @@ export const TestAuth = {
       },
       rateLimiter: allowAllRateLimiter,
     });
-    const authHandler = makeAuthHandler(auth, {
-      resolveTenant: () => Effect.succeed(options.tenantId),
-    });
+    const authHandler = Effect.runSync(
+      makeAuthHandler(auth, {
+        resolveTenant: () => Effect.succeed(options.tenantId),
+      }),
+    );
     return { tenantId: options.tenantId, auth, authHandler, emails };
   },
 };

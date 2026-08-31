@@ -23,7 +23,7 @@ const auth = makeAuth({
 });
 ```
 
-2. **Expose the routes**: `makeAuthHandler(auth, { resolveTenant })` — defaults to `/auth`, tenant resolved from trusted host/routing data (never a JSON body field), origins checked on mutations, `Cache-Control: no-store`. Token pages POST the token so link scanners don't consume credentials.
+2. **Expose the routes**: `makeAuthHandler(auth, { resolveTenant })` returns `Effect<AuthHandler, InvalidAuthRoutes>` — run it with `Effect.runPromise` or compose it in your startup `Effect.gen`. Defaults to `/auth`, tenant resolved from trusted host/routing data (never a JSON body field), origins checked on mutations, `Cache-Control: no-store`. Token pages POST the token so link scanners don't consume credentials. Remap individual paths with `routes` (stable route ids) — see the `override-auth-routes` skill.
 3. **Pick the store**:
    - `inMemoryAuthStore()` — tests and local dev only.
    - `@structure-ai/auth-sqlite` / `auth-pg` — durable: `migrate(sql[, { tablePrefix }])` in the designated migration process, then `makeAuthStore(sql[, options])`.

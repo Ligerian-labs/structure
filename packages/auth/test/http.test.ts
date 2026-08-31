@@ -46,14 +46,18 @@ describe("auth HTTP handler", () => {
       emailSender: { send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid) },
       rateLimiter: allowAllRateLimiter,
     });
-    const http = makeAuthHandler(auth, {
-      resolveTenant: (incoming) => {
-        const tenant = incoming.headers.get("x-tenant");
-        return tenant === null
-          ? Effect.fail(new AuthValidationError({ field: "tenant", reason: "header is required" }))
-          : Effect.succeed(tenant);
-      },
-    });
+    const http = await Effect.runPromise(
+      makeAuthHandler(auth, {
+        resolveTenant: (incoming) => {
+          const tenant = incoming.headers.get("x-tenant");
+          return tenant === null
+            ? Effect.fail(
+                new AuthValidationError({ field: "tenant", reason: "header is required" }),
+              )
+            : Effect.succeed(tenant);
+        },
+      }),
+    );
 
     const requested = await http.handler(
       request("/auth/magic-link/request", {
@@ -108,9 +112,11 @@ describe("auth HTTP handler", () => {
       emailSender: { send: () => Effect.void },
       rateLimiter: allowAllRateLimiter,
     });
-    const http = makeAuthHandler(auth, {
-      resolveTenant: () => Effect.succeed("tenant-a"),
-    });
+    const http = await Effect.runPromise(
+      makeAuthHandler(auth, {
+        resolveTenant: () => Effect.succeed("tenant-a"),
+      }),
+    );
 
     const crossOrigin = await http.handler(
       request(
