@@ -44,8 +44,8 @@ Bun ≥ 1.3 (isolated workspace installs). Postgres tests skip unless `DATABASE_
 Releases are tag-driven and lockstep (`.github/workflows/release.yml`). Pushing a tag `vX.Y.Z` (or `vX.Y.Z-rc.N` for a prerelease):
 
 1. re-runs every verification gate (lint, typecheck, all tests including the Postgres suite);
-2. stamps the tag version into every `packages/*/package.json` — the repo itself stays at `0.0.0`, versions exist only on tags;
-3. publishes all packages to npm in dependency order with `bun publish` (`workspace:*` and `catalog:` are resolved to real versions at pack time; packages ship as TypeScript source — no build step);
+2. stamps the tag version into every `packages/*/package.json` and rewrites every `workspace:` spec to that version — the repo itself stays at `0.0.0`, versions exist only on tags (`bun publish` resolves `workspace:*` against install-time versions, i.e. `0.0.0`, so the manifests must be corrected before packing);
+3. publishes all packages to npm in dependency order with `bun publish` (internal deps are pinned to the tag version in lockstep; `catalog:` specs are resolved at pack time; packages ship as TypeScript source — no build step);
 4. creates a GitHub release with generated notes.
 
 Prereleases (any version with a `-` suffix) publish under the `next` dist-tag and are marked prerelease on GitHub. Already-published versions are skipped, so a failed run can be re-run safely. The workflow needs an `NPM_TOKEN` repository secret with publish rights on the npm scope.

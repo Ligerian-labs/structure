@@ -99,6 +99,8 @@ export const handlers = HandlerRegistry.layer(
 
 The bus validates payload shape, authorizes the action, handles idempotency keys, and traces the dispatch — the handler stays thin.
 
+One wiring rule: `HandlerRegistry.layer` captures each handler's service requirements from the context when the registry layer is built, and the requirements then disappear from the types. Compose every layer that satisfies them with `Layer.provideMerge`, never plain `Layer.provide`: `provide` spends the services building the registry, so they are missing from the runtime context, and anything else that needs them (the HTTP bridge, a projection worker, direct store access) fails with a missing-service defect at dispatch — far from the wiring that caused it.
+
 To authorize for real, declare a policy and build the bus `Authorizer` from it (`@structure-ai/authorization`); the HTTP layer attaches the caller's `Principal` per request and the same policy guards any route or tool:
 
 ```ts

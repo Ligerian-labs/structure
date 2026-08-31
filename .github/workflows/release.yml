@@ -66,10 +66,27 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # Stamp the tag version and rewrite every `workspace:` spec to it.
+          # bun publish resolves `workspace:*` against the versions recorded
+          # at install time — 0.0.0, because install ran before stamping —
+          # and that is exactly what shipped in the v0.0.x releases: internal
+          # deps pointing at an unresolvable 0.0.0. Rewriting here makes the
+          # manifests correct regardless of what the packer does.
           for manifest in packages/*/package.json; do
-            jq --arg v "$VERSION" '.version = $v' "$manifest" > "$manifest.tmp"
+            jq --arg v "$VERSION" '
+              def rewrite: with_entries(if (.value | startswith("workspace:")) then .value = $v else . end);
+              .version = $v
+              | (if has("dependencies") then .dependencies |= rewrite else . end)
+              | (if has("devDependencies") then .devDependencies |= rewrite else . end)
+              | (if has("peerDependencies") then .peerDependencies |= rewrite else . end)
+              | (if has("optionalDependencies") then .optionalDependencies |= rewrite else . end)
+            ' "$manifest" > "$manifest.tmp"
             mv "$manifest.tmp" "$manifest"
           done
+          if grep -n '"workspace:' packages/*/package.json; then
+            echo "::error::workspace: specs remain after stamping"
+            exit 1
+          fi
           for dir in packages/*/; do
             cp LICENSE "$dir"
           done
@@ -114,11 +131,19 @@ jobs:
           # a green release must mean every workspace package is installable.
           # Registry metadata propagation is eventually consistent (v0.0.6
           # false-failed seven packages ~30s after publish), so each check
-          # retries with backoff before declaring the package missing.
+          # retries with backoff before declaring the package missing. The
+          # same check also guards the published manifests: internal deps
+          # must carry real versions (the v0.0.x releases shipped them as
+          # 0.0.0, unresolvable for every consumer).
           check () {
-            local name="$1" attempt
+            local name="$1" attempt deps
             for attempt in 1 2 3 4 5 6 7 8 9 10; do
-              if [ -n "$(npm view "$name" version 2>/dev/null)" ]; then
+              deps=$(npm view "$name" dependencies --json 2>/dev/null || true)
+              if [ -n "$deps" ] && [ "$deps" != "null" ]; then
+                if printf '%s' "$deps" | grep -Eq 'workspace:|"0\.0\.0"'; then
+                  echo "::error::$name published with unresolvable internal deps: $deps"
+                  return 2
+                fi
                 return 0
               fi
               sleep 15

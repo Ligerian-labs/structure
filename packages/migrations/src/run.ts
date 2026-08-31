@@ -73,19 +73,34 @@ export const run = (
       loader: set.loader,
       ...(options.table !== undefined ? { table: options.table } : {}),
     });
+    // The upstream pg bootstrap probes `select '<table>'::regclass` and
+    // falls back to a bare CREATE TABLE when the probe fails. Inside a
+    // transaction Postgres aborts on the failed probe, so the fallback
+    // would die with "current transaction is aborted" on any database
+    // that does not have the table yet (a fresh database). Create the
+    // table idempotently first — same shape as upstream's — so the probe
+    // inside the locked transaction below always succeeds.
+    const ensureTable = sql`CREATE TABLE IF NOT EXISTS ${sql(table)} (
+      migration_id integer primary key,
+      created_at timestamp with time zone not null default now(),
+      name text not null
+    )`;
     return yield* sql.onDialectOrElse({
       pg: () =>
-        sql.withTransaction(
-          Effect.gen(function* () {
-            const rows = yield* sql<{ readonly acquired: boolean }>`
-              SELECT pg_try_advisory_xact_lock(hashtext(${table})) AS acquired
-            `;
-            if (rows[0]?.acquired !== true) {
-              return yield* locked();
-            }
-            return yield* migrate;
-          }),
-        ),
+        Effect.gen(function* () {
+          yield* ensureTable;
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const rows = yield* sql<{ readonly acquired: boolean }>`
+                SELECT pg_try_advisory_xact_lock(hashtext(${table})) AS acquired
+              `;
+              if (rows[0]?.acquired !== true) {
+                return yield* locked();
+              }
+              return yield* migrate;
+            }),
+          );
+        }),
       orElse: () =>
         Effect.gen(function* () {
           const appliedBefore = yield* readAppliedIds(table);
