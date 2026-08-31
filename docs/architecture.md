@@ -45,7 +45,7 @@ flowchart TD
     cqrs --> authorization
 ```
 
-No cycles; `migrations` and `auth` are standalone foundations (`auth` depends only on Effect), while the auth SQL adapters depend on `auth` and Bun's built-in database clients. `ai`, `mcp` and `authorization` are leaves (`http`/`mcp` never depend on `authorization` — applications compose its guards with their endpoints and tools; `authorization` never depends on `auth` — applications turn an authenticated session into a `Principal`). Auth applications inject tenant configuration, persistence, mail, audit, rate limits, and external HTTP at composition time rather than coupling authentication to another context's tables. A PR that needs to violate this direction is redesigning the system and needs an ADR.
+No cycles; `migrations` and `auth` are standalone foundations (`auth` depends only on Effect), while the auth SQL adapters depend on `auth` and Bun's built-in database clients. `ai`, `mcp`, `playwright` and `authorization` are leaves (`http`/`mcp` never depend on `authorization` — applications compose its guards with their endpoints and tools; `authorization` never depends on `auth` — applications turn an authenticated session into a `Principal`). Auth applications inject tenant configuration, persistence, mail, audit, rate limits, and external HTTP at composition time rather than coupling authentication to another context's tables. A PR that needs to violate this direction is redesigning the system and needs an ADR.
 
 ## Authentication boundary
 

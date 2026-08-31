@@ -11,3 +11,7 @@ coverage/
 thoughts/
 .claude-modified-files
 /workspace/
+# playwright local artifacts (packages/playwright)
+test-results/
+playwright-report/
+.blob-runner/

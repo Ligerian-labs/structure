@@ -1,0 +1,50 @@
+{
+  "name": "@structure-ai/playwright",
+  "version": "0.0.0",
+  "description": "Browser E2E for structure apps on Playwright: subprocess app + bearer-guarded test control plane (dispatch/query/events/drain/auth seed), plain-JS spec client with owned eventual consistency.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/playwright"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./test": {
+      "types": "./src/test.d.ts",
+      "default": "./src/test.js"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/platform": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@structure-ai/cqrs": "workspace:*",
+    "@structure-ai/eventsourcing": "workspace:*",
+    "@structure-ai/auth": "workspace:*"
+  },
+  "peerDependencies": {
+    "@playwright/test": "^1.62.0"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:",
+    "@playwright/test": "catalog:",
+    "@structure-ai/http": "workspace:*",
+    "@structure-ai/observability": "workspace:*",
+    "@structure-ai/runtime": "workspace:*"
+  }
+}
