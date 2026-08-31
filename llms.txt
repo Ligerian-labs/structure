@@ -21,7 +21,7 @@
 - [@structure-ai/cli](packages/cli/README.md): defineCommand on @effect/cli, standard --log-level/--config-file flags, classified exit codes, runCli entrypoint.
 - [@structure-ai/ai](packages/ai/README.md): LanguageModel layers for Anthropic/OpenAI from settings, generateText/generateObject with usage metrics, transient-only bounded retries, TestModel.layer for deterministic tests.
 - [@structure-ai/mcp](packages/mcp/README.md): defineMcpServer with schema-typed tools/resources, CQRS command/query→tool bridge, stdio + HTTP transports.
-- [@structure-ai/auth](packages/auth/README.md): tenant-aware password lifecycle, magic links, passkeys, Google/GitHub/X/LinkedIn OAuth, opaque sessions, Web Request handler, storage/policy/rate-limit/audit ports, in-memory test adapter; no external auth dependencies.
+- [@structure-ai/auth](packages/auth/README.md): tenant-aware password lifecycle, magic links, passkeys, Google/GitHub/X/LinkedIn OAuth, opaque sessions, Web Request handler with stable-id configurable route paths (startup-validated), storage/policy/rate-limit/audit ports, in-memory test adapter; no external auth dependencies.
 - [@structure-ai/auth-sqlite](packages/auth-sqlite/README.md): Bun-native SQLite AuthStore, schema migration, tenant-scoped constraints, atomic one-time consumption, password/session transactions, passkey counter compare-and-set.
 - [@structure-ai/auth-pg](packages/auth-pg/README.md): Bun-native PostgreSQL implementation of the same durable AuthStore and migration contract; integration tests use DATABASE_URL.
 
@@ -38,4 +38,4 @@
 - [AGENTS.md](AGENTS.md): commands, package map, hard rules, dependency direction, VCS conventions (CLAUDE.md imports it).
 - [CONTRIBUTING.md](CONTRIBUTING.md): contribution flow for humans and agents — issues, branches, tests-first, verification gates, PR template; CI mirrors the same gates.
 - [README.md](README.md): human overview and design rules.
-- Skills in `.agents/skills/*/SKILL.md`: step-by-step recipes — define-settings, add-observability, wire-runtime, create-aggregate, create-command, create-event-handler, create-view-model, add-migration, integrate-contexts, wire-sql-adapters, serve-http, create-cli-command, call-llm, add-authentication, restrict-access, expose-mcp-tool, read-app-state, write-features, install (Claude Code compatibility symlink).
+- Skills in `.agents/skills/*/SKILL.md`: step-by-step recipes — define-settings, add-observability, wire-runtime, create-aggregate, create-command, create-event-handler, create-view-model, add-migration, integrate-contexts, wire-sql-adapters, serve-http, create-cli-command, call-llm, add-authentication, override-auth-routes, restrict-access, expose-mcp-tool, read-app-state, write-features, install (Claude Code compatibility symlink).

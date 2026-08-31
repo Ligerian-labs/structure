@@ -12,6 +12,17 @@ export class AuthValidationError extends Data.TaggedError("AuthValidationError")
   }
 }
 
+export class InvalidAuthRoutes extends Data.TaggedError("InvalidAuthRoutes")<{
+  readonly violations: ReadonlyArray<{ readonly route: string; readonly reason: string }>;
+}> {
+  readonly classification: AuthFailureClass = "permanent";
+  override get message(): string {
+    return `Invalid auth route overrides: ${this.violations
+      .map((violation) => `${violation.route} ${violation.reason}`)
+      .join("; ")}`;
+  }
+}
+
 export class InvalidCredentials extends Data.TaggedError("InvalidCredentials")<{
   readonly reason?: string;
 }> {
@@ -107,6 +118,7 @@ export type AuthError =
   | EmailNotVerified
   | IdentityConflict
   | InvalidAuthToken
+  | InvalidAuthRoutes
   | InvalidCredentials
   | RateLimitExceeded
   | UnsupportedPasskey;
