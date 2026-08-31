@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@effect/experimental": "catalog:",
+    "@effect/sql-pg": "catalog:",
     "@effect/sql-sqlite-bun": "catalog:",
     "typescript": "catalog:",
     "@types/bun": "catalog:"

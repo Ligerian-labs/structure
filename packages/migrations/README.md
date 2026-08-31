@@ -38,7 +38,7 @@ const cmd = migrationsCommand(migrations);
 | --- | --- |
 | `defineMigration(id, name, up)` | One forward migration; `up` is an Effect using `SqlClient`. Ids are integers ≥ 1, ordered. |
 | `makeSet(migrations)` | Validates (unique ids, listing every problem) and orders the set. |
-| `run(set, { table? })` | Applies pending migrations in order; returns the `[id, name]` pairs applied. Fails with the library's `MigrationError` (`locked`, `failed`, ...). |
+| `run(set, { table? })` | Applies pending migrations in order; returns the `[id, name]` pairs applied. Creates the bookkeeping table when missing — safe as the very first run on a fresh database. Fails with the library's `MigrationError` (`locked`, `failed`, ...). |
 | `layer(set, options?)` | Runs migrations during layer construction — include it only in the process explicitly allowed to migrate. |
 | `status(set, options?)` | `{ applied, pending }` report; a missing bookkeeping table reads as nothing applied. |
 | `migrationsCommand(set, options?)` (from `./cli`) | Ready-made `migrations up` / `migrations status` command group. |
