@@ -26,6 +26,7 @@ Effect-based framework monorepo for agent-focused backend software. Bun workspac
 | `@structure-ai/http` | HttpApi endpoints, OpenAPI docs, health probes, CQRS endpoint bridge (declared business failures → 422), Bun server. |
 | `@structure-ai/client` | Typed API client derived from an `Api` type: correlation ids, bearer tokens, per-attempt deadlines, bounded jittered retries on transient transport failures. |
 | `@structure-ai/bdd` | Gherkin feature tests compiled into `bun test` cases: typed Effect step definitions, per-scenario worlds with exit-capturing dispatch/query, schema-decoded tables, owned eventual consistency. |
+| `@structure-ai/playwright` | Browser E2E on Playwright: config factory launching backend+frontend, bearer-guarded test control plane (dispatch/query/events/drain/auth seed), plain-JS spec client with `eventually` for eventual consistency. |
 | `@structure-ai/cli` | Typed CLI commands with classified exit codes. |
 | `@structure-ai/ai` | LLM calls (Anthropic/OpenAI) with structured output, retries, test model. |
 | `@structure-ai/mcp` | Expose tools/resources/commands to coding agents over MCP. |
@@ -36,7 +37,7 @@ Every package: `src/index.ts` is the public API, `README.md` documents it, `test
 
 ## Recipes (skills)
 
-Task-specific step-by-step guides live in `.agents/skills/*/SKILL.md` (cross-agent directory; Claude Code gets a local symlink via the `install` skill): define-settings, add-observability, wire-runtime, create-aggregate, create-command, create-event-handler, create-view-model, add-migration, integrate-contexts, wire-sql-adapters, serve-http, create-cli-command, call-llm, add-authentication, override-auth-routes, restrict-access, expose-mcp-tool, read-app-state, install. Follow them when doing the matching task.
+Task-specific step-by-step guides live in `.agents/skills/*/SKILL.md` (cross-agent directory; Claude Code gets a local symlink via the `install` skill): define-settings, add-observability, wire-runtime, create-aggregate, create-command, create-event-handler, create-view-model, add-migration, integrate-contexts, wire-sql-adapters, serve-http, create-cli-command, call-llm, add-authentication, override-auth-routes, restrict-access, expose-mcp-tool, read-app-state, write-e2e, install. Follow them when doing the matching task.
 
 ## Hard rules
 

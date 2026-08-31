@@ -285,6 +285,29 @@
         "typescript": "catalog:",
       },
     },
+    "packages/playwright": {
+      "name": "@structure-ai/playwright",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/platform": "catalog:",
+        "@effect/platform-bun": "catalog:",
+        "@structure-ai/auth": "workspace:*",
+        "@structure-ai/cqrs": "workspace:*",
+        "@structure-ai/eventsourcing": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@playwright/test": "catalog:",
+        "@structure-ai/http": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
+        "@structure-ai/runtime": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+      "peerDependencies": {
+        "@playwright/test": "^1.62.0",
+      },
+    },
     "packages/runtime": {
       "name": "@structure-ai/runtime",
       "version": "0.0.0",
@@ -347,6 +370,7 @@
     "@opentelemetry/sdk-trace-node": "^2.0.0",
     "@opentelemetry/sdk-trace-web": "^2.0.0",
     "@opentelemetry/semantic-conventions": "^1.33.0",
+    "@playwright/test": "^1.62.1",
     "@types/bun": "^1.3.14",
     "effect": "^3.22.1",
     "typescript": "^5.9.2",
@@ -484,6 +508,8 @@
 
     "@parcel/watcher-win32-x64": ["@parcel/watcher-win32-x64@2.6.0", "", { "os": "win32", "cpu": "x64" }, "sha512-cA+/pXV2YkfxlIcXOQ5fSWqAzzPyD78/x5qbK/I0vUkrlYHA8TIz+MXjAbGouguKVSI4bOmkTSJ1/poVSsgt+A=="],
 
+    "@playwright/test": ["@playwright/test@1.62.1", "", { "dependencies": { "playwright": "1.62.1" }, "bin": { "playwright": "cli.js" } }, "sha512-DTcUc8qii+cpHvtOwggMtBRMjKZHXYWdw8syRYu2vtzuq4Wxphqq4NfCs5Zt44L6mA8rfDfj+PHnxFc/FeK6mQ=="],
+
     "@protobufjs/aspromise": ["@protobufjs/aspromise@1.1.2", "", {}, "sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ=="],
 
     "@protobufjs/base64": ["@protobufjs/base64@1.1.2", "", {}, "sha512-AZkcAA5vnN/v4PDqKyMR5lx7hZttPDgClv83E//FMNhR2TMcLUhfRUBHCmSl0oi9zMgDDqRUJkSxO3wm85+XLg=="],
@@ -540,6 +566,8 @@
 
     "@structure-ai/observability": ["@structure-ai/observability@workspace:packages/observability"],
 
+    "@structure-ai/playwright": ["@structure-ai/playwright@workspace:packages/playwright"],
+
     "@structure-ai/runtime": ["@structure-ai/runtime@workspace:packages/runtime"],
 
     "@structure-ai/viewmodel": ["@structure-ai/viewmodel@workspace:packages/viewmodel"],
@@ -569,6 +597,8 @@
     "fast-check": ["fast-check@3.23.2", "", { "dependencies": { "pure-rand": "^6.1.0" } }, "sha512-h5+1OzzfCC3Ef7VbtKdcv7zsstUQwUDlYpUTvjeUsJAssPgLn7QzbboPtL5ro04Mq0rPOsMzl7q5hIbRs2wD1A=="],
 
     "find-my-way-ts": ["find-my-way-ts@0.1.6", "", {}, "sha512-a85L9ZoXtNAey3Y6Z+eBWW658kO/MwR7zIafkIUPUMf3isZG0NCs2pjW2wtjxAKuJPxMAsHUIP4ZPGv0o5gyTA=="],
+
+    "fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
 
     "gpt-tokenizer": ["gpt-tokenizer@2.9.0", "", {}, "sha512-YSpexBL/k4bfliAzMrRqn3M6+it02LutVyhVpDeMKrC/O9+pCe/5s8U2hYKa2vFLD5/vHhsKc8sOn/qGqII8Kg=="],
 
@@ -615,6 +645,10 @@
     "pgpass": ["pgpass@1.0.5", "", { "dependencies": { "split2": "^4.1.0" } }, "sha512-FdW9r/jQZhSeohs1Z3sI1yxFQNFvMcnmfuj4WBMUTxOrAyLMaTcE1aAMBiTlbMNaXvBCQuVi0R7hd8udDSP7ug=="],
 
     "picomatch": ["picomatch@4.0.5", "", {}, "sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A=="],
+
+    "playwright": ["playwright@1.62.1", "", { "dependencies": { "playwright-core": "1.62.1" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "playwright": "cli.js" } }, "sha512-0M+L3LAD8/nm554LOla9Ayx0j0tmFZ0FBcoQ7F1VuVHpM/XpiC8RcDzBQB8W5+hA8L22THxELzeF+2WcUzvcLg=="],
+
+    "playwright-core": ["playwright-core@1.62.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw=="],
 
     "postgres-array": ["postgres-array@3.0.4", "", {}, "sha512-nAUSGfSDGOaOAEGwqsRY27GPOea7CNipJPOA7lPbdEpx5Kg3qzdP0AaWC5MlhTWV9s4hFX39nomVZ+C4tnGOJQ=="],
 

@@ -6,6 +6,9 @@
     },
     "test": {
       "dependsOn": ["^typecheck"]
+    },
+    "test:e2e": {
+      "dependsOn": ["^typecheck"]
     }
   }
 }

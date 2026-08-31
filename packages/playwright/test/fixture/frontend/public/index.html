@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Todos</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; }
+      .done .title { text-decoration: line-through; color: #888; }
+      li { display: flex; gap: 0.5rem; align-items: center; margin: 0.25rem 0; }
+      form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Todos</h1>
+      <form data-testid="add-form">
+        <input data-testid="new-todo" name="title" placeholder="What needs doing?" autocomplete="off" />
+        <button data-testid="add-todo" type="submit">Add</button>
+      </form>
+      <ul data-testid="todo-list"></ul>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

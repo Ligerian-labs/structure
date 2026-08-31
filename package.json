@@ -21,6 +21,7 @@
       "@effect/ai-openai": "^0.41.0",
       "@effect/experimental": "^0.61.0",
       "@effect/rpc": "^0.76.0",
+      "@playwright/test": "^1.62.1",
       "@cucumber/gherkin": "^42.0.1",
       "@cucumber/cucumber-expressions": "^20.1.0",
       "@cucumber/messages": "^34.2.1",
@@ -43,7 +44,8 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test"
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.9",

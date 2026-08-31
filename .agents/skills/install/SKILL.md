@@ -18,7 +18,7 @@ ln -s ../.agents/skills .claude/skills
 
    The relative target keeps the link valid wherever the repo is cloned.
 
-2. **Verify**: `ls .claude/skills/` lists the same skills as `.agents/skills/` (19 directories at time of writing).
+2. **Verify**: `ls .claude/skills/` lists the same skills as `.agents/skills/` (20 directories at time of writing).
 3. **No other setup**: tools reading `.agents/skills/` natively need nothing; `.claude/` is gitignored, so the link stays a local convenience and never appears in diffs.
 4. **Add new skills once**, under `.agents/skills/<name>/SKILL.md` — every linked tool sees them; update the skill list in `AGENTS.md` and `llms.txt` in the same change.
 
