@@ -18,3 +18,4 @@ Numbered, immutable once accepted; reversing a decision means a new ADR marking 
 | [0012](0012-typed-client-without-codegen.md) | Typed API clients are derived from the `Api` type, never generated; business failures are declared wire contracts (422) |
 | [0013](0013-bdd-on-bun-test.md) | Gherkin feature testing compiles into `bun test` cases; cucumber is a library, not the runner |
 | [0014](0014-e2e-playwright-control-plane.md) | Browser E2E drives the real app subprocess through Playwright against a bearer-guarded test control plane; bdd stays the API-scenario layer |
+| [0015](0015-dynamodb-adapters.md) | DynamoDB adapters: single table with overloaded keys, ULID positions (approximate global order), transactional append+outbox, ensureTables over SQL migrations |
