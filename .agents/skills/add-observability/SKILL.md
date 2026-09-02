@@ -20,6 +20,7 @@ const obs = Observability.layer({
   logLevel: LogLevel.Info,
   logFormat: "json",                 // "pretty" for local development
   otlpUrl: "http://localhost:4318",  // omit → no telemetry export
+  redactKeys: ["authorization", "password"], // optional: censor these keys at any depth
 });
 ```
 
@@ -32,7 +33,8 @@ const obs = Observability.layer({
 
 ## Rules
 
-- Never log secrets, tokens, or prompt bodies; annotations are truncated (2 KB/string, 64 keys) as a backstop, not a license.
+- Annotations and message values may be structured objects: `Effect.annotateLogs({ req: { method, status } })` lands as nested JSON in the record, `Effect.log("request completed", { method, status })` puts the object in `data`. No need to pre-serialize to JSON strings.
+- Never log secrets, tokens, or prompt bodies; bounds (2 KB/string, 64 keys/object, 128 items/array, depth 8, cycles as `[circular]`) and `redactKeys` are a backstop, not a license. Wrap secrets in `Redacted` at the source.
 - Log through the structured logger with message + fields; the JSON line shape is the contract that log tooling consumes.
 - Telemetry export failure never propagates to the workload — don't wrap exporters in business-path retries.
 - Every service/process gets `ServiceMeta` (name/version) — records without service identity are unqueryable in aggregate.

@@ -1,9 +1,9 @@
 import { Layer, LogLevel, Option } from "effect";
-import { layerJson, layerMinimumLevel, layerPretty } from "./Logging.js";
+import { type JsonLoggerOptions, layerJson, layerMinimumLevel, layerPretty } from "./Logging.js";
 import { layerOtlp } from "./Otlp.js";
 import { ServiceMeta } from "./ServiceMeta.js";
 
-export interface ObservabilityOptions {
+export interface ObservabilityOptions extends JsonLoggerOptions {
   readonly service: {
     readonly name: string;
     readonly version?: string;
@@ -28,7 +28,7 @@ const otlpBaseUrl = (value: ObservabilityOptions["otlpUrl"]): string | undefined
  */
 export const layer = (options: ObservabilityOptions): Layer.Layer<ServiceMeta> => {
   const service = ServiceMeta.layer(options.service);
-  const logger = options.logFormat === "pretty" ? layerPretty : layerJson();
+  const logger = options.logFormat === "pretty" ? layerPretty : layerJson(undefined, options);
   const level = layerMinimumLevel(options.logLevel ?? LogLevel.Info);
   const baseUrl = otlpBaseUrl(options.otlpUrl);
   const exporter = baseUrl === undefined ? Layer.empty : layerOtlp({ baseUrl });
