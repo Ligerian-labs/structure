@@ -6,8 +6,8 @@ import type { Setting } from "./Settings.js";
 
 /**
  * Sources for configuration values, applied with this precedence
- * (highest wins): explicit overrides → environment variables →
- * config file (JSON) → dotenv file → code defaults.
+ * (highest wins): explicit overrides → environment variables (`env` when
+ * given, else `process.env`) → config file (JSON) → dotenv file → code defaults.
  */
 export interface LoadOptions {
   /** Explicit runtime overrides (e.g. parsed CLI flags). Highest precedence. */
@@ -16,7 +16,43 @@ export interface LoadOptions {
   readonly configFile?: string;
   /** Path to a dotenv file loaded below real environment variables. Opt-in, for local development. */
   readonly dotEnvFile?: string;
+  /**
+   * Environment map used as the environment-variable source instead of
+   * `process.env` (same `_` nesting delimiter). Lets tests and CLIs load from
+   * a controlled map without mutating the process environment.
+   */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /**
+   * When `true` (default), environment entries whose value is empty or
+   * whitespace-only are treated as unset, so `VAR=` (as forwarded by
+   * `docker compose` for an unset operator variable) falls back to the
+   * setting's default and `optional` loads `None`. Set to `false` to keep a
+   * literal empty string as a present value.
+   */
+  readonly blankMeansUnset?: boolean;
 }
+
+const processEnv = (): Readonly<Record<string, string | undefined>> =>
+  typeof process === "undefined" ? {} : process.env;
+
+const environmentMap = (
+  source: Readonly<Record<string, string | undefined>>,
+  blankMeansUnset: boolean,
+): Map<string, string> => {
+  const out = new Map<string, string>();
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    if (blankMeansUnset && value.trim() === "") continue;
+    out.set(key, value);
+  }
+  return out;
+};
+
+const environmentProvider = (options: LoadOptions): ConfigProvider.ConfigProvider =>
+  ConfigProvider.fromMap(
+    environmentMap(options.env ?? processEnv(), options.blankMeansUnset ?? true),
+    { pathDelim: "_" },
+  );
 
 const readFile = (path: string): Effect.Effect<string, ConfigLoadError> =>
   Effect.try({
@@ -61,7 +97,7 @@ const buildProvider = (
         ConfigProvider.fromMap(new Map(Object.entries(options.overrides)), { pathDelim: "_" }),
       );
     }
-    providers.push(ConfigProvider.fromEnv());
+    providers.push(environmentProvider(options));
     if (options.configFile !== undefined) {
       const content = yield* readFile(options.configFile);
       const json = yield* Effect.try({

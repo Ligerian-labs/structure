@@ -27,10 +27,10 @@ export const appSettings = Settings.struct({
 });
 ```
 
-2. **Load at startup** — `load(appSettings, { dotEnvFile: ".env", configFile: "config.json" })` fails with one `ConfigLoadError` carrying every `ConfigIssue`, or use `Settings.toLayer(AppConfigTag, appSettings, options)` to provide the value as a layer.
+2. **Load at startup** — `load(appSettings, { dotEnvFile: ".env", configFile: "config.json" })` fails with one `ConfigLoadError` carrying every `ConfigIssue`, or use `Settings.toLayer(AppConfigTag, appSettings, options)` to provide the value as a layer. Blank environment values (`PORT=`, as `docker compose` forwards unset `${VAR:-}` knobs) count as unset by default, so defaults apply and `optional` loads `None`; pass `blankMeansUnset: false` only when a literal empty string is meaningful.
 3. **Derive the reference docs** from the same declaration: `Settings.renderDocs(appSettings)` renders the markdown settings table for the README.
 4. **Reuse ready-made groups** where they exist: `observabilitySettings` from `@structure-ai/observability`, `aiSettings` from `@structure-ai/ai`.
-5. **Tests:** `withTestConfig({ PORT: "8080" })(effect)` runs against a fixed value map — no environment mutation. Follow `packages/config/test/config.test.ts`.
+5. **Tests and CLIs:** `load(appSettings, { env: { PORT: "8080" } })` loads from an injected environment map (same `_` nesting, same precedence below `overrides`) — no `process.env` mutation. `withTestConfig({ PORT: "8080" })(effect)` runs an effect against a fixed value map when there is no `load` call to pass options to. Follow `packages/config/test/config.test.ts`.
 
 ## Rules
 
