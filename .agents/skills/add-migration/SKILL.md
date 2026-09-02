@@ -24,6 +24,8 @@ export const addInvoiceDueDate = defineMigration(7, "add_invoice_due_date",
 
 For a new view-model table use `ViewModel.migration(def, id)` from `@structure-ai/viewmodel` instead of hand-written DDL.
 
+Package-owned schemas join the same set instead of migrating on their own: `migration(id[, { tablePrefix }])` from `@structure-ai/auth-pg` is already a `Migration`; `migrate(options)` from `@structure-ai/eventsourcing-pg` or `@structure-ai/jobs` is an `Effect` over `SqlClient` — wrap it with `defineMigration(id, "create_event_store", migrate())`. One set, one `run`, one lock.
+
 3. **Add it to the set** and keep DDL portable (pg-valid types; sqlite accepts anything): `TEXT`, `INTEGER`, `DOUBLE PRECISION`, `BOOLEAN`, `BIGINT`.
 4. **Incompatible changes** follow expand → migrate/backfill → switch readers/writers → contract — each step its own migration, backfills bounded and re-runnable.
 5. **Run it** where the deployment policy allows: `<app> migrations up` (CLI group via `migrationsCommand(set)` from `@structure-ai/migrations/cli`), or `layer(set)` in the one process permitted to migrate. `migrations status` shows applied/pending.

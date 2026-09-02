@@ -1,3 +1,5 @@
+import * as SqlClient from "@effect/sql/SqlClient";
+import type { SqlError } from "@effect/sql/SqlError";
 import { AuthStoreError } from "@structure-ai/auth";
 import type { SQL } from "bun";
 import { Effect } from "effect";
@@ -25,8 +27,10 @@ export interface TableNames {
   readonly oauthEndSessionHints: string;
 }
 
+const DEFAULT_PREFIX = "auth_";
+
 export const tableNames = (options: AdapterOptions = {}): TableNames => {
-  const prefix = options.tablePrefix ?? "auth_";
+  const prefix = options.tablePrefix ?? DEFAULT_PREFIX;
   return {
     users: `${prefix}users`,
     passwords: `${prefix}passwords`,
@@ -46,240 +50,250 @@ export const tableNames = (options: AdapterOptions = {}): TableNames => {
   };
 };
 
-/** Creates the complete auth schema in one transaction. Run from the designated migrator. */
+/** Double-quoted SQL identifier, the same quoting Bun `sql(name)` and `@effect/sql` `sql(name)` apply. */
+const ident = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+
+/**
+ * The complete auth schema as ordered, idempotent DDL statements for one
+ * table prefix. Single source for both entry points (`migrate` over Bun
+ * `SQL`, `migration` over `SqlClient`), so the two cannot drift.
+ */
+export const schemaStatements = (options: AdapterOptions = {}): ReadonlyArray<string> => {
+  const t = tableNames(options);
+  return [
+    `CREATE TABLE IF NOT EXISTS ${ident(t.users)} (
+      tenant_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      email TEXT,
+      email_verified BOOLEAN NOT NULL,
+      display_name TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, id),
+      UNIQUE (tenant_id, email)
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.passwords)} (
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, user_id),
+      UNIQUE (tenant_id, email),
+      FOREIGN KEY (tenant_id, user_id)
+        REFERENCES ${ident(t.users)} (tenant_id, id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.tokens)} (
+      tenant_id TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK (
+        purpose IN ('email-verification', 'magic-link', 'password-reset')
+      ),
+      token_hash TEXT NOT NULL,
+      email TEXT NOT NULL,
+      user_id TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, purpose, token_hash),
+      UNIQUE (tenant_id, purpose, email)
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.sessions)} (
+      tenant_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      elevated_at TIMESTAMPTZ,
+      PRIMARY KEY (tenant_id, token_hash),
+      UNIQUE (tenant_id, id),
+      FOREIGN KEY (tenant_id, user_id)
+        REFERENCES ${ident(t.users)} (tenant_id, id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.oauthStates)} (
+      tenant_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      state_hash TEXT NOT NULL,
+      code_verifier TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      return_to TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, state_hash)
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.oauthIdentities)} (
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      email TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, provider, subject),
+      FOREIGN KEY (tenant_id, user_id)
+        REFERENCES ${ident(t.users)} (tenant_id, id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.passkeyChallenges)} (
+      tenant_id TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK (purpose IN ('registration', 'authentication')),
+      challenge_hash TEXT NOT NULL,
+      user_id TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, purpose, challenge_hash)
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.passkeys)} (
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      credential_id TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      algorithm TEXT NOT NULL CHECK (algorithm IN ('ES256', 'RS256', 'Ed25519')),
+      counter BIGINT NOT NULL CHECK (counter >= 0),
+      transports TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, credential_id),
+      FOREIGN KEY (tenant_id, user_id)
+        REFERENCES ${ident(t.users)} (tenant_id, id) ON DELETE CASCADE
+    )`,
+    `CREATE INDEX IF NOT EXISTS ${ident(`${t.sessions}_user_idx`)}
+      ON ${ident(t.sessions)} (tenant_id, user_id)`,
+    `CREATE INDEX IF NOT EXISTS ${ident(`${t.sessions}_expiry_idx`)}
+      ON ${ident(t.sessions)} (expires_at)`,
+    `CREATE INDEX IF NOT EXISTS ${ident(`${t.tokens}_expiry_idx`)}
+      ON ${ident(t.tokens)} (expires_at)`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.totp)} (
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      secret_base32 TEXT NOT NULL,
+      confirmed BOOLEAN NOT NULL,
+      recovery_code_hashes TEXT NOT NULL,
+      failed_attempts INTEGER NOT NULL CHECK (failed_attempts >= 0),
+      locked_until TIMESTAMPTZ,
+      enrolled_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, user_id),
+      FOREIGN KEY (tenant_id, user_id)
+        REFERENCES ${ident(t.users)} (tenant_id, id) ON DELETE CASCADE
+    )`,
+    // Upgrade path for sessions tables created before step-up sessions existed.
+    `ALTER TABLE ${ident(t.sessions)} ADD COLUMN IF NOT EXISTS elevated_at TIMESTAMPTZ`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.oauthClients)} (
+      tenant_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      client_name TEXT,
+      client_type TEXT NOT NULL CHECK (client_type IN ('confidential', 'public')),
+      secret_hash TEXT,
+      redirect_uris TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, client_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.oauthCodes)} (
+      tenant_id TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      consumed_at TIMESTAMPTZ,
+      PRIMARY KEY (tenant_id, code_hash)
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.oauthConsents)} (
+      tenant_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      granted_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, client_id, user_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.oauthTokens)} (
+      tenant_id TEXT NOT NULL,
+      token_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+      client_id TEXT NOT NULL,
+      user_id TEXT,
+      scope TEXT NOT NULL,
+      token_hash TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, token_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS ${ident(`${t.oauthTokens}_hash_idx`)}
+      ON ${ident(t.oauthTokens)} (tenant_id, token_hash)`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.oauthEndSessionHints)} (
+      tenant_id TEXT NOT NULL,
+      hint_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      consumed_at TIMESTAMPTZ,
+      PRIMARY KEY (tenant_id, hint_hash)
+    )`,
+    `CREATE INDEX IF NOT EXISTS ${ident(`${t.passkeys}_user_idx`)}
+      ON ${ident(t.passkeys)} (tenant_id, user_id)`,
+    `CREATE TABLE IF NOT EXISTS ${ident(t.apiKeys)} (
+      tenant_id TEXT NOT NULL,
+      key_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      name TEXT,
+      scopes TEXT NOT NULL,
+      secret_hash TEXT NOT NULL,
+      pepper_version INTEGER NOT NULL CHECK (pepper_version >= 1),
+      workspace_id TEXT,
+      expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL,
+      last_used_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      PRIMARY KEY (tenant_id, key_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS ${ident(`${t.apiKeys}_user_idx`)}
+      ON ${ident(t.apiKeys)} (tenant_id, user_id)`,
+  ];
+};
+
+/**
+ * Structurally identical to `@structure-ai/migrations`' `Migration`, so the
+ * value drops into `makeSet([...])` without this package depending on the
+ * migrations package (auth is a standalone foundation).
+ */
+export interface AuthMigration {
+  readonly id: number;
+  readonly name: string;
+  readonly up: Effect.Effect<void, SqlError, SqlClient.SqlClient>;
+}
+
+/**
+ * The auth schema as one forward migration over the `SqlClient` in context
+ * (named `create_<prefix>schema`). Add it to the application's single
+ * migration set next to the event store, jobs, and view-model migrations so
+ * the designated migrator applies everything under one lock and one
+ * transaction. The DDL is idempotent, so re-running `up` outside the
+ * migrator's bookkeeping is a no-op.
+ */
+export const migration = (id: number, options: AdapterOptions = {}): AuthMigration => ({
+  id,
+  name: `create_${options.tablePrefix ?? DEFAULT_PREFIX}schema`,
+  up: Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql.withTransaction(
+      Effect.forEach(schemaStatements(options), (statement) => sql.unsafe(statement), {
+        discard: true,
+      }),
+    );
+  }),
+});
+
+/**
+ * Creates the complete auth schema in one transaction over a Bun `SQL`
+ * handle — the all-in-one path for apps without a `@structure-ai/migrations`
+ * set (and for tests). Same DDL as `migration`. Run from the designated
+ * migrator; the stores never migrate implicitly.
+ */
 export const migrate = (
   sql: SQL,
   options: AdapterOptions = {},
 ): Effect.Effect<void, AuthStoreError> =>
   Effect.tryPromise({
     try: async () => {
-      const tables = tableNames(options);
       await sql.begin(async (tx) => {
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.users)} (
-            tenant_id TEXT NOT NULL,
-            id TEXT NOT NULL,
-            email TEXT,
-            email_verified BOOLEAN NOT NULL,
-            display_name TEXT,
-            created_at TIMESTAMPTZ NOT NULL,
-            updated_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, id),
-            UNIQUE (tenant_id, email)
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.passwords)} (
-            tenant_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            email TEXT NOT NULL,
-            password_hash TEXT NOT NULL,
-            updated_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, user_id),
-            UNIQUE (tenant_id, email),
-            FOREIGN KEY (tenant_id, user_id)
-              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.tokens)} (
-            tenant_id TEXT NOT NULL,
-            purpose TEXT NOT NULL CHECK (
-              purpose IN ('email-verification', 'magic-link', 'password-reset')
-            ),
-            token_hash TEXT NOT NULL,
-            email TEXT NOT NULL,
-            user_id TEXT,
-            expires_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, purpose, token_hash),
-            UNIQUE (tenant_id, purpose, email)
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.sessions)} (
-            tenant_id TEXT NOT NULL,
-            id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            token_hash TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL,
-            expires_at TIMESTAMPTZ NOT NULL,
-            elevated_at TIMESTAMPTZ,
-            PRIMARY KEY (tenant_id, token_hash),
-            UNIQUE (tenant_id, id),
-            FOREIGN KEY (tenant_id, user_id)
-              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthStates)} (
-            tenant_id TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            state_hash TEXT NOT NULL,
-            code_verifier TEXT NOT NULL,
-            redirect_uri TEXT NOT NULL,
-            return_to TEXT,
-            expires_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, state_hash)
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthIdentities)} (
-            tenant_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            subject TEXT NOT NULL,
-            email TEXT,
-            created_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, provider, subject),
-            FOREIGN KEY (tenant_id, user_id)
-              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.passkeyChallenges)} (
-            tenant_id TEXT NOT NULL,
-            purpose TEXT NOT NULL CHECK (purpose IN ('registration', 'authentication')),
-            challenge_hash TEXT NOT NULL,
-            user_id TEXT,
-            expires_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, purpose, challenge_hash)
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.passkeys)} (
-            tenant_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            credential_id TEXT NOT NULL,
-            public_key TEXT NOT NULL,
-            algorithm TEXT NOT NULL CHECK (algorithm IN ('ES256', 'RS256', 'Ed25519')),
-            counter BIGINT NOT NULL CHECK (counter >= 0),
-            transports TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, credential_id),
-            FOREIGN KEY (tenant_id, user_id)
-              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
-          )
-        `;
-        await tx`
-          CREATE INDEX IF NOT EXISTS ${tx(`${tables.sessions}_user_idx`)}
-          ON ${tx(tables.sessions)} (tenant_id, user_id)
-        `;
-        await tx`
-          CREATE INDEX IF NOT EXISTS ${tx(`${tables.sessions}_expiry_idx`)}
-          ON ${tx(tables.sessions)} (expires_at)
-        `;
-        await tx`
-          CREATE INDEX IF NOT EXISTS ${tx(`${tables.tokens}_expiry_idx`)}
-          ON ${tx(tables.tokens)} (expires_at)
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.totp)} (
-            tenant_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            secret_base32 TEXT NOT NULL,
-            confirmed BOOLEAN NOT NULL,
-            recovery_code_hashes TEXT NOT NULL,
-            failed_attempts INTEGER NOT NULL CHECK (failed_attempts >= 0),
-            locked_until TIMESTAMPTZ,
-            enrolled_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, user_id),
-            FOREIGN KEY (tenant_id, user_id)
-              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
-          )
-        `;
-        await tx`
-          ALTER TABLE ${tx(tables.sessions)} ADD COLUMN IF NOT EXISTS elevated_at TIMESTAMPTZ
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthClients)} (
-            tenant_id TEXT NOT NULL,
-            client_id TEXT NOT NULL,
-            client_name TEXT,
-            client_type TEXT NOT NULL CHECK (client_type IN ('confidential', 'public')),
-            secret_hash TEXT,
-            redirect_uris TEXT NOT NULL,
-            scopes TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, client_id)
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthCodes)} (
-            tenant_id TEXT NOT NULL,
-            code_hash TEXT NOT NULL,
-            client_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            redirect_uri TEXT NOT NULL,
-            scope TEXT NOT NULL,
-            code_challenge TEXT NOT NULL,
-            expires_at TIMESTAMPTZ NOT NULL,
-            consumed_at TIMESTAMPTZ,
-            PRIMARY KEY (tenant_id, code_hash)
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthConsents)} (
-            tenant_id TEXT NOT NULL,
-            client_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            scope TEXT NOT NULL,
-            granted_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, client_id, user_id)
-          )
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthTokens)} (
-            tenant_id TEXT NOT NULL,
-            token_id TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
-            client_id TEXT NOT NULL,
-            user_id TEXT,
-            scope TEXT NOT NULL,
-            token_hash TEXT,
-            expires_at TIMESTAMPTZ NOT NULL,
-            revoked_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (tenant_id, token_id)
-          )
-        `;
-        await tx`
-          CREATE INDEX IF NOT EXISTS ${tx(`${tables.oauthTokens}_hash_idx`)}
-          ON ${tx(tables.oauthTokens)} (tenant_id, token_hash)
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthEndSessionHints)} (
-            tenant_id TEXT NOT NULL,
-            hint_hash TEXT NOT NULL,
-            expires_at TIMESTAMPTZ NOT NULL,
-            consumed_at TIMESTAMPTZ,
-            PRIMARY KEY (tenant_id, hint_hash)
-          )
-        `;
-        await tx`
-          CREATE INDEX IF NOT EXISTS ${tx(`${tables.passkeys}_user_idx`)}
-          ON ${tx(tables.passkeys)} (tenant_id, user_id)
-        `;
-        await tx`
-          CREATE TABLE IF NOT EXISTS ${tx(tables.apiKeys)} (
-            tenant_id TEXT NOT NULL,
-            key_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            name TEXT,
-            scopes TEXT NOT NULL,
-            secret_hash TEXT NOT NULL,
-            pepper_version INTEGER NOT NULL CHECK (pepper_version >= 1),
-            workspace_id TEXT,
-            expires_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ NOT NULL,
-            last_used_at TIMESTAMPTZ,
-            revoked_at TIMESTAMPTZ,
-            PRIMARY KEY (tenant_id, key_id)
-          )
-        `;
-        await tx`
-          CREATE INDEX IF NOT EXISTS ${tx(`${tables.apiKeys}_user_idx`)}
-          ON ${tx(tables.apiKeys)} (tenant_id, user_id)
-        `;
+        for (const statement of schemaStatements(options)) {
+          await tx.unsafe(statement);
+        }
       });
     },
     catch: (cause) => new AuthStoreError({ operation: "migrate-postgres-auth", cause }),

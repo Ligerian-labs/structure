@@ -20,7 +20,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 - Exactly **one** process per environment may migrate: a deploy job, the `migrations up` CLI command, or a designated single writer's startup layer. Every other instance starts without the migration layer.
 - `migrations status` (or `status(set)`) answers "which migrations ran here".
 - Incompatible changes: expand → migrate/backfill → switch readers/writers → contract, each step a separate migration, deployed separately.
-- `auth-sqlite.migrate` and `auth-pg.migrate` bootstrap their initial schemas transactionally; call them from the same single migration owner, then construct `makeAuthStore` in serving processes without migrating.
+- Auth schema: on Postgres, put `auth-pg`'s `migration(id)` in the application's single `makeSet` so the migrator applies it under the same lock and transaction as the event store, jobs, and view models; `auth-pg.migrate(sql)` (Bun `SQL`) and `auth-sqlite.migrate` are the all-in-one alternatives for apps without a set. Either way, one migration owner; serving processes construct `makeAuthStore` without migrating — the stores never create tables.
 
 ## Shutdown
 
