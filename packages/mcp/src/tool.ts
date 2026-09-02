@@ -1,6 +1,13 @@
 import { Tool as AiTool, McpSchema, McpServer } from "@effect/ai";
 import { Effect, Layer, Predicate, Schema } from "effect";
 import { ArrayFormatter, type ParseError } from "effect/ParseResult";
+import {
+  InsufficientScope,
+  McpPrincipal,
+  recordVerdict,
+  scopeVerdict,
+  ToolScopes,
+} from "./auth.js";
 
 /**
  * A registered MCP capability, following @effect/ai's layer-driven grain:
@@ -65,6 +72,8 @@ const errorResult = (message: string): McpSchema.CallToolResult =>
 export interface ErasedToolSpec<R> {
   readonly name: string;
   readonly description: string | undefined;
+  /** Declared OAuth scopes; `undefined` inherits the guard's `defaultScopes`, `[]` opts out. */
+  readonly scopes: ReadonlyArray<string> | undefined;
   /** AST used to derive the JSON `inputSchema` advertised on `tools/list`. */
   readonly parametersAst: Schema.Schema.AnyNoContext["ast"];
   /** Validates raw `tools/call` arguments; failures are already message-shaped. */
@@ -76,10 +85,23 @@ export interface ErasedToolSpec<R> {
 
 const register = <R>(
   spec: ErasedToolSpec<R>,
-): Effect.Effect<void, never, McpServer.McpServer | R> =>
+): Effect.Effect<void, never, McpServer.McpServer | ToolScopes | R> =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
+    const scopes = yield* ToolScopes;
     const context = yield* Effect.context<R>();
+    yield* scopes.register(spec.name, spec.scopes);
+    // Asserted at dispatch on every transport from the same required/granted
+    // sets as the HTTP guard, and recorded once per call (the guard records
+    // only what it refuses before reaching here).
+    const authorize = Effect.gen(function* () {
+      const principal = yield* McpPrincipal.current;
+      const verdict = scopeVerdict(spec.name, scopes.requiredFor(spec.name), principal);
+      yield* recordVerdict(verdict);
+      if (verdict.outcome !== "allowed") {
+        return yield* Effect.fail(new InsufficientScope({ verdict }).message);
+      }
+    });
     yield* server.addTool({
       tool: new McpSchema.Tool({
         name: spec.name,
@@ -89,7 +111,8 @@ const register = <R>(
       // Errors and defects become MCP *tool* errors (`isError: true`) carrying
       // only the error's message, so the calling agent can see and self-correct.
       handle: (payload: unknown) =>
-        spec.decodeParameters(payload).pipe(
+        authorize.pipe(
+          Effect.zipRight(spec.decodeParameters(payload)),
           Effect.flatMap((params) =>
             spec
               .handler(params)
@@ -113,6 +136,7 @@ const register = <R>(
 export const makeToolLayer = <R>(spec: ErasedToolSpec<R>): ToolLayer<R> =>
   Layer.effectDiscard(register(spec)).pipe(
     Layer.provide(McpServer.McpServer.layer),
+    Layer.provide(ToolScopes.layer),
   ) as ToolLayer<R>;
 
 /** Options for {@link defineTool}. */
@@ -125,6 +149,14 @@ export interface DefineToolOptions<
 > {
   readonly name: Name;
   readonly description?: string | undefined;
+  /**
+   * OAuth scopes a caller must hold (all of them), asserted at dispatch
+   * against the principal attached by the HTTP bearer guard (`403
+   * insufficient_scope`) or by `McpPrincipal.within`; with a non-empty
+   * requirement and no principal the tool refuses to run. Undeclared inherits
+   * the guard's `defaultScopes`; `[]` opts the tool out explicitly.
+   */
+  readonly scopes?: ReadonlyArray<string> | undefined;
   /** Struct fields or a struct schema validating `tools/call` arguments. */
   readonly parameters: P;
   /** Schema of the handler result; its encoded side is what agents receive. */
@@ -144,7 +176,9 @@ export interface DefineToolOptions<
  *   an MCP tool error (`isError: true`), not a protocol crash;
  * - the success value is encoded with the success schema (JSON-friendly);
  * - handler failures and defects become tool errors carrying the error's
- *   `message` only — never a stack trace or internals.
+ *   `message` only — never a stack trace or internals;
+ * - declared `scopes` are checked before the handler runs (see
+ *   {@link DefineToolOptions.scopes}).
  */
 export const defineTool = <
   const Name extends string,
@@ -167,6 +201,7 @@ export const defineTool = <
   return makeToolLayer<R>({
     name: options.name,
     description: options.description,
+    scopes: options.scopes,
     parametersAst: parameters.ast,
     decodeParameters: (input) =>
       decode(input).pipe(

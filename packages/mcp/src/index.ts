@@ -1,3 +1,15 @@
+export {
+  InsufficientScope,
+  type McpAuthOptions,
+  McpPrincipal,
+  type McpRoleAssignment,
+  ProtectedResourceMetadata,
+  type ProtectedResourceMetadataOptions,
+  protectedResourceMetadata,
+  resourceMetadataUrl,
+  type ScopeVerdict,
+  scopeVerdict,
+} from "./auth.js";
 export { type BridgeToolOptions, toolFromCommand, toolFromQuery } from "./bridge.js";
 export {
   type DefineResourceOptions,

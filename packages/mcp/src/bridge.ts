@@ -14,6 +14,8 @@ export interface BridgeToolOptions {
   readonly name?: string | undefined;
   /** Tool description; defaults to the payload schema's description annotation. */
   readonly description?: string | undefined;
+  /** OAuth scopes the caller must hold; see `DefineToolOptions.scopes`. */
+  readonly scopes?: ReadonlyArray<string> | undefined;
 }
 
 /** "ApproveInvoice" → "approve-invoice", "HTTPServer" → "http-server". */
@@ -44,6 +46,7 @@ const bridge = <R>(
       options?.description ??
       AiTool.getDescriptionFromSchemaAst(definition.payload.ast) ??
       `Dispatches the ${definition._kind} "${definition.tag}".`,
+    scopes: options?.scopes,
     parametersAst: definition.payload.ast,
     // The bus decodes the payload itself; raw arguments pass through so a bad
     // shape surfaces as the bus's ValidationFailed with its safe message.
