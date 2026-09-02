@@ -1,9 +1,16 @@
 import { describe } from "bun:test";
 import { SQL } from "bun";
 import { Effect } from "effect";
-import { makeApiKeyStore, makeAuthStore, migrate, tableNames } from "../src/index.js";
+import {
+  makeApiKeyStore,
+  makeAuthStore,
+  makeOAuthServerStore,
+  migrate,
+  tableNames,
+} from "../src/index.js";
 import {
   registerApiKeyScenarios,
+  registerOAuthServerScenarios,
   registerStoreScenarios,
   registerTotpScenarios,
 } from "./scenarios.js";
@@ -21,6 +28,8 @@ const makeHarness = async () => {
     remakeApiKeys: () => makeApiKeyStore(sql, options),
     store: makeAuthStore(sql, options),
     remake: () => makeAuthStore(sql, options),
+    oauthServer: makeOAuthServerStore(sql, options),
+    remakeOAuthServer: () => makeOAuthServerStore(sql, options),
     close: async () => {
       for (const table of Object.values(tableNames(options)).reverse()) {
         await sql`DROP TABLE IF EXISTS ${sql(table)} CASCADE`;
@@ -34,4 +43,5 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL AuthStore (needs DATABASE
   registerStoreScenarios(makeHarness);
   registerApiKeyScenarios(makeHarness);
   registerTotpScenarios(makeHarness);
+  registerOAuthServerScenarios(makeHarness);
 });
