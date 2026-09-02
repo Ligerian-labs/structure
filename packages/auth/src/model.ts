@@ -40,6 +40,24 @@ export interface SessionRecord {
   readonly tokenHash: string;
   readonly createdAt: Date;
   readonly expiresAt: Date;
+  /**
+   * Set when the session satisfied (or never needed) a second factor;
+   * absent while a confirmed TOTP enrollment keeps it `2fa-pending`.
+   */
+  readonly elevatedAt?: Date;
+}
+
+/** A TOTP enrollment: pending until confirmed with a first valid code. */
+export interface TotpRecord {
+  readonly tenantId: TenantId;
+  readonly userId: UserId;
+  readonly secretBase32: string;
+  readonly confirmed: boolean;
+  /** SHA-256 hashes of the single-use recovery codes (never the codes). */
+  readonly recoveryCodeHashes: ReadonlyArray<string>;
+  readonly failedAttempts: number;
+  readonly lockedUntil?: Date;
+  readonly enrolledAt: Date;
 }
 
 export interface AuthSession {

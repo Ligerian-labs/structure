@@ -100,6 +100,16 @@ export class UnsupportedPasskey extends Data.TaggedError("UnsupportedPasskey")<{
   }
 }
 
+/** A second factor is required before this session may act. */
+export class SecondFactorRequired extends Data.TaggedError("SecondFactorRequired")<{
+  readonly userId: string;
+}> {
+  readonly classification: AuthFailureClass = "permanent";
+  override get message(): string {
+    return "A second factor is required for this session";
+  }
+}
+
 export class RateLimitExceeded extends Data.TaggedError("RateLimitExceeded")<{
   readonly action: string;
   readonly retryAfterSeconds?: number;

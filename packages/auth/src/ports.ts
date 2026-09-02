@@ -15,7 +15,11 @@ export type AuthAction =
   | "oauth-complete"
   | "passkey-register"
   | "passkey-authenticate"
-  | "apikey-verify";
+  | "apikey-verify"
+  | "totp-enroll"
+  | "totp-confirm"
+  | "totp-verify"
+  | "totp-unenroll";
 
 export interface RateLimitRequest {
   readonly tenantId: TenantId;
@@ -39,7 +43,8 @@ export interface AuthAuditEvent {
     | "session-sign-out"
     | "sessions-revoked"
     | "apikey-mint"
-    | "apikey-revoke";
+    | "apikey-revoke"
+    | "totp-locked";
   readonly outcome: "succeeded";
   readonly userId?: string;
   readonly provider?: OAuthProviderId;

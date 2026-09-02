@@ -17,6 +17,7 @@ export interface TableNames {
   readonly passkeyChallenges: string;
   readonly passkeys: string;
   readonly apiKeys: string;
+  readonly totp: string;
 }
 
 export const tableNames = (options: AdapterOptions = {}): TableNames => {
@@ -31,6 +32,7 @@ export const tableNames = (options: AdapterOptions = {}): TableNames => {
     passkeyChallenges: `${prefix}passkey_challenges`,
     passkeys: `${prefix}passkeys`,
     apiKeys: `${prefix}api_keys`,
+    totp: `${prefix}totp`,
   };
 };
 
@@ -91,6 +93,7 @@ export const migrate = (
             token_hash TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL,
             expires_at TIMESTAMPTZ NOT NULL,
+            elevated_at TIMESTAMPTZ,
             PRIMARY KEY (tenant_id, token_hash),
             UNIQUE (tenant_id, id),
             FOREIGN KEY (tenant_id, user_id)
@@ -158,6 +161,24 @@ export const migrate = (
         await tx`
           CREATE INDEX IF NOT EXISTS ${tx(`${tables.tokens}_expiry_idx`)}
           ON ${tx(tables.tokens)} (expires_at)
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.totp)} (
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            secret_base32 TEXT NOT NULL,
+            confirmed BOOLEAN NOT NULL,
+            recovery_code_hashes TEXT NOT NULL,
+            failed_attempts INTEGER NOT NULL CHECK (failed_attempts >= 0),
+            locked_until TIMESTAMPTZ,
+            enrolled_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, user_id),
+            FOREIGN KEY (tenant_id, user_id)
+              REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
+          )
+        `;
+        await tx`
+          ALTER TABLE ${tx(tables.sessions)} ADD COLUMN IF NOT EXISTS elevated_at TIMESTAMPTZ
         `;
         await tx`
           CREATE INDEX IF NOT EXISTS ${tx(`${tables.passkeys}_user_idx`)}

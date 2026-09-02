@@ -185,6 +185,52 @@ Semantics:
 - **Expiry and last-use tracking** on every record; revocation is immediate.
 - Storage: `ApiKeyStore` port with an in-memory adapter here and `makeApiKeyStore` in `@structure-ai/auth-sqlite` / `@structure-ai/auth-pg` (tenant-scoped, hash-rotation aware).
 
+## TOTP two-factor
+
+RFC 6238 second factor with lockout, recovery codes, and session elevation:
+
+```ts
+import { makeAuth, makeTotp } from "@structure-ai/auth";
+import { Effect } from "effect";
+
+// Sessions of enrolled users are born 2fa-pending:
+const auth = makeAuth({
+  /* ... */
+  secondFactor: {
+    isEnrolled: (tenantId, userId) =>
+      totp.isEnrolled(tenantId, userId).pipe(Effect.catchAll(() => Effect.succeed(false))),
+  },
+});
+
+const totp = makeTotp({
+  store,               // the same AuthStore: TOTP lives in its contract
+  auth,
+  resolveTenant,
+  rateLimiter,
+  lockoutThreshold: 5,          // failed attempts before lockout
+  lockoutCooldownMillis: 15 * 60_000,
+  audit: auditSink,
+});
+
+// Enrollment: show the QR payload once, confirm with a first valid code.
+const { secretBase32, otpauthUrl } = yield* totp.beginEnrollment("tenant-a", sessionToken);
+const { recoveryCodes } = yield* totp.confirmEnrollment("tenant-a", sessionToken, code);
+
+// Verification elevates the session; codes may be TOTP or recovery codes.
+yield* totp.verify("tenant-a", sessionToken, code);               // { elevated: true }
+const pending = yield* totp.sessionRequiresElevation("tenant-a", sessionToken);
+// Guard sensitive routes on that flag (or a @structure-ai/authorization
+// condition reading it); yield* totp.unenroll("tenant-a", sessionToken, code);
+```
+
+Semantics:
+
+- **Secrets**: 20 random bytes, base32; codes are 6 digits, step 30s, accepted within ±1 step with constant-time comparison (fixed candidate order — timing never discloses which step matched).
+- **Recovery codes**: 10 single-use `xxxxx-xxxxx` codes, returned once as `Redacted`, stored only as SHA-256 hashes.
+- **Lockout**: failed attempts count per principal; at the threshold the second factor locks for the cooldown (`RateLimitExceeded` with `Retry-After`), audited as `totp-locked`. A locked factor never bypasses — verification keeps failing until the cooldown passes or the app's owner flow removes the enrollment.
+- **Session elevation**: `SessionRecord.elevatedAt` is absent while a confirmed enrollment keeps a session `2fa-pending`; `totp.verify` sets it.
+- **Storage**: through the existing `AuthStore` contract (`putTotpSecret`, `confirmTotp`, `recordTotpFailure`, `consumeRecoveryCode`, `elevateSession`, ...) — in-memory here, durable in `auth-sqlite` / `auth-pg` (same scenarios).
+
 ## Persistence contract
 
 `AuthStore` is application-owned. Its compound mutation methods are intentional transaction boundaries:
@@ -233,6 +279,7 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 | `verifyPasskeyRegistration`, `verifyPasskeyAuthentication` | Strict WebAuthn/COSE verification used by the service. |
 | `RateLimiter`, `AuthAuditSink`, `AccountLinkPolicy`, `EmailSender` | Application policy and side-effect ports. |
 | `makeApiKeys`, `ApiKeyStore`, `inMemoryApiKeyStore`, `ApiKeyPeppers` | Machine credentials: mint/verify/revoke with pepper-versioned HMAC hashes, scopes, pinning. |
+| `makeTotp`, `verifyTotpCode`, `totpCode`, `generateTotpSecret`, `generateRecoveryCodes` | TOTP second factor: enrollment, verification with lockout, recovery codes, session elevation. |
 | `Auth*Error`, `InvalidAuthRoutes`, `RateLimitExceeded`, `UnsupportedPasskey` | Classified safe failures. |
 
 See `test/` for executable password, magic-link, OAuth, passkey, rate-limit/audit, and HTTP examples.

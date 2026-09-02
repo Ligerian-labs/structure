@@ -9,6 +9,7 @@ import {
   type PasskeyRecord,
   type PasswordCredential,
   type SessionRecord,
+  type TotpRecord,
 } from "@structure-ai/auth";
 import { Effect, Redacted } from "effect";
 
@@ -309,5 +310,132 @@ export const registerApiKeyScenarios = (makeHarness: MakeHarness): void => {
     withHarness(makeHarness, async ({ apiKeys }) => {
       await run(apiKeys.create(apiKeyRecord("key-1")));
       expect(await run(apiKeys.findByKeyId("tenant-b", "key-1"))).toBeUndefined();
+    }));
+};
+
+export const registerTotpScenarios = (makeHarness: MakeHarness): void => {
+  const enrollment = (userId: string): TotpRecord => ({
+    tenantId: "tenant-a",
+    userId,
+    secretBase32: "JBSWY3DPEHPK3PXP",
+    confirmed: false,
+    recoveryCodeHashes: [],
+    failedAttempts: 0,
+    enrolledAt: now,
+  });
+
+  test("totp enrollment persists, confirms once, and stays tenant-scoped", () =>
+    withHarness(makeHarness, async ({ store, remake }) => {
+      await run(
+        store.createPasswordUser(
+          user("tenant-a", "user-1", "ada@example.com"),
+          password("tenant-a", "user-1", "ada@example.com"),
+        ),
+      );
+      await run(store.putTotpSecret(enrollment("user-1")));
+      const persisted = await run(remake().findTotp("tenant-a", "user-1"));
+      expect(persisted?.confirmed).toBe(false);
+
+      const confirmed = await run(
+        store.confirmTotp("tenant-a", "user-1", ["hash-a", "hash-b"], later),
+      );
+      expect(confirmed?.confirmed).toBe(true);
+      expect(confirmed?.recoveryCodeHashes).toEqual(["hash-a", "hash-b"]);
+
+      // Confirming again is a no-op (nothing pending left to confirm).
+      const again = await run(store.confirmTotp("tenant-a", "user-1", ["hash-c"], later));
+      expect(again).toBeUndefined();
+      const unchanged = await run(store.findTotp("tenant-a", "user-1"));
+      expect(unchanged?.recoveryCodeHashes).toEqual(["hash-a", "hash-b"]);
+
+      expect(await run(store.findTotp("tenant-b", "user-1"))).toBeUndefined();
+    }));
+
+  test("failure counters lock at the threshold and reset on success", () =>
+    withHarness(makeHarness, async ({ store }) => {
+      await run(
+        store.createPasswordUser(
+          user("tenant-a", "user-1", "ada@example.com"),
+          password("tenant-a", "user-1", "ada@example.com"),
+        ),
+      );
+      await run(store.putTotpSecret(enrollment("user-1")));
+      await run(store.confirmTotp("tenant-a", "user-1", ["hash-a"], later));
+      const first = await run(
+        store.recordTotpFailure({
+          tenantId: "tenant-a",
+          userId: "user-1",
+          threshold: 3,
+          cooldownMillis: 900_000,
+          now: later,
+        }),
+      );
+      expect(first.locked).toBe(false);
+      const second = await run(
+        store.recordTotpFailure({
+          tenantId: "tenant-a",
+          userId: "user-1",
+          threshold: 3,
+          cooldownMillis: 900_000,
+          now: later,
+        }),
+      );
+      expect(second.locked).toBe(false);
+      const third = await run(
+        store.recordTotpFailure({
+          tenantId: "tenant-a",
+          userId: "user-1",
+          threshold: 3,
+          cooldownMillis: 900_000,
+          now: later,
+        }),
+      );
+      expect(third.locked).toBe(true);
+      expect(third.lockedUntil?.getTime()).toBe(later.getTime() + 900_000);
+
+      await run(store.resetTotpFailures("tenant-a", "user-1"));
+      const cleared = await run(store.findTotp("tenant-a", "user-1"));
+      expect(cleared?.failedAttempts).toBe(0);
+      expect(cleared?.lockedUntil).toBeUndefined();
+    }));
+
+  test("recovery codes are single-use and removal clears the enrollment", () =>
+    withHarness(makeHarness, async ({ store }) => {
+      await run(
+        store.createPasswordUser(
+          user("tenant-a", "user-1", "ada@example.com"),
+          password("tenant-a", "user-1", "ada@example.com"),
+        ),
+      );
+      await run(store.putTotpSecret(enrollment("user-1")));
+      await run(store.confirmTotp("tenant-a", "user-1", ["hash-a", "hash-b"], later));
+      expect(await run(store.consumeRecoveryCode("tenant-a", "user-1", "hash-a"))).toBe(true);
+      expect(await run(store.consumeRecoveryCode("tenant-a", "user-1", "hash-a"))).toBe(false);
+      expect(await run(store.consumeRecoveryCode("tenant-a", "user-1", "hash-b"))).toBe(true);
+      const remaining = await run(store.findTotp("tenant-a", "user-1"));
+      expect(remaining?.recoveryCodeHashes).toEqual([]);
+
+      await run(store.removeTotp("tenant-a", "user-1"));
+      expect(await run(store.findTotp("tenant-a", "user-1"))).toBeUndefined();
+    }));
+
+  test("sessions persist their elevation state", () =>
+    withHarness(makeHarness, async ({ store, remake }) => {
+      await run(
+        store.createPasswordUser(
+          user("tenant-a", "user-1", "ada@example.com"),
+          password("tenant-a", "user-1", "ada@example.com"),
+        ),
+      );
+      const pending = {
+        ...session("tenant-a", "sess-1", "user-1"),
+        expiresAt: new Date(later.getTime() + 3_600_000),
+      };
+      await run(store.createSession(pending));
+      await run(store.elevateSession("tenant-a", `${"sess-1"}-hash`, later));
+      const persisted = await run(
+        remake().findSession("tenant-a", "sess-1-hash", new Date(later.getTime() + 1)),
+      );
+      expect(persisted?.elevatedAt).toEqual(later);
     }));
 };
