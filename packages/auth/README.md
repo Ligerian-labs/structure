@@ -231,6 +231,47 @@ Semantics:
 - **Session elevation**: `SessionRecord.elevatedAt` is absent while a confirmed enrollment keeps a session `2fa-pending`; `totp.verify` sets it.
 - **Storage**: through the existing `AuthStore` contract (`putTotpSecret`, `confirmTotp`, `recordTotpFailure`, `consumeRecoveryCode`, `elevateSession`, ...) — in-memory here, durable in `auth-sqlite` / `auth-pg` (same scenarios).
 
+## Generic external OIDC login (gated JIT provisioning)
+
+Enterprises point at their own IdP (Azure AD, Okta, Keycloak) through OIDC discovery; the profile comes from a **JWKS-validated ID token** (RS256/ES256 via WebCrypto, `iss`/`aud`/`exp` checked) — no userinfo roundtrip, no raw provider tokens downstream:
+
+```ts
+import { discoverOidc, makeAuth, oidcProvisioningPolicy, oidcSettings } from "@structure-ai/auth";
+import { Effect, Redacted } from "effect";
+
+// Settings (secrets Redacted, JIT default OFF):
+//   OIDC_ISSUER_URL, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET,
+//   OIDC_JIT_PROVISIONING (default false), OIDC_JIT_DEFAULT_TENANT, OIDC_LABEL
+const settings = yield* load(oidcSettings);
+
+const { provider } = yield* discoverOidc(
+  {
+    issuer: settings.issuer,
+    credentials: { clientId: settings.clientId, clientSecret: settings.clientSecret },
+  },
+  httpClient,
+);
+
+const auth = makeAuth({
+  /* ... */
+  oauthHttpClient: httpClient,
+  oauthProviderResolver: {
+    resolve: (tenantId, providerId) =>
+      Effect.succeed(providerId === "oidc" ? provider : undefined),
+  },
+  // Unknown identities only become accounts when JIT is deliberately on —
+  // and only inside the configured default tenant.
+  identityProvisioning: oidcProvisioningPolicy(settings),
+});
+```
+
+Semantics:
+
+- **Discovery** at `<issuer>/.well-known/openid-configuration`; the JWKS is cached and refetched once on an unknown `kid`.
+- **JIT off (default)**: only already-linked identities sign in; unknown ones are indistinguishable from wrong credentials (no account enumeration). **JIT on**: provisioning lands in `OIDC_JIT_DEFAULT_TENANT` only.
+- **Linking**: one local identity ↔ one external subject; automatic linking by verified email stays behind the app's `AccountLinkPolicy`; `unlinkOAuthIdentity` is the explicit owner action (audited as `oauth-unlink`).
+- Works alongside the fixed social providers and password/magic-link flows (`providerId` `"oidc"` by default).
+
 ## Persistence contract
 
 `AuthStore` is application-owned. Its compound mutation methods are intentional transaction boundaries:
@@ -276,6 +317,7 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 | `AuthStore`, `inMemoryAuthStore` | Persistence port and development/test adapter. |
 | `argon2id`, `PasswordHasher` | Bun Argon2id implementation and replacement port. |
 | `OAuthProvider*`, `builtInOAuthProvider`, `fetchOAuthHttpClient` | Provider definitions, tenant resolver, exchange/profile engine, HTTP port. |
+| `discoverOidc`, `validateIdToken`, `oidcSettings`, `oidcProvisioningPolicy` | Generic OIDC: discovery + JWKS-validated ID tokens, JIT-gated provisioning settings. |
 | `verifyPasskeyRegistration`, `verifyPasskeyAuthentication` | Strict WebAuthn/COSE verification used by the service. |
 | `RateLimiter`, `AuthAuditSink`, `AccountLinkPolicy`, `EmailSender` | Application policy and side-effect ports. |
 | `makeApiKeys`, `ApiKeyStore`, `inMemoryApiKeyStore`, `ApiKeyPeppers` | Machine credentials: mint/verify/revoke with pepper-versioned HMAC hashes, scopes, pinning. |

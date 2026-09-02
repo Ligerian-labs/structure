@@ -73,6 +73,12 @@ export interface AuthStore {
     subject: string,
   ) => StoreEffect<OAuthIdentity | undefined>;
   readonly addOAuthIdentity: (identity: OAuthIdentity) => StoreEffect<void>;
+  /** Removes one external identity for a user (explicit owner action). */
+  readonly removeOAuthIdentity: (
+    tenantId: TenantId,
+    userId: UserId,
+    provider: OAuthProviderId,
+  ) => StoreEffect<void>;
   readonly putPasskeyChallenge: (record: PasskeyChallengeRecord) => StoreEffect<void>;
   readonly consumePasskeyChallenge: (
     tenantId: TenantId,
@@ -336,6 +342,18 @@ export const inMemoryAuthStore = (): InMemoryAuthStore => {
         }
         state.oauthIdentities.set(key, identity);
         return Effect.void;
+      }),
+    removeOAuthIdentity: (tenantId, userId, provider) =>
+      Effect.sync(() => {
+        for (const [key, identity] of state.oauthIdentities) {
+          if (
+            identity.tenantId === tenantId &&
+            identity.userId === userId &&
+            identity.provider === provider
+          ) {
+            state.oauthIdentities.delete(key);
+          }
+        }
       }),
     putPasskeyChallenge: (record) =>
       Effect.sync(() => {
