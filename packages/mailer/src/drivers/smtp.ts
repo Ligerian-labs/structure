@@ -314,13 +314,35 @@ const boundary = (): string => {
   return out;
 };
 
-const textPart = (contentType: "text/plain" | "text/html", body: string): string =>
-  [
-    `Content-Type: ${contentType}; charset=utf-8`,
-    "Content-Transfer-Encoding: base64",
-    "",
-    wrap76(Buffer.from(body, "utf8").toString("base64")),
-  ].join(CRLF);
+/** A MIME entity: the headers that belong in the header block plus the body that follows the blank separator line. */
+interface MimeEntity {
+  readonly headers: ReadonlyArray<string>;
+  readonly body: string;
+}
+
+/** Renders an entity as a complete part for nesting inside a multipart container. */
+const asPart = (entity: MimeEntity): string => [...entity.headers, "", entity.body].join(CRLF);
+
+/** A base64-encoded text entity: the single-part top level, or one nested part. */
+const textEntity = (contentType: "text/plain" | "text/html", body: string): MimeEntity => ({
+  headers: [`Content-Type: ${contentType}; charset=utf-8`, "Content-Transfer-Encoding: base64"],
+  body: wrap76(Buffer.from(body, "utf8").toString("base64")),
+});
+
+/** A multipart container with a fresh random boundary wrapping the given parts. */
+const multipartEntity = (
+  subtype: "alternative" | "mixed",
+  parts: ReadonlyArray<string>,
+): MimeEntity => {
+  const delimiter = boundary();
+  const lines: Array<string> = [];
+  for (const part of parts) lines.push(`--${delimiter}`, part);
+  lines.push(`--${delimiter}--`);
+  return {
+    headers: [`Content-Type: multipart/${subtype}; boundary="${delimiter}"`],
+    body: lines.join(CRLF),
+  };
+};
 
 const attachmentPart = (attachment: EmailAttachmentInput): string =>
   [
@@ -349,36 +371,29 @@ export const renderSmtpMessage = (message: EmailMessage, hostname: string): stri
     }
   }
 
-  let contentBlock: string;
-  if (message.html !== undefined && message.text !== undefined) {
-    const alternative = boundary();
-    contentBlock = [
-      `Content-Type: multipart/alternative; boundary="${alternative}"`,
-      "",
-      `--${alternative}`,
-      textPart("text/plain", message.text),
-      `--${alternative}`,
-      textPart("text/html", message.html),
-      `--${alternative}--`,
-    ].join(CRLF);
-  } else if (message.html !== undefined) {
-    contentBlock = textPart("text/html", message.html);
-  } else {
-    contentBlock = textPart("text/plain", message.text ?? "");
-  }
+  const content: MimeEntity =
+    message.html !== undefined && message.text !== undefined
+      ? multipartEntity("alternative", [
+          asPart(textEntity("text/plain", message.text)),
+          asPart(textEntity("text/html", message.html)),
+        ])
+      : message.html !== undefined
+        ? textEntity("text/html", message.html)
+        : textEntity("text/plain", message.text ?? "");
 
   const attachments = message.attachments ?? [];
-  if (attachments.length === 0) {
-    return [...headers, "", contentBlock].join(CRLF);
+  const top: MimeEntity =
+    attachments.length === 0
+      ? content
+      : multipartEntity("mixed", [asPart(content), ...attachments.map(attachmentPart)]);
+
+  headers.push(...top.headers);
+  if (message.headers !== undefined) {
+    for (const [name, value] of Object.entries(message.headers)) {
+      headers.push(`${name}: ${value}`);
+    }
   }
-  const mixed = boundary();
-  const parts: Array<string> = [`--${mixed}`, contentBlock];
-  for (const attachment of attachments) parts.push(`--${mixed}`, attachmentPart(attachment));
-  parts.push(`--${mixed}--`);
-  const body = [`Content-Type: multipart/mixed; boundary="${mixed}"`, "", parts.join(CRLF)].join(
-    CRLF,
-  );
-  return [...headers, "", body].join(CRLF);
+  return [...headers, "", top.body].join(CRLF);
 };
 
 /** Dot-stuffs and CRLF-normalizes the payload for the DATA phase. */
