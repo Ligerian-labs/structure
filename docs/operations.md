@@ -16,9 +16,14 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 
 ## Migrations policy
 
-- Forward-only; each `run` is one transaction (all-or-nothing); concurrent runners fail `MigrationError("locked")` — that's the deploy step's signal, not a retry loop's.
-- Exactly **one** process per environment may migrate: a deploy job, the `migrations up` CLI command, or a designated single writer's startup layer. Every other instance starts without the migration layer.
-- `migrations status` (or `status(set)`) answers "which migrations ran here".
+- Forward-only; each `run` is one transaction (all-or-nothing).
+- Exactly **one** process per environment applies migrations at a time. Two supported postures:
+  - **Deploy-step owner** (`lock: "transaction"`, the default): a deploy job, the `migrations up` CLI command, or a designated single writer's startup layer. A concurrent runner fails at once with `MigrationError("locked")` — that's the deploy step's signal, not a retry loop's. Every other instance starts without the migration layer.
+  - **Replicas that boot together** (`lock: "session", waitFor`): every replica runs `layer(set, { lock: "session" })`; on Postgres exactly one takes the advisory lock and applies, the others block (bounded by `waitFor`, default 30 s) and then re-read the history — waiters become verifiers and end green with nothing to do. A waiter that times out fails `locked` and the orchestrator restarts it. Outside Postgres session mode is emulated by polling the non-blocking path until `waitFor`.
+- Fail-closed: `run` and `status` compare the recorded history with the build's set by per-migration checksum, never by count or id alone. `unknown` rows (ids the build does not know — the database was migrated by a newer artifact, e.g. after a rollback) or `mismatched` checksums (a migration edited after it ran) make `run` refuse with `MigrationError("bad-state")` before applying anything, `migrations status` exit non-zero, and `migrationsReadinessCheck(set)` answer not ready — so an image older than its database never reports ready. Repair by rolling forward (deploy the newer artifact) or, for drift, restoring the migration as it ran and shipping the intended change as a new migration; never edit the bookkeeping table by hand.
+- Serving instances that must never migrate register `migrationsReadinessCheck(set)` with `Readiness`: `/health/ready` stays 503 while anything is `pending`, `unknown` or `mismatched`.
+- `migrations status` (or `status(set)`) answers "which migrations ran here" as `{ applied, pending, unknown, mismatched }`.
+- Declare each migration's SQL (`defineMigration(id, name, up, { sql })`) so the checksum covers content, not just id and name; `ViewModel.migration` does this for generated tables. Upgrading from a release without checksums needs no action: the first `run` adds the column and adopts the current checksums for rows recorded before it existed.
 - Incompatible changes: expand → migrate/backfill → switch readers/writers → contract, each step a separate migration, deployed separately.
 - Auth schema: on Postgres, put `auth-pg`'s `migration(id)` in the application's single `makeSet` so the migrator applies it under the same lock and transaction as the event store, jobs, and view models; `auth-pg.migrate(sql)` (Bun `SQL`) and `auth-sqlite.migrate` are the all-in-one alternatives for apps without a set. Either way, one migration owner; serving processes construct `makeAuthStore` without migrating — the stores never create tables.
 

@@ -14,7 +14,7 @@ Pick the right surface — each question has one authoritative answer:
 | "What happened, in order?" | `EventStore.read(stream)` / `readAll` — the events are the source of truth. |
 | "Is a projection caught up?" | Its checkpoint (`CheckpointStore.load(name)`) vs the store's latest global position; `catchup` returns `{ processed, skipped }`. |
 | "Are outbox messages stuck?" | `Outbox.pending(limit)` and `Outbox.deadLetters()` — dead letters carry the last error. |
-| "Which migrations ran?" | `status(set)` from `@structure-ai/migrations` → `{ applied, pending }`, or `<app> migrations status`. |
+| "Which migrations ran?" | `status(set)` from `@structure-ai/migrations` → `{ applied, pending, unknown, mismatched }` (`unknown` = database ahead of this build, `mismatched` = checksum drift), or `<app> migrations status` (exits non-zero on those two). |
 | "Is the process healthy?" | `/health/live`, `/health/ready` (`@structure-ai/http`) — ready includes the per-check report. |
 
 ## Rules
