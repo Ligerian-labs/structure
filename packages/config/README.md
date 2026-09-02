@@ -56,6 +56,6 @@ const config = yield* load(settings, { env: { PORT: "8080", API_KEY: "s3cret" } 
 | `toLayer(tag, setting, options?)` | The same as a `Layer`. |
 | `withTestConfig(values)(effect)` | Runs an effect against a fixed value map (tests). `load(setting, { env })` is the production-shaped counterpart. |
 | `ConfigLoadError` | Tagged error with `issues: ConfigIssue[]`, one per problem. |
-| `parseDotEnv(content)` | Minimal dotenv parser (used by `dotEnvFile`). |
+| `parseDotEnv(content)` | Minimal dotenv parser (used by `dotEnvFile`). Full `.env` support (cascade, expansion, multi-line quotes, edits, CLI) is `@structure-ai/dotenv`, which feeds `load` through the `env` option. |
 
 Secrets (`Settings.secret`) load as `Redacted<string>` and never render in logs or errors.

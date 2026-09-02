@@ -9,6 +9,7 @@ Monorepo of small, independently importable packages under the `@structure-ai/*`
 | Package | Purpose |
 | --- | --- |
 | `@structure-ai/config` | Typed env + config: settings DSL, layered providers (overrides → env → file → dotenv → defaults), startup validation reporting all issues, redacted secrets, generated settings docs. |
+| `@structure-ai/dotenv` | First-class `.env` files: dotenv-compatible parsing, `dotenv-expand` references, `.env`/`.env.local`/`.env.<env>` cascade, environment-wins precedence, required-key checks, lossless in-place edits, `dotenv` CLI group. |
 | `@structure-ai/observability` | Structured JSON logging, correlation context (correlation/causation/request ids), boundary metrics, OTLP export of traces/metrics/logs. |
 | `@structure-ai/domain` | DDD tactical bindings: branded entity ids, schema value objects, decider-style aggregates (`decide`/`evolve`), domain events, repository port, classified error taxonomy. |
 | `@structure-ai/cqrs` | Schema-typed command/query buses: boundary validation, authorization hook, idempotency keys, tracing + metrics per dispatch. |

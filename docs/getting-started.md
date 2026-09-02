@@ -160,6 +160,8 @@ import { run as runMigrations } from "@structure-ai/migrations";
 
 `launch(program, { layers })` boots in the production order — validate config (all errors at once, exit 1) → telemetry → resources → ready — and drains within a grace period on shutdown. Run `runMigrations(migrations)` only in the process your deployment policy allows (deploy job, `migrations up` CLI command, or the single writer's startup).
 
+For local development, keep the values in `.env` files and load them below the real environment: `load(settings, { env: yield* Dotenv.environment() })` with `@structure-ai/dotenv` reads `.env`, `.env.local`, `.env.$NODE_ENV` and `.env.$NODE_ENV.local`, expands `${VAR}` references, and never overrides a variable the platform already set (`load-dotenv` skill).
+
 ## 8. Verify
 
 Every step above has a test-shaped equivalent in the owning package's `test/` directory — start from those when writing your app's tests: in-memory event store, `TestModel` for LLM calls, sqlite `:memory:` for SQL, no network.
