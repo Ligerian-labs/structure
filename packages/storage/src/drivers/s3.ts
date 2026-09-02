@@ -1,0 +1,404 @@
+import { Effect, type Redacted } from "effect";
+import {
+  ObjectNotFound,
+  type StorageError,
+  StorageRejected,
+  StorageUnavailable,
+  StorageValidationError,
+} from "../errors.js";
+import { keyToString, type ObjectKey } from "../key.js";
+import { type DispositionPolicy, dispositionPolicy, validContentType } from "../policy.js";
+import { type RequestBody, sha256Hex, signRequest } from "../sigv4.js";
+import {
+  instrumented,
+  type PutInput,
+  retrieved,
+  type Storage,
+  type StoredObject,
+} from "../storage.js";
+
+export interface S3StorageOptions {
+  readonly bucket: string;
+  readonly region: string;
+  readonly accessKeyId: string;
+  readonly secretAccessKey: Redacted.Redacted<string>;
+  /** Path-style endpoint base. Default: `https://s3.<region>.amazonaws.com`. */
+  readonly endpoint?: string;
+  /** Optional key prefix inside the bucket (multi-tenant namespacing). */
+  readonly keyPrefix?: string;
+  /** Multipart part size / buffering ceiling. Default 8 MiB. */
+  readonly partSize?: number;
+  readonly policy?: DispositionPolicy;
+  /** Injectable transport for tests. Defaults to global `fetch`. */
+  readonly fetchImpl?: typeof fetch;
+  readonly timeoutMillis?: number;
+  readonly now?: () => Date;
+}
+
+const DEFAULT_PART_SIZE = 8 * 1_024 * 1_024;
+
+const metadataHeaderName = (name: string): string | undefined => {
+  const cleaned = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/gu, "-");
+  return cleaned.length === 0 || cleaned.length > 64 ? undefined : cleaned;
+};
+
+/**
+ * S3 driver (path-style, SigV4-signed, no SDK dependency). Fixed bytes go
+ * out as one signed PUT. Streams are read sequentially into bounded
+ * `partSize` buffers: a stream that ends within one part is sent as a single
+ * PUT, larger ones use multipart upload — memory stays capped at one part
+ * either way, never the whole blob.
+ */
+export const makeS3Storage = (options: S3StorageOptions): Storage => {
+  const endpoint = options.endpoint ?? `https://s3.${options.region}.amazonaws.com`;
+  const partSize = options.partSize ?? DEFAULT_PART_SIZE;
+  const policy = options.policy ?? dispositionPolicy();
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeout = options.timeoutMillis ?? 30_000;
+
+  const credentials = {
+    accessKeyId: options.accessKeyId,
+    secretAccessKey: options.secretAccessKey,
+    region: options.region,
+    service: "s3",
+  } as const;
+
+  const objectUrl = (key: ObjectKey, query?: string): URL => {
+    const prefix = options.keyPrefix === undefined ? "" : `${options.keyPrefix}/`;
+    const base = `${endpoint}/${options.bucket}/${prefix}${encodeURIComponent(keyToString(key))}`;
+    return new URL(query === undefined ? base : `${base}?${query}`);
+  };
+
+  const doFetch = async (input: {
+    readonly method: string;
+    readonly url: URL;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly payloadHash?: string;
+    readonly body?: RequestBody;
+  }): Promise<Response> => {
+    const signed = signRequest({
+      credentials,
+      method: input.method,
+      url: input.url,
+      ...(input.headers === undefined ? {} : { headers: input.headers }),
+      payloadHash: input.payloadHash ?? sha256Hex(""),
+      ...(input.body === undefined ? {} : { body: input.body }),
+      ...(options.now === undefined ? {} : { now: options.now() }),
+    });
+    return await fetchImpl(signed.url, {
+      method: signed.method,
+      headers: signed.headers,
+      ...(signed.body === undefined ? {} : { body: signed.body }),
+      signal: AbortSignal.timeout(timeout),
+    });
+  };
+
+  const request = (input: Parameters<typeof doFetch>[0]): Effect.Effect<Response, StorageError> =>
+    Effect.tryPromise({
+      try: () => doFetch(input),
+      catch: (): StorageError =>
+        new StorageUnavailable({
+          driver: "s3",
+          operation: input.method.toLowerCase(),
+          reason: "s3-network",
+        }),
+    });
+
+  const failure = (operation: string, status: number, key?: string): StorageError => {
+    if (status === 404) {
+      return new ObjectNotFound({ key: key ?? "" });
+    }
+    const unavailable = status === 429 || status === 408 || status >= 500;
+    return unavailable
+      ? new StorageUnavailable({ driver: "s3", operation, reason: `s3-${status}` })
+      : new StorageRejected({ driver: "s3", operation, reason: `s3-${status}` });
+  };
+
+  const metaHeaders = (input: PutInput): Record<string, string> => {
+    const headers: Record<string, string> = {
+      "content-type": input.contentType,
+      "x-amz-meta-disposition": input.disposition ?? "attachment",
+    };
+    if (input.metadata !== undefined) {
+      for (const [name, value] of Object.entries(input.metadata)) {
+        const header = metadataHeaderName(name);
+        if (header !== undefined) headers[`x-amz-meta-${header}`] = value.slice(0, 1_024);
+      }
+    }
+    return headers;
+  };
+
+  const fromHeaders = (key: ObjectKey, headers: Headers, size: number): StoredObject => {
+    const metadata: Record<string, string> = {};
+    for (const [name, value] of headers.entries()) {
+      if (name.startsWith("x-amz-meta-") && name !== "x-amz-meta-disposition") {
+        metadata[name.slice("x-amz-meta-".length)] = value;
+      }
+    }
+    const lastModified = headers.get("last-modified");
+    const etag = headers.get("etag");
+    return {
+      key,
+      contentType: headers.get("content-type") ?? "application/octet-stream",
+      size,
+      ...(etag !== null && { etag }),
+      ...(lastModified !== null && { lastModified: new Date(lastModified) }),
+      disposition:
+        (headers.get("x-amz-meta-disposition") as StoredObject["disposition"]) ?? "attachment",
+      ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
+    };
+  };
+
+  /** PUT responses carry no object metadata server-side; echo the request's. */
+  const storedFromPut = (input: PutInput, headers: Headers, size: number): StoredObject => {
+    const etag = headers.get("etag");
+    const lastModified = headers.get("last-modified");
+    return {
+      key: input.key,
+      contentType: input.contentType,
+      size,
+      ...(etag !== null && { etag }),
+      ...(lastModified !== null && { lastModified: new Date(lastModified) }),
+      disposition: input.disposition ?? "attachment",
+      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+    };
+  };
+
+  const putBytes = (
+    input: PutInput,
+    bytes: Uint8Array,
+    headers: Record<string, string>,
+  ): Effect.Effect<StoredObject, StorageError> =>
+    Effect.gen(function* () {
+      const response = yield* request({
+        method: "PUT",
+        url: objectUrl(input.key),
+        headers,
+        payloadHash: sha256Hex(bytes),
+        body: bytes,
+      });
+      if (response.status !== 200) {
+        return yield* failure("put", response.status, keyToString(input.key));
+      }
+      return storedFromPut(input, response.headers, bytes.byteLength);
+    });
+
+  const putStream = (
+    input: PutInput,
+    headers: Record<string, string>,
+  ): Effect.Effect<StoredObject, StorageError> =>
+    Effect.tryPromise({
+      try: async (): Promise<StoredObject> => {
+        const reader = (input.body as ReadableStream<Uint8Array>).getReader();
+        const parts: Array<Uint8Array> = [];
+        let buffered = new Uint8Array(0);
+        let total = 0;
+        let done = false;
+        // Read sequentially into bounded partSize buffers: memory never
+        // exceeds one part plus one chunk, whatever the blob's size.
+        while (!done) {
+          const next = await reader.read();
+          if (next.done) {
+            done = true;
+            break;
+          }
+          const chunk = next.value ?? new Uint8Array(0);
+          total += chunk.byteLength;
+          const merged = new Uint8Array(buffered.byteLength + chunk.byteLength);
+          merged.set(buffered, 0);
+          merged.set(chunk, buffered.byteLength);
+          buffered = merged;
+          while (buffered.byteLength >= partSize) {
+            parts.push(buffered.slice(0, partSize));
+            buffered = buffered.slice(partSize);
+          }
+        }
+        if (buffered.byteLength > 0) parts.push(buffered);
+
+        if (parts.length <= 1) {
+          const only = parts[0] ?? new Uint8Array(0);
+          const single = await doFetch({
+            method: "PUT",
+            url: objectUrl(input.key),
+            headers,
+            payloadHash: sha256Hex(only),
+            body: only,
+          });
+          if (single.status !== 200) {
+            throw failure("put", single.status, keyToString(input.key));
+          }
+          return storedFromPut(input, single.headers, total);
+        }
+
+        // Multipart upload: initiate, upload each part, complete.
+        const initiate = await doFetch({
+          method: "POST",
+          url: objectUrl(input.key, "uploads="),
+          headers,
+        });
+        if (initiate.status !== 200) {
+          throw failure("put-multipart-initiate", initiate.status, keyToString(input.key));
+        }
+        const initiateBody = await initiate.text();
+        const uploadId = /<UploadId>([^<]+)<\/UploadId>/u.exec(initiateBody)?.[1];
+        if (uploadId === undefined) {
+          throw new StorageUnavailable({
+            driver: "s3",
+            operation: "put-multipart-initiate",
+            reason: "s3-missing-upload-id",
+          });
+        }
+        const partTags: Array<string> = [];
+        for (let index = 0; index < parts.length; index++) {
+          const part = parts[index];
+          const partNumber = index + 1;
+          if (part === undefined) continue;
+          const response = await doFetch({
+            method: "PUT",
+            url: objectUrl(input.key, `partNumber=${partNumber}&uploadId=${uploadId}`),
+            headers,
+            payloadHash: sha256Hex(part),
+            body: part,
+          });
+          if (response.status !== 200) {
+            throw failure("put-part", response.status, keyToString(input.key));
+          }
+          partTags.push(response.headers.get("etag") ?? `part-${partNumber}`);
+        }
+        const completeBody = `<CompleteMultipartUpload>${partTags
+          .map(
+            (etag, index) =>
+              `<Part><PartNumber>${index + 1}</PartNumber><ETag>${etag}</ETag></Part>`,
+          )
+          .join("")}</CompleteMultipartUpload>`;
+        const complete = await doFetch({
+          method: "POST",
+          url: objectUrl(input.key, `uploadId=${encodeURIComponent(uploadId)}`),
+          headers: { ...headers, "content-type": "application/xml" },
+          payloadHash: sha256Hex(completeBody),
+          body: completeBody,
+        });
+        if (complete.status !== 200) {
+          throw failure("put-multipart-complete", complete.status, keyToString(input.key));
+        }
+        return {
+          key: input.key,
+          contentType: input.contentType,
+          size: total,
+          disposition: input.disposition ?? "attachment",
+          ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        };
+      },
+      catch: (cause): StorageError =>
+        typeof cause === "object" &&
+        cause !== null &&
+        "_tag" in cause &&
+        typeof (cause as { _tag: unknown })._tag === "string" &&
+        [
+          "ObjectNotFound",
+          "StorageRejected",
+          "StorageUnavailable",
+          "StorageValidationError",
+        ].includes((cause as { _tag: string })._tag)
+          ? (cause as StorageError)
+          : new StorageUnavailable({
+              driver: "s3",
+              operation: "put-stream",
+              reason: "s3-stream",
+            }),
+    });
+
+  const storage: Storage = {
+    put: (input: PutInput) =>
+      Effect.gen(function* () {
+        if (!validContentType(input.contentType)) {
+          return yield* new StorageValidationError({
+            field: "contentType",
+            reason: "is not a valid media type",
+          });
+        }
+        const headers = metaHeaders(input);
+        const stored =
+          input.body instanceof Uint8Array
+            ? yield* putBytes(input, input.body, headers)
+            : yield* putStream(input, headers);
+        return stored;
+      }),
+    get: (key) =>
+      Effect.gen(function* () {
+        const response = yield* request({ method: "GET", url: objectUrl(key) });
+        if (response.status === 404) return yield* new ObjectNotFound({ key: keyToString(key) });
+        if (response.status !== 200)
+          return yield* failure("get", response.status, keyToString(key));
+        const size = Number(response.headers.get("content-length") ?? "0");
+        const meta = fromHeaders(key, response.headers, size);
+        const body = response.body ?? new ReadableStream<Uint8Array>();
+        return retrieved(meta, body, policy);
+      }),
+    head: (key) =>
+      Effect.gen(function* () {
+        const response = yield* request({ method: "HEAD", url: objectUrl(key) });
+        if (response.status === 404) return yield* new ObjectNotFound({ key: keyToString(key) });
+        if (response.status !== 200)
+          return yield* failure("head", response.status, keyToString(key));
+        return fromHeaders(
+          key,
+          response.headers,
+          Number(response.headers.get("content-length") ?? "0"),
+        );
+      }),
+    delete: (key) =>
+      Effect.gen(function* () {
+        const response = yield* request({ method: "DELETE", url: objectUrl(key) });
+        if (response.status === 404 || response.status === 204) return;
+        if (response.status !== 200)
+          return yield* failure("delete", response.status, keyToString(key));
+      }),
+    list: (prefix) =>
+      Effect.gen(function* () {
+        const fullPrefix =
+          options.keyPrefix === undefined ? prefix : `${options.keyPrefix}/${prefix}`;
+        const response = yield* request({
+          method: "GET",
+          url: new URL(
+            `${endpoint}/${options.bucket}?list-type=2&prefix=${encodeURIComponent(fullPrefix)}`,
+          ),
+        });
+        if (response.status !== 200) return yield* failure("list", response.status);
+        const xml = yield* Effect.tryPromise({
+          try: () => response.text(),
+          catch: () =>
+            new StorageUnavailable({ driver: "s3", operation: "list", reason: "s3-body" }),
+        });
+        const results: Array<StoredObject> = [];
+        for (const block of xml.match(/<Contents>[\s\S]*?<\/Contents>/gu) ?? []) {
+          const field = (name: string): string | undefined =>
+            new RegExp(`<${name}>([^<]*)</${name}>`, "u").exec(block)?.[1];
+          const keyRaw = field("Key");
+          const size = field("Size");
+          if (keyRaw === undefined || size === undefined) continue;
+          const stripped =
+            options.keyPrefix === undefined || !keyRaw.startsWith(`${options.keyPrefix}/`)
+              ? keyRaw
+              : keyRaw.slice(options.keyPrefix.length + 1);
+          const listEtag = field("ETag");
+          results.push({
+            key: stripped as ObjectKey,
+            contentType: "application/octet-stream",
+            size: Number(size),
+            ...(listEtag !== undefined && { etag: listEtag }),
+            ...(field("LastModified") === undefined
+              ? {}
+              : { lastModified: new Date(field("LastModified") ?? "") }),
+            disposition: "attachment",
+          });
+        }
+        return results;
+      }),
+  };
+
+  return instrumented("s3", storage);
+};

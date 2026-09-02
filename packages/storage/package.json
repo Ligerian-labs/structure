@@ -1,0 +1,36 @@
+{
+  "name": "@structure-ai/storage",
+  "version": "0.0.0",
+  "description": "Blob storage behind one port: local filesystem and S3 drivers (SigV4, multipart streaming), opaque typed keys, disposition policy with nosniff default, readiness check, per-driver metrics.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/storage"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@structure-ai/config": "workspace:*",
+    "@structure-ai/observability": "workspace:*",
+    "@structure-ai/runtime": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

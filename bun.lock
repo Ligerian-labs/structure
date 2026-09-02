@@ -256,6 +256,7 @@
       },
       "devDependencies": {
         "@effect/experimental": "catalog:",
+        "@effect/sql-pg": "catalog:",
         "@effect/sql-sqlite-bun": "catalog:",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -316,6 +317,20 @@
         "@effect/platform-bun": "catalog:",
         "@structure-ai/config": "workspace:*",
         "@structure-ai/observability": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/storage": {
+      "name": "@structure-ai/storage",
+      "version": "0.0.0",
+      "dependencies": {
+        "@structure-ai/config": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
+        "@structure-ai/runtime": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -569,6 +584,8 @@
     "@structure-ai/playwright": ["@structure-ai/playwright@workspace:packages/playwright"],
 
     "@structure-ai/runtime": ["@structure-ai/runtime@workspace:packages/runtime"],
+
+    "@structure-ai/storage": ["@structure-ai/storage@workspace:packages/storage"],
 
     "@structure-ai/viewmodel": ["@structure-ai/viewmodel@workspace:packages/viewmodel"],
 
