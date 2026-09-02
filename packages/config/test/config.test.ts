@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Duration, Effect, Exit, Redacted } from "effect";
+import { Duration, Effect, Exit, Option, Redacted } from "effect";
 import { ConfigLoadError, load, parseDotEnv, Settings } from "../src/index.js";
 
 const definition = Settings.struct({
@@ -70,11 +70,91 @@ describe("Settings + load", () => {
     expect(table).toContain("| HOST | string | no | 0.0.0.0 |");
   });
 
+  test("blank process environment values fall back to defaults", async () => {
+    const key = "STRUCTURE_TEST_BLANK_PROCESS_ENV";
+    const def = Settings.struct({ port: Settings.port(key, { default: 4321 }) });
+    process.env[key] = "";
+    try {
+      const result = await Effect.runPromise(load(def));
+      expect(result.port).toBe(4321);
+    } finally {
+      delete process.env[key];
+    }
+  });
+
   test("parses dotenv content", () => {
     const map = parseDotEnv('# comment\nexport FOO=bar\nQUOTED="a b"\nEMPTY=\nBAD LINE\n');
     expect(map.get("FOO")).toBe("bar");
     expect(map.get("QUOTED")).toBe("a b");
     expect(map.get("EMPTY")).toBe("");
     expect(map.has("BAD LINE")).toBe(false);
+  });
+});
+
+describe("load from an injected environment map", () => {
+  const withDefaults = Settings.struct({
+    port: Settings.port("PORT", { default: 3000 }),
+    name: Settings.optional(Settings.string("NAME")),
+    http: Settings.nested(
+      "HTTP",
+      Settings.struct({ port: Settings.port("PORT", { default: 80 }) }),
+    ),
+  });
+
+  test("reads values from `env` instead of the process environment", async () => {
+    const key = "STRUCTURE_TEST_INJECTED_ENV";
+    const def = Settings.struct({ port: Settings.port(key, { default: 1 }) });
+    process.env[key] = "1111";
+    try {
+      const injected = await Effect.runPromise(load(def, { env: { [key]: "2222" } }));
+      expect(injected.port).toBe(2222);
+      const isolated = await Effect.runPromise(load(def, { env: {} }));
+      expect(isolated.port).toBe(1);
+    } finally {
+      delete process.env[key];
+    }
+  });
+
+  test("uses `_` as the nesting delimiter", async () => {
+    const result = await Effect.runPromise(load(withDefaults, { env: { HTTP_PORT: "8081" } }));
+    expect(result.http.port).toBe(8081);
+    expect(result.port).toBe(3000);
+  });
+
+  test("blank values yield the default and `optional` loads None", async () => {
+    const result = await Effect.runPromise(
+      load(withDefaults, { env: { PORT: "", NAME: "   ", HTTP_PORT: "\t" } }),
+    );
+    expect(result.port).toBe(3000);
+    expect(Option.isNone(result.name)).toBe(true);
+    expect(result.http.port).toBe(80);
+  });
+
+  test("undefined entries are treated as unset", async () => {
+    const result = await Effect.runPromise(load(withDefaults, { env: { PORT: undefined } }));
+    expect(result.port).toBe(3000);
+  });
+
+  test("`blankMeansUnset: false` keeps blank values present", async () => {
+    const result = await Effect.runPromise(
+      load(withDefaults, { env: { NAME: "" }, blankMeansUnset: false }),
+    );
+    expect(Option.getOrNull(result.name)).toBe("");
+    const exit = await Effect.runPromiseExit(
+      load(withDefaults, { env: { PORT: "" }, blankMeansUnset: false }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit) && exit.cause._tag === "Fail") {
+      expect(exit.cause.error).toBeInstanceOf(ConfigLoadError);
+      expect(exit.cause.error.issues.map((i) => i.path)).toContain("PORT");
+    }
+  });
+
+  test("precedence stays overrides → env → defaults", async () => {
+    const result = await Effect.runPromise(
+      load(withDefaults, { overrides: { PORT: "1" }, env: { PORT: "2", HTTP_PORT: "3" } }),
+    );
+    expect(result.port).toBe(1);
+    expect(result.http.port).toBe(3);
   });
 });

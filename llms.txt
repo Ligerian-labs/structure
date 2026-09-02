@@ -4,7 +4,7 @@
 
 ## Packages
 
-- [@structure-ai/config](packages/config/README.md): settings DSL (Settings.string/int/port/url/duration/secret/literal/optional/struct/nested), load() with precedence overrides→env→file→dotenv→defaults, all-errors-at-once ConfigLoadError, renderDocs() markdown settings table.
+- [@structure-ai/config](packages/config/README.md): settings DSL (Settings.string/int/port/url/duration/secret/literal/optional/struct/nested), load() with precedence overrides→env→file→dotenv→defaults (env injectable as a map; blank env values count as unset by default), all-errors-at-once ConfigLoadError, renderDocs() markdown settings table.
 - [@structure-ai/observability](packages/observability/README.md): layer() for structured JSON logging + OTLP export, ServiceMeta, Correlation.within/scoped for correlation ids on logs+spans, Metrics.boundary/track for traffic-errors-latency.
 - [@structure-ai/domain](packages/domain/README.md): EntityId.define branded ids, ValueObject.define schema values, Aggregate.define decider (initial/decide/evolve) + rehydrate/execute, DomainEvent.define, EventMetadata/Envelope, Repository port, errors InvariantViolation/NotFound/ConcurrencyConflict/ValidationFailed with FailureClass.
 - [@structure-ai/cqrs](packages/cqrs/README.md): Command.define/Query.define with Schema payload+success, CommandBus/QueryBus dispatch with validation, Authorizer hook, IdempotencyStore, timeouts, spans+metrics per dispatch.

@@ -52,4 +52,4 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 
 ## Environments
 
-No environment-name branching anywhere: behavior differences ride on explicit settings (`Settings.*`), documented per package via `Settings.renderDocs`. Secrets enter as env vars, load as `Redacted`, and never appear in logs, traces, or errors.
+No environment-name branching anywhere: behavior differences ride on explicit settings (`Settings.*`), documented per package via `Settings.renderDocs`. Secrets enter as env vars, load as `Redacted`, and never appear in logs, traces, or errors. An env var set to an empty or whitespace-only value counts as unset (`docker compose` forwards `VAR=${VAR:-}` as `VAR=`): the setting's default applies and `optional` settings load `None`; `blankMeansUnset: false` on `load` keeps the literal empty string.
