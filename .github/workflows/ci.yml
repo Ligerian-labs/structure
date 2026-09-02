@@ -83,6 +83,56 @@ jobs:
         working-directory: packages/auth-pg
         run: bun test
 
+  test-nisshi:
+    name: Nisshi adapter tests (SQLite + Postgres sidecars)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NISSHI_VERSION: v0.7.0-pre.2
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Download pinned Nisshi broker
+        run: |
+          curl -sL --fail -o nisshi.tar.gz \
+            "https://github.com/nisshi-io/nisshi/releases/download/${NISSHI_VERSION}/nisshi-x86_64-unknown-linux-gnu.tar.gz"
+          tar xzf nisshi.tar.gz
+          chmod +x bin/nisshi
+          ./bin/nisshi --version
+      - name: Start broker (memory engine)
+        run: |
+          ./bin/nisshi \
+            --storage-engine memory://ci/ \
+            --kafka-listener-url tcp://127.0.0.1:19092 \
+            --kafka-advertised-listener-url tcp://127.0.0.1:19092 &
+          for i in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/19092) 2>/dev/null; then echo "broker up"; exit 0; fi
+            sleep 0.5
+          done
+          echo "broker never came up"; exit 1
+      - name: Run nisshi adapter tests against real broker and Postgres sidecar
+        working-directory: packages/eventsourcing-nisshi
+        env:
+          NISSHI_URL: tcp://127.0.0.1:19092
+        run: bun test
+
   pr-title:
     name: Conventional PR title
     if: github.event_name == 'pull_request'
