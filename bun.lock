@@ -170,6 +170,19 @@
         "typescript": "catalog:",
       },
     },
+    "packages/dotenv": {
+      "name": "@structure-ai/dotenv",
+      "version": "0.0.0",
+      "dependencies": {
+        "@structure-ai/cli": "workspace:*",
+        "@structure-ai/config": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/eventsourcing": {
       "name": "@structure-ai/eventsourcing",
       "version": "0.0.0",
@@ -617,6 +630,8 @@
     "@structure-ai/cqrs": ["@structure-ai/cqrs@workspace:packages/cqrs"],
 
     "@structure-ai/domain": ["@structure-ai/domain@workspace:packages/domain"],
+
+    "@structure-ai/dotenv": ["@structure-ai/dotenv@workspace:packages/dotenv"],
 
     "@structure-ai/eventsourcing": ["@structure-ai/eventsourcing@workspace:packages/eventsourcing"],
 

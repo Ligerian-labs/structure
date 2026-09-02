@@ -63,4 +63,6 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 
 No environment-name branching anywhere: behavior differences ride on explicit settings (`Settings.*`), documented per package via `Settings.renderDocs`. Secrets enter as env vars, load as `Redacted`, and never appear in logs, traces, or errors. An env var set to an empty or whitespace-only value counts as unset (`docker compose` forwards `VAR=${VAR:-}` as `VAR=`): the setting's default applies and `optional` settings load `None`; `blankMeansUnset: false` on `load` keeps the literal empty string.
 
+`.env` files (`@structure-ai/dotenv`) are a local-development source, loaded explicitly at the entrypoint and always below the real environment: a variable the platform sets wins, the file's value is reported as shadowed. Production images carry no `.env` files — a missing cascade file is not an error, a missing required variable is (`<app> dotenv check` exits 78 with the full list, and startup fails with the same `ConfigLoadError`).
+
 One such setting deserves a warning: the `trustProxy` flag passed to `clientIp` (HTTP rate limiting). Keep it `false` unless a proxy you operate terminates every connection and appends the client address to `x-forwarded-for`; with it on, a directly reachable replica lets any client choose its own rate-limit bucket.

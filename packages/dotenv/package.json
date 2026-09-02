@@ -1,0 +1,36 @@
+{
+  "name": "@structure-ai/dotenv",
+  "version": "0.0.0",
+  "description": "First-class .env support on Effect: dotenv-compatible parsing, variable expansion, environment cascade (.env, .env.local, .env.<env>, .env.<env>.local), lossless file edits, required-key checks, and a CLI command group.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/dotenv"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@structure-ai/config": "workspace:*",
+    "@structure-ai/cli": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

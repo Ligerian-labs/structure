@@ -34,6 +34,8 @@ flowchart LR
 ```mermaid
 flowchart TD
     config --> observability
+    config --> dotenv
+    cli --> dotenvcli[dotenv/cli]
     observability --> cqrs & runtime & http & cli & ai
     domain --> cqrs --> eventsourcing
     eventsourcing --> essqlite[eventsourcing-sqlite] & espg[eventsourcing-pg] & esnisshi[eventsourcing-nisshi]
@@ -47,7 +49,7 @@ flowchart TD
 
 **MCP as an OAuth 2.1 protected resource.** `mcp`'s HTTP transport takes an optional `auth` block: a `verify(token, request)` hook the application implements (typically `makeAuthorizationServer(...).verifyAccessToken` from `auth`, or any introspection call) and the RFC 9728 metadata to publish. The package rejects missing/invalid bearers with `401` and a `WWW-Authenticate: Bearer resource_metadata=…` challenge, serves `/.well-known/oauth-protected-resource`, refuses `tools/call` on a tool whose declared `scopes` the token lacks with `403 insufficient_scope`, and runs the request on behalf of the verified principal. The principal type is structural (compatible with `authorization`'s `Principal`), and a `within` hook lets the application pass `Principal.within` so its policy guards apply — the three packages compose in the app, never through package dependencies.
 
-No cycles; `migrations` and `auth` are standalone foundations (`auth` depends only on Effect), while the auth SQL adapters depend on `auth` and Bun's built-in database clients. `ai`, `mcp`, `playwright` and `authorization` are leaves (`http`/`mcp` never depend on `authorization` — applications compose its guards with their endpoints and tools; `authorization` never depends on `auth` — applications turn an authenticated session into a `Principal`). Auth applications inject tenant configuration, persistence, mail, audit, rate limits, and external HTTP at composition time rather than coupling authentication to another context's tables. A PR that needs to violate this direction is redesigning the system and needs an ADR.
+No cycles; `dotenv` sits above `config` (it feeds `load(settings, { env })` and never becomes a runtime dependency — applications load `.env` files explicitly at their entrypoint, ADR-0017); `migrations` and `auth` are standalone foundations (`auth` depends only on Effect), while the auth SQL adapters depend on `auth` and Bun's built-in database clients. `ai`, `mcp`, `playwright` and `authorization` are leaves (`http`/`mcp` never depend on `authorization` — applications compose its guards with their endpoints and tools; `authorization` never depends on `auth` — applications turn an authenticated session into a `Principal`). Auth applications inject tenant configuration, persistence, mail, audit, rate limits, and external HTTP at composition time rather than coupling authentication to another context's tables. A PR that needs to violate this direction is redesigning the system and needs an ADR.
 
 ## Authentication boundary
 
