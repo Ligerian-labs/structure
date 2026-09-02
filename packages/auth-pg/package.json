@@ -25,9 +25,12 @@
   },
   "dependencies": {
     "@structure-ai/auth": "workspace:*",
+    "@effect/sql": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/sql-pg": "catalog:",
+    "@structure-ai/migrations": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:"
   }

@@ -45,10 +45,13 @@
       "name": "@structure-ai/auth-pg",
       "version": "0.0.0",
       "dependencies": {
+        "@effect/sql": "catalog:",
         "@structure-ai/auth": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
+        "@effect/sql-pg": "catalog:",
+        "@structure-ai/migrations": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
       },

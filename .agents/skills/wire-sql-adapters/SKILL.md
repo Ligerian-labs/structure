@@ -28,7 +28,7 @@ const durable = layer({ filename: "./app.db" });            // sqlite
 
 ## Rules
 
-- One migration owner: either the adapter's `layer` (build-time migrate) or your `@structure-ai/migrations` set via `migrate` — never both racing.
+- One migration owner: either the adapter's `layer` (build-time migrate) or your `@structure-ai/migrations` set via `migrate` — never both racing. When the app has a set, every package-owned schema goes in it: `defineMigration(id, name, migrate(options))` for eventsourcing-pg/jobs, `migration(id, options)` from `@structure-ai/auth-pg` for the auth tables (its Bun `SQL` `migrate(sql)` is the no-set alternative, same DDL).
 - Adapter choice is deployment shape, not domain concern: domain code depends only on `@structure-ai/eventsourcing` ports; only the composition root names the adapter package.
 - WAL is on by default for sqlite files; `:memory:` needs no WAL.
 - Dead-lettered outbox messages are data: surface them (queue depth, alert) — the relay never silently drops.

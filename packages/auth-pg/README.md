@@ -1,14 +1,14 @@
 # @structure-ai/auth-pg
 
-Durable PostgreSQL `AuthStore` for `@structure-ai/auth`, implemented with Bun's built-in `SQL` client. It adds no external database or authentication dependency.
+Durable PostgreSQL `AuthStore`, `ApiKeyStore`, and `OAuthServerStore` for `@structure-ai/auth`, implemented with Bun's built-in `SQL` client. It adds no external database or authentication dependency; `@effect/sql` is used only to express the schema migration.
 
 ## Usage
 
 ```ts
 import { SQL } from "bun";
 import { makeAuth } from "@structure-ai/auth";
-import { makeAuthStore, migrate } from "@structure-ai/auth-pg";
-import { Effect, Redacted } from "effect";
+import { makeAuthStore } from "@structure-ai/auth-pg";
+import { Redacted } from "effect";
 
 const sql = new SQL({
   adapter: "postgres",
@@ -16,9 +16,7 @@ const sql = new SQL({
   max: 10,
 });
 
-// Run only in the deployment's designated migration process.
-await Effect.runPromise(migrate(sql));
-
+// The schema must already exist (see "Schema migration") — stores never migrate.
 const auth = makeAuth({
   store: makeAuthStore(sql),
   // tenant configuration, email, rate limit, audit, and policy ports...
@@ -29,9 +27,54 @@ const auth = makeAuth({
 
 ```ts
 const options = { tablePrefix: "application_auth_" };
-await Effect.runPromise(migrate(sql, options));
 const store = makeAuthStore(sql, options);
 ```
+
+## Schema migration
+
+`makeAuthStore`, `makeApiKeyStore`, and `makeOAuthServerStore` assume the schema exists and never migrate implicitly. Two entry points create it, generated from the same DDL statements so they cannot drift; pick one per deployment and run it only in the designated migration process (see `docs/operations.md`, "Migrations policy").
+
+**In the application's `@structure-ai/migrations` set** (preferred: one set, one lock, one transaction next to the event store, jobs, and view-model migrations):
+
+```ts
+import { migration as authMigration } from "@structure-ai/auth-pg";
+import { migrate as eventStoreMigrate } from "@structure-ai/eventsourcing-pg";
+import { defineMigration, makeSet, run } from "@structure-ai/migrations";
+import { ViewModel } from "@structure-ai/viewmodel";
+
+const migrations = makeSet([
+  defineMigration(1, "create_event_store", eventStoreMigrate()),
+  authMigration(2), // or authMigration(2, { tablePrefix: "application_auth_" })
+  ViewModel.migration(OrderSummary, 3),
+]);
+
+// designated migrator only, on the app's SqlClient (e.g. @effect/sql-pg PgClient.layer):
+await Effect.runPromise(run(migrations).pipe(Effect.provide(PgClient.layer({ url }))));
+```
+
+`migration(id, options?)` returns `{ id, name: "create_<prefix>schema", up }` where `up` is an `Effect<void, SqlError, SqlClient>`, the same shape as a `Migration` from `@structure-ai/migrations`. The package does not depend on `@structure-ai/migrations`; the value is assignable structurally (a type-level test in `test/pg.test.ts` keeps it that way).
+
+**All-in-one over a Bun `SQL` handle** (apps without a migration set, and tests):
+
+```ts
+import { migrate } from "@structure-ai/auth-pg";
+
+await Effect.runPromise(migrate(sql)); // one transaction, idempotent
+```
+
+Both entry points are idempotent (`CREATE ... IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`): a re-run is a no-op. The `DATABASE_URL`-gated suite asserts that both produce byte-identical column, constraint, and index definitions.
+
+## Exports
+
+| Export | What it is |
+| --- | --- |
+| `makeAuthStore(sql, options?)` | `AuthStore` over a Bun `SQL` handle. |
+| `makeApiKeyStore(sql, options?)` | `ApiKeyStore` over the same handle. |
+| `makeOAuthServerStore(sql, options?)` | `OAuthServerStore` (OAuth 2.1 provider side). |
+| `migration(id, options?)` | The schema as a `@structure-ai/migrations`-compatible `AuthMigration` over `SqlClient`. |
+| `migrate(sql, options?)` | Same schema over a Bun `SQL` handle, one transaction. |
+| `tableNames(options?)` | Resolved table names for a prefix (tests drop them after a run). |
+| `AdapterOptions`, `TableNames`, `AuthMigration` | Types. |
 
 ## Guarantees
 
@@ -46,7 +89,7 @@ PostgreSQL timestamps use `TIMESTAMPTZ`; passkey counters use `BIGINT` to hold t
 
 ## Operations
 
-`migrate` creates the initial schema idempotently in one transaction. Invoke it from one deploy job or designated migrator, not every serving instance. Future schema changes remain forward-only under the application's migration process.
+Run the schema migration from one deploy job or designated migrator, not every serving instance. Future schema changes are new forward-only migrations in the application's set; `migration(id)` stays the frozen initial schema.
 
 Applications own pool sizing, connection timeouts, TLS, least-privilege database credentials, backups, and tenant-aware cleanup of expired rows. Close the Bun `SQL` pool during bounded application shutdown.
 
