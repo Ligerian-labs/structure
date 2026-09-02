@@ -77,6 +77,14 @@ export interface MakeAuthOptions {
   readonly accountLinkPolicy?: AccountLinkPolicy;
   readonly rateLimiter: RateLimiter;
   readonly audit?: AuthAuditSink;
+  /**
+   * Second-factor hook: when set and it reports an enrolled user, sessions
+   * for that user are created `2fa-pending` (no `elevatedAt`) — wire it to
+   * `TotpService.isEnrolled`. Absent (default), sessions need no elevation.
+   */
+  readonly secondFactor?: {
+    readonly isEnrolled: (tenantId: TenantId, userId: string) => Effect.Effect<boolean>;
+  };
 }
 
 export interface RegisterPasswordInput {
@@ -410,6 +418,9 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
       const expiresAt = new Date(
         now.getTime() + (config.session?.ttlMillis ?? DEFAULT_SESSION_TTL),
       );
+      const pendingSecondFactor =
+        options.secondFactor !== undefined &&
+        (yield* options.secondFactor.isEnrolled(tenantId, user.id));
       yield* options.store.createSession({
         id: primitives.randomToken(18),
         tenantId,
@@ -417,6 +428,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         tokenHash: hash,
         createdAt: now,
         expiresAt,
+        ...(pendingSecondFactor ? {} : { elevatedAt: now }),
       });
       return { token: Redacted.make(raw), user, expiresAt };
     });

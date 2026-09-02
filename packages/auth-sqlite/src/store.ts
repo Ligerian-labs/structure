@@ -14,6 +14,7 @@ import {
   type PasskeyRecord,
   type PasswordCredential,
   type SessionRecord,
+  type TotpRecord,
 } from "@structure-ai/auth";
 import type { SQL } from "bun";
 import { Effect, Redacted } from "effect";
@@ -55,6 +56,7 @@ interface SessionRow {
   readonly token_hash: string;
   readonly created_at: DateValue;
   readonly expires_at: DateValue;
+  readonly elevated_at: DateValue | null;
 }
 
 interface OAuthStateRow {
@@ -97,6 +99,33 @@ interface PasskeyRow {
 
 const date = (value: DateValue): Date => (value instanceof Date ? value : new Date(value));
 
+interface TotpRow {
+  readonly tenant_id: string;
+  readonly user_id: string;
+  readonly secret_base32: string;
+  readonly confirmed: boolean | number;
+  readonly recovery_code_hashes: string;
+  readonly failed_attempts: number;
+  readonly locked_until: DateValue | null;
+  readonly enrolled_at: DateValue;
+}
+
+const decodeHashes = (value: string): ReadonlyArray<string> => {
+  const parsed = JSON.parse(value) as unknown;
+  return Array.isArray(parsed) && parsed.every((entry) => typeof entry === "string") ? parsed : [];
+};
+
+const decodeTotp = (row: TotpRow): TotpRecord => ({
+  tenantId: row.tenant_id,
+  userId: row.user_id,
+  secretBase32: row.secret_base32,
+  confirmed: row.confirmed === true || row.confirmed === 1,
+  recoveryCodeHashes: decodeHashes(row.recovery_code_hashes),
+  failedAttempts: Number(row.failed_attempts),
+  ...(row.locked_until === null ? {} : { lockedUntil: date(row.locked_until) }),
+  enrolledAt: date(row.enrolled_at),
+});
+
 const decodeUser = (row: UserRow): AuthUser => ({
   id: row.id,
   tenantId: row.tenant_id,
@@ -131,6 +160,7 @@ const decodeSession = (row: SessionRow): SessionRecord => ({
   tokenHash: row.token_hash,
   createdAt: date(row.created_at),
   expiresAt: date(row.expires_at),
+  ...(row.elevated_at === null ? {} : { elevatedAt: date(row.elevated_at) }),
 });
 
 const decodeOAuthState = (row: OAuthStateRow): OAuthStateRecord => ({
@@ -347,16 +377,17 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
       write("create-session", record.tenantId, "session-token", async () => {
         await sql`
           INSERT INTO ${sql(tables.sessions)}
-            (tenant_id, id, user_id, token_hash, created_at, expires_at)
+            (tenant_id, id, user_id, token_hash, created_at, expires_at, elevated_at)
           VALUES
             (${record.tenantId}, ${record.id}, ${record.userId}, ${record.tokenHash},
-             ${record.createdAt.toISOString()}, ${record.expiresAt.toISOString()})
+             ${record.createdAt.toISOString()}, ${record.expiresAt.toISOString()},
+             ${record.elevatedAt?.toISOString() ?? null})
         `;
       }).pipe(Effect.asVoid),
     findSession: (tenantId, tokenHash, now) =>
       read("find-session", async () => {
         const rows = await sql<SessionRow[]>`
-          SELECT tenant_id, id, user_id, token_hash, created_at, expires_at
+          SELECT tenant_id, id, user_id, token_hash, created_at, expires_at, elevated_at
           FROM ${sql(tables.sessions)}
           WHERE tenant_id = ${tenantId} AND token_hash = ${tokenHash}
             AND expires_at > ${now.toISOString()}
@@ -502,5 +533,111 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
             : Effect.fail(new IdentityConflict({ tenantId, identity: "passkey-counter" })),
         ),
       ),
+    putTotpSecret: (record) =>
+      write("put-totp-secret", record.tenantId, "totp", async () => {
+        await sql`
+          INSERT INTO ${sql(tables.totp)}
+            (tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
+             failed_attempts, locked_until, enrolled_at)
+          VALUES
+            (${record.tenantId}, ${record.userId}, ${record.secretBase32},
+             ${record.confirmed ? 1 : 0}, ${JSON.stringify(record.recoveryCodeHashes)},
+             ${record.failedAttempts}, ${record.lockedUntil?.toISOString() ?? null},
+             ${record.enrolledAt.toISOString()})
+          ON CONFLICT (tenant_id, user_id) DO UPDATE SET
+            secret_base32 = excluded.secret_base32,
+            confirmed = excluded.confirmed,
+            recovery_code_hashes = excluded.recovery_code_hashes,
+            failed_attempts = excluded.failed_attempts,
+            locked_until = excluded.locked_until,
+            enrolled_at = excluded.enrolled_at
+        `;
+      }).pipe(Effect.asVoid),
+    findTotp: (tenantId, userId) =>
+      read("find-totp", async () => {
+        const rows = await sql<TotpRow[]>`
+          SELECT tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
+                 failed_attempts, locked_until, enrolled_at
+          FROM ${sql(tables.totp)}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+        `;
+        return rows[0] === undefined ? undefined : decodeTotp(rows[0]);
+      }),
+    confirmTotp: (tenantId, userId, recoveryCodeHashes, now) =>
+      read("confirm-totp", async () => {
+        const rows = await sql<TotpRow[]>`
+          UPDATE ${sql(tables.totp)}
+          SET confirmed = 1, recovery_code_hashes = ${JSON.stringify(recoveryCodeHashes)},
+              failed_attempts = 0, locked_until = NULL, enrolled_at = ${now.toISOString()}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId} AND confirmed = 0
+          RETURNING tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
+                    failed_attempts, locked_until, enrolled_at
+        `;
+        return rows[0] === undefined ? undefined : decodeTotp(rows[0]);
+      }),
+    removeTotp: (tenantId, userId) =>
+      read("remove-totp", async () => {
+        await sql`
+          DELETE FROM ${sql(tables.totp)}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+        `;
+      }).pipe(Effect.asVoid),
+    recordTotpFailure: ({ tenantId, userId, threshold, cooldownMillis, now }) =>
+      read("record-totp-failure", async () => {
+        const rows = await sql<TotpRow[]>`
+          UPDATE ${sql(tables.totp)}
+          SET failed_attempts = failed_attempts + 1,
+              locked_until = CASE
+                WHEN failed_attempts + 1 >= ${threshold}
+                  THEN ${new Date(now.getTime() + cooldownMillis).toISOString()}
+                ELSE locked_until
+              END
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+          RETURNING tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
+                    failed_attempts, locked_until, enrolled_at
+        `;
+        const record = rows[0] === undefined ? undefined : decodeTotp(rows[0]);
+        if (record === undefined || record.failedAttempts < threshold) {
+          return { locked: false as const };
+        }
+        return record.lockedUntil === undefined
+          ? { locked: true as const }
+          : { locked: true as const, lockedUntil: record.lockedUntil };
+      }),
+    resetTotpFailures: (tenantId, userId) =>
+      read("reset-totp-failures", async () => {
+        await sql`
+          UPDATE ${sql(tables.totp)}
+          SET failed_attempts = 0, locked_until = NULL
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+        `;
+      }).pipe(Effect.asVoid),
+    consumeRecoveryCode: (tenantId, userId, codeHash) =>
+      read("consume-recovery-code", async () => {
+        const rows = await sql<TotpRow[]>`
+          SELECT tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
+                 failed_attempts, locked_until, enrolled_at
+          FROM ${sql(tables.totp)}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+        `;
+        const row = rows[0];
+        if (row === undefined) return false;
+        const hashes = decodeTotp(row).recoveryCodeHashes;
+        if (!hashes.includes(codeHash)) return false;
+        await sql`
+          UPDATE ${sql(tables.totp)}
+          SET recovery_code_hashes = ${JSON.stringify(hashes.filter((hash) => hash !== codeHash))}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+        `;
+        return true;
+      }),
+    elevateSession: (tenantId, tokenHash, now) =>
+      read("elevate-session", async () => {
+        await sql`
+          UPDATE ${sql(tables.sessions)}
+          SET elevated_at = ${now.toISOString()}
+          WHERE tenant_id = ${tenantId} AND token_hash = ${tokenHash}
+        `;
+      }).pipe(Effect.asVoid),
   };
 };

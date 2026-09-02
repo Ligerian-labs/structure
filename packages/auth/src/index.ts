@@ -34,6 +34,7 @@ export {
   InvalidAuthToken,
   InvalidCredentials,
   RateLimitExceeded,
+  SecondFactorRequired,
   UnsupportedPasskey,
 } from "./errors.js";
 export {
@@ -63,6 +64,7 @@ export type {
   SessionRecord,
   TenantAuthConfig,
   TenantId,
+  TotpRecord,
   UserId,
 } from "./model.js";
 export {
@@ -104,6 +106,25 @@ export {
   type InMemoryAuthStore,
   inMemoryAuthStore,
 } from "./store.js";
+export {
+  base32Decode,
+  base32Encode,
+  generateRecoveryCodes,
+  generateTotpSecret,
+  hotp,
+  TOTP_STEP_SECONDS,
+  totpCode,
+  totpQrPayload,
+  verifyTotpCode,
+} from "./totp.js";
+export {
+  type ConfirmedEnrollment,
+  type EnrollmentSecret,
+  makeTotp,
+  type TotpService,
+  type TotpServiceError,
+  type TotpServiceOptions,
+} from "./twofactor.js";
 export {
   type PasskeyAuthenticationOptions,
   type PasskeyAuthenticationResponse,

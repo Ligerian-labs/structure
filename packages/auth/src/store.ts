@@ -13,6 +13,7 @@ import type {
   PasswordCredential,
   SessionRecord,
   TenantId,
+  TotpRecord,
   UserId,
 } from "./model.js";
 
@@ -94,6 +95,32 @@ export interface AuthStore {
     expectedCounter: number,
     counter: number,
   ) => StoreEffect<void>;
+  readonly putTotpSecret: (record: TotpRecord) => StoreEffect<void>;
+  readonly findTotp: (tenantId: TenantId, userId: UserId) => StoreEffect<TotpRecord | undefined>;
+  /** Pending → confirmed, replacing the recovery-code hashes atomically. */
+  readonly confirmTotp: (
+    tenantId: TenantId,
+    userId: UserId,
+    recoveryCodeHashes: ReadonlyArray<string>,
+    now: Date,
+  ) => StoreEffect<TotpRecord | undefined>;
+  readonly removeTotp: (tenantId: TenantId, userId: UserId) => StoreEffect<void>;
+  /** Counts one failure; locks (and reports) once the threshold is reached. */
+  readonly recordTotpFailure: (input: {
+    readonly tenantId: TenantId;
+    readonly userId: UserId;
+    readonly threshold: number;
+    readonly cooldownMillis: number;
+    readonly now: Date;
+  }) => StoreEffect<{ readonly locked: boolean; readonly lockedUntil?: Date }>;
+  readonly resetTotpFailures: (tenantId: TenantId, userId: UserId) => StoreEffect<void>;
+  /** Single-use: removes the hash when present, reports whether it matched. */
+  readonly consumeRecoveryCode: (
+    tenantId: TenantId,
+    userId: UserId,
+    codeHash: string,
+  ) => StoreEffect<boolean>;
+  readonly elevateSession: (tenantId: TenantId, tokenHash: string, now: Date) => StoreEffect<void>;
 }
 
 interface MemoryState {
@@ -106,6 +133,7 @@ interface MemoryState {
   readonly oauthIdentities: Map<string, OAuthIdentity>;
   readonly passkeyChallenges: Map<string, PasskeyChallengeRecord>;
   readonly passkeys: Map<string, PasskeyRecord>;
+  readonly totp: Map<string, TotpRecord>;
 }
 
 export interface InMemoryAuthSnapshot {
@@ -117,6 +145,7 @@ export interface InMemoryAuthSnapshot {
   readonly oauthIdentities: ReadonlyArray<OAuthIdentity>;
   readonly passkeyChallenges: ReadonlyArray<PasskeyChallengeRecord>;
   readonly passkeys: ReadonlyArray<PasskeyRecord>;
+  readonly totp: ReadonlyArray<TotpRecord>;
 }
 
 export interface InMemoryAuthStore {
@@ -140,6 +169,7 @@ const newState = (): MemoryState => ({
   oauthIdentities: new Map(),
   passkeyChallenges: new Map(),
   passkeys: new Map(),
+  totp: new Map(),
 });
 
 export const inMemoryAuthStore = (): InMemoryAuthStore => {
@@ -352,6 +382,77 @@ export const inMemoryAuthStore = (): InMemoryAuthStore => {
         state.passkeys.set(key, { ...current, counter });
         return Effect.void;
       }),
+    putTotpSecret: (record) =>
+      Effect.sync(() => {
+        state.totp.set(scoped(record.tenantId, record.userId), record);
+      }),
+    findTotp: (tenantId, userId) => Effect.sync(() => state.totp.get(scoped(tenantId, userId))),
+    confirmTotp: (tenantId, userId, recoveryCodeHashes, now) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, userId);
+        const current = state.totp.get(key);
+        if (current === undefined || current.confirmed) return undefined;
+        const updated: TotpRecord = {
+          ...current,
+          confirmed: true,
+          recoveryCodeHashes: [...recoveryCodeHashes],
+          failedAttempts: 0,
+          enrolledAt: now,
+        };
+        state.totp.set(key, updated);
+        return updated;
+      }),
+    removeTotp: (tenantId, userId) =>
+      Effect.sync(() => {
+        state.totp.delete(scoped(tenantId, userId));
+      }),
+    recordTotpFailure: ({ tenantId, userId, threshold, cooldownMillis, now }) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, userId);
+        const current = state.totp.get(key);
+        if (current === undefined) return { locked: false as const };
+        const failedAttempts = current.failedAttempts + 1;
+        const locked = failedAttempts >= threshold;
+        const lockedUntil = locked ? new Date(now.getTime() + cooldownMillis) : current.lockedUntil;
+        state.totp.set(key, {
+          ...current,
+          failedAttempts,
+          ...(lockedUntil === undefined ? {} : { lockedUntil }),
+        });
+        return locked
+          ? { locked: true as const, lockedUntil: lockedUntil as Date }
+          : { locked: false as const };
+      }),
+    resetTotpFailures: (tenantId, userId) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, userId);
+        const current = state.totp.get(key);
+        if (current !== undefined) {
+          const { lockedUntil: _expired, ...rest } = current;
+          state.totp.set(key, { ...rest, failedAttempts: 0 });
+        }
+      }),
+    consumeRecoveryCode: (tenantId, userId, codeHash) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, userId);
+        const current = state.totp.get(key);
+        if (current === undefined || !current.recoveryCodeHashes.includes(codeHash)) {
+          return false;
+        }
+        state.totp.set(key, {
+          ...current,
+          recoveryCodeHashes: current.recoveryCodeHashes.filter((hash) => hash !== codeHash),
+        });
+        return true;
+      }),
+    elevateSession: (tenantId, tokenHash, now) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, tokenHash);
+        const session = state.sessions.get(key);
+        if (session !== undefined) {
+          state.sessions.set(key, { ...session, elevatedAt: now });
+        }
+      }),
   };
 
   return {
@@ -365,6 +466,7 @@ export const inMemoryAuthStore = (): InMemoryAuthStore => {
       oauthIdentities: [...state.oauthIdentities.values()],
       passkeyChallenges: [...state.passkeyChallenges.values()],
       passkeys: [...state.passkeys.values()],
+      totp: [...state.totp.values()],
     }),
   };
 };
