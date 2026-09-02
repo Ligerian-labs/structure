@@ -44,11 +44,13 @@ export {
 export * as Health from "./health.js";
 export * as Middleware from "./middleware.js";
 export {
+  type ClientIpOptions,
   clientIp,
   layer as rateLimitLayer,
   makeInMemoryStore,
   type RateLimitDecision,
   type RateLimitGroup,
+  type RateLimitKeys,
   type RateLimitOptions,
   type RateLimitRule,
   type RateLimitStore,

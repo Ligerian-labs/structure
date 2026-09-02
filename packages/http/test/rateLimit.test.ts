@@ -14,6 +14,7 @@ import {
   type RateLimitStore,
   rateLimitLayer,
   serveTest,
+  UnauthorizedProblem,
 } from "../src/index.js";
 
 // --- store semantics (deterministic clock) -------------------------------------
@@ -66,6 +67,107 @@ describe("in-memory rate limit store", () => {
     now += 101;
     expect((await run(store.consume("s", sliding))).allowed).toBe(true);
   });
+
+  test("decisions carry the budget state: limit, remaining, resetMillis", async () => {
+    let now = 1_000;
+    const store = makeInMemoryStore({ now: () => now });
+    const run = Effect.runPromise;
+    const first = await run(store.consume("q", rule));
+    expect(first).toMatchObject({ allowed: true, limit: 2, remaining: 1, resetMillis: 1_000 });
+    now += 400;
+    const second = await run(store.consume("q", rule));
+    expect(second).toMatchObject({ allowed: true, limit: 2, remaining: 0, resetMillis: 1_000 });
+    const denied = await run(store.consume("q", rule));
+    expect(denied).toMatchObject({
+      allowed: false,
+      limit: 2,
+      remaining: 0,
+      retryAfterMillis: 5_000,
+    });
+    // Fully reset once the block lifts (the block outlasts the window here).
+    expect(denied.resetMillis).toBe(5_000);
+  });
+
+  test("peek reports the budget without consuming it", async () => {
+    let now = 1_000;
+    const store = makeInMemoryStore({ now: () => now });
+    const run = Effect.runPromise;
+    const untouched = await run(store.peek("p", rule));
+    expect(untouched).toMatchObject({ allowed: true, limit: 2, remaining: 2, resetMillis: 0 });
+    // Peeking many times never spends a point.
+    for (let index = 0; index < 5; index++) await run(store.peek("p", rule));
+    expect((await run(store.consume("p", rule))).remaining).toBe(1);
+    expect((await run(store.peek("p", rule))).remaining).toBe(1);
+    expect((await run(store.consume("p", rule))).remaining).toBe(0);
+    // Window full but no block installed: peek refuses until the oldest hit ages out,
+    // and still installs no block.
+    now += 300;
+    const full = await run(store.peek("p", rule));
+    expect(full.allowed).toBe(false);
+    expect(full.retryAfterMillis).toBe(700);
+    expect(full.remaining).toBe(0);
+    now += 701;
+    expect((await run(store.peek("p", rule))).allowed).toBe(true);
+    // Once a consume installed a block, peek reports it with the remaining block time.
+    await run(store.consume("p", rule));
+    await run(store.consume("p", rule));
+    const blocked = await run(store.consume("p", rule));
+    expect(blocked.allowed).toBe(false);
+    now += 1_000;
+    const peekedWhileBlocked = await run(store.peek("p", rule));
+    expect(peekedWhileBlocked.allowed).toBe(false);
+    expect(peekedWhileBlocked.retryAfterMillis).toBe(4_000);
+  });
+});
+
+// --- clientIp ------------------------------------------------------------------
+
+describe("clientIp", () => {
+  const request = (headers: Record<string, string>, socket = "10.0.0.2") =>
+    ({ headers, remoteAddress: { _tag: "Some", value: socket } }) as never;
+
+  test("without trustProxy, forwarding headers are ignored: socket address only", () => {
+    expect(
+      clientIp(request({ "x-forwarded-for": "203.0.113.9, 10.0.0.1" }), { trustProxy: false }),
+    ).toBe("10.0.0.2");
+    expect(clientIp(request({ "x-real-ip": "198.51.100.7" }), { trustProxy: false })).toBe(
+      "10.0.0.2",
+    );
+    expect(clientIp(request({}, "192.0.2.5"), { trustProxy: false })).toBe("192.0.2.5");
+  });
+
+  test("with trustProxy, the rightmost x-forwarded-for hop wins, trimmed", () => {
+    expect(
+      clientIp(request({ "x-forwarded-for": "203.0.113.9, 198.51.100.4 , 10.0.0.1 " }), {
+        trustProxy: true,
+      }),
+    ).toBe("10.0.0.1");
+    expect(clientIp(request({ "x-forwarded-for": "203.0.113.9" }), { trustProxy: true })).toBe(
+      "203.0.113.9",
+    );
+    // Trailing separators or blanks never yield an empty hop.
+    expect(clientIp(request({ "x-forwarded-for": "203.0.113.9, " }), { trustProxy: true })).toBe(
+      "203.0.113.9",
+    );
+  });
+
+  test("with trustProxy, x-real-ip is honored only when x-forwarded-for is absent", () => {
+    expect(clientIp(request({ "x-real-ip": " 198.51.100.7 " }), { trustProxy: true })).toBe(
+      "198.51.100.7",
+    );
+    expect(
+      clientIp(request({ "x-forwarded-for": "203.0.113.9", "x-real-ip": "198.51.100.7" }), {
+        trustProxy: true,
+      }),
+    ).toBe("203.0.113.9");
+    expect(clientIp(request({}, "192.0.2.5"), { trustProxy: true })).toBe("192.0.2.5");
+  });
+
+  test("returns undefined when neither header nor socket address is known", () => {
+    const socketless = { headers: {}, remoteAddress: { _tag: "None" } } as never;
+    expect(clientIp(socketless, { trustProxy: false })).toBeUndefined();
+    expect(clientIp(socketless, { trustProxy: true })).toBeUndefined();
+  });
 });
 
 // --- middleware behavior over a real server ------------------------------------
@@ -76,8 +178,22 @@ const ping = ApiGroup.make("ping").add(
 const meta = ApiGroup.make("meta").add(
   ApiEndpoint.get("status", "/status").addSuccess(Schema.Struct({ up: Schema.Literal(true) })),
 );
+const byIp = ApiGroup.make("byIp")
+  .add(ApiEndpoint.get("ip", "/ip").addSuccess(Schema.Struct({ ok: Schema.Literal(true) })))
+  .add(
+    ApiEndpoint.get("ipTrusted", "/ip-trusted").addSuccess(
+      Schema.Struct({ ok: Schema.Literal(true) }),
+    ),
+  );
+const LoginPayload = Schema.Struct({ email: Schema.String, password: Schema.String });
+const login = ApiGroup.make("login").add(
+  ApiEndpoint.post("login", "/login")
+    .setPayload(LoginPayload)
+    .addSuccess(Schema.Struct({ token: Schema.String }))
+    .addError(UnauthorizedProblem),
+);
 
-const api = Api.make("rate-limit-test").add(ping).add(meta).add(Health.group);
+const api = Api.make("rate-limit-test").add(ping).add(meta).add(byIp).add(login).add(Health.group);
 
 const PingLive = HttpApiBuilder.group(api, "ping", (handlers) =>
   handlers.handle("ping", () => Effect.succeed({ ok: true as const })),
@@ -85,16 +201,33 @@ const PingLive = HttpApiBuilder.group(api, "ping", (handlers) =>
 const MetaLive = HttpApiBuilder.group(api, "meta", (handlers) =>
   handlers.handle("status", () => Effect.succeed({ up: true as const })),
 );
+const ByIpLive = HttpApiBuilder.group(api, "byIp", (handlers) =>
+  handlers
+    .handle("ip", () => Effect.succeed({ ok: true as const }))
+    .handle("ipTrusted", () => Effect.succeed({ ok: true as const })),
+);
+let loginHandlerCalls = 0;
+const LoginLive = HttpApiBuilder.group(api, "login", (handlers) =>
+  handlers.handle("login", ({ payload }) => {
+    loginHandlerCalls += 1;
+    return payload.password === "correct horse"
+      ? Effect.succeed({ token: `token-${payload.email}` })
+      : Effect.fail(
+          new UnauthorizedProblem({ error: "Unauthenticated", message: "bad credentials" }),
+        );
+  }),
+);
 
 let store: RateLimitStore;
 let scope: Scope.CloseableScope | undefined;
 let baseUrl = "";
-let _closeServer: () => Promise<void>;
 
 const buildServer = async (customStore: RateLimitStore): Promise<void> => {
   const TestLive = serveTest.pipe(
     Layer.provide(
-      HttpApiBuilder.api(api).pipe(Layer.provide([PingLive, MetaLive, Health.layer(api)])),
+      HttpApiBuilder.api(api).pipe(
+        Layer.provide([PingLive, MetaLive, ByIpLive, LoginLive, Health.layer(api)]),
+      ),
     ),
     Layer.provide(
       rateLimitLayer({
@@ -105,6 +238,36 @@ const buildServer = async (customStore: RateLimitStore): Promise<void> => {
             rule: { points: 3, windowMillis: 10_000, blockMillis: 5_000 },
             match: (request) => request.url.startsWith("/ping"),
             key: (request) => request.headers["x-test-user"] ?? "anonymous",
+          },
+          {
+            label: "ip",
+            rule: { points: 2, windowMillis: 10_000, blockMillis: 5_000 },
+            match: (request) => request.url.startsWith("/ip-trusted"),
+            key: (request) => clientIp(request, { trustProxy: true }),
+          },
+          {
+            label: "ip-untrusted",
+            rule: { points: 2, windowMillis: 10_000, blockMillis: 5_000 },
+            match: (request) => request.url.startsWith("/ip"),
+            key: (request) => clientIp(request, { trustProxy: false }),
+          },
+          {
+            label: "login",
+            rule: { points: 2, windowMillis: 60_000, blockMillis: 30_000 },
+            match: (request) => request.method === "POST" && request.url.startsWith("/login"),
+            keys: (request) =>
+              request.json.pipe(
+                Effect.map((body) => {
+                  const email =
+                    typeof body === "object" && body !== null && "email" in body
+                      ? String((body as { email: unknown }).email)
+                      : undefined;
+                  const ip = request.headers["x-test-ip"] ?? "unknown";
+                  return [`ip:${ip}`, email === undefined ? undefined : `email:${email}`];
+                }),
+                Effect.catchAll(() => Effect.succeed([])),
+              ),
+            consumeWhen: (response) => response.status === 401,
           },
         ],
       }),
@@ -135,6 +298,36 @@ afterAll(async () => {
 const get = (path: string, headers: Record<string, string> = {}): Promise<Response> =>
   fetch(`${baseUrl}${path}`, { headers });
 
+const postLogin = (
+  ip: string,
+  email: string,
+  password: string,
+  headers: Record<string, string> = {},
+): Promise<Response> =>
+  fetch(`${baseUrl}/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-test-ip": ip, ...headers },
+    body: JSON.stringify({ email, password }),
+  });
+
+const QUOTA_HEADERS = [
+  "ratelimit-limit",
+  "ratelimit-remaining",
+  "ratelimit-reset",
+  "x-ratelimit-limit",
+  "x-ratelimit-remaining",
+  "x-ratelimit-reset",
+] as const;
+
+const quota = (response: Response): Record<(typeof QUOTA_HEADERS)[number], string | null> => ({
+  "ratelimit-limit": response.headers.get("ratelimit-limit"),
+  "ratelimit-remaining": response.headers.get("ratelimit-remaining"),
+  "ratelimit-reset": response.headers.get("ratelimit-reset"),
+  "x-ratelimit-limit": response.headers.get("x-ratelimit-limit"),
+  "x-ratelimit-remaining": response.headers.get("x-ratelimit-remaining"),
+  "x-ratelimit-reset": response.headers.get("x-ratelimit-reset"),
+});
+
 describe("rate limit middleware", () => {
   test("consumes budget per principal and blocks with 429 + Retry-After", async () => {
     const user = `user-${crypto.randomUUID()}`;
@@ -150,6 +343,42 @@ describe("rate limit middleware", () => {
     const body = (await fourth.json()) as { error: string; correlationId?: string };
     expect(body.error).toBe("TooManyRequests");
     expect(typeof body.correlationId).toBe("string");
+  });
+
+  test("counted responses carry the six quota headers; 429 carries Retry-After too", async () => {
+    const user = `user-${crypto.randomUUID()}`;
+    const first = await get("/ping", { "x-test-user": user });
+    expect(quota(first)).toEqual({
+      "ratelimit-limit": "3",
+      "ratelimit-remaining": "2",
+      "ratelimit-reset": "10",
+      "x-ratelimit-limit": "3",
+      "x-ratelimit-remaining": "2",
+      "x-ratelimit-reset": "10",
+    });
+    expect(first.headers.get("retry-after")).toBeNull();
+    await get("/ping", { "x-test-user": user });
+    const third = await get("/ping", { "x-test-user": user });
+    expect(third.headers.get("ratelimit-remaining")).toBe("0");
+    expect(third.headers.get("x-ratelimit-remaining")).toBe("0");
+    const denied = await get("/ping", { "x-test-user": user });
+    expect(denied.status).toBe(429);
+    expect(denied.headers.get("retry-after")).toBe("5");
+    expect(quota(denied)).toEqual({
+      "ratelimit-limit": "3",
+      "ratelimit-remaining": "0",
+      "ratelimit-reset": "10",
+      "x-ratelimit-limit": "3",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": "10",
+    });
+  });
+
+  test("uncounted responses carry no quota headers", async () => {
+    const status = await get("/status");
+    for (const name of QUOTA_HEADERS) expect(status.headers.get(name)).toBeNull();
+    const probe = await get("/health/live");
+    for (const name of QUOTA_HEADERS) expect(probe.headers.get(name)).toBeNull();
   });
 
   test("OPTIONS preflights never consume budget", async () => {
@@ -198,18 +427,83 @@ describe("rate limit middleware", () => {
     expect((state as { count: number }).count).toBeGreaterThan(0);
   });
 
-  test("clientIp prefers x-forwarded-for then falls back to the socket", () => {
-    const request = {
-      headers: { "x-forwarded-for": "203.0.113.9, 10.0.0.1" },
-      remoteAddress: { _tag: "Some", value: "10.0.0.2" },
-    } as never;
-    expect(clientIp(request)).toBe("203.0.113.9");
-    const byRealIp = {
-      headers: { "x-real-ip": "198.51.100.7" },
-      remoteAddress: { _tag: "Some", value: "10.0.0.2" },
-    } as never;
-    expect(clientIp(byRealIp)).toBe("198.51.100.7");
-    const bySocket = { headers: {}, remoteAddress: { _tag: "Some", value: "192.0.2.5" } } as never;
-    expect(clientIp(bySocket)).toBe("192.0.2.5");
+  test("spoofed x-forwarded-for without trustProxy keys by the socket address", async () => {
+    // Every request comes from the same loopback socket: distinct spoofed hops
+    // share one budget of 2.
+    const first = await get("/ip", { "x-forwarded-for": `203.0.113.${1}` });
+    expect(first.status).toBe(200);
+    const second = await get("/ip", {
+      "x-forwarded-for": "203.0.113.2",
+      "x-real-ip": "198.51.100.9",
+    });
+    expect(second.status).toBe(200);
+    const third = await get("/ip", { "x-forwarded-for": "203.0.113.3" });
+    expect(third.status).toBe(429);
+    const fourth = await get("/ip");
+    expect(fourth.status).toBe(429);
+  });
+
+  test("with trustProxy the rightmost x-forwarded-for hop owns the budget", async () => {
+    const proxyHop = `10.1.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
+    const otherHop = `10.2.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
+    // Varying the leftmost (client-controlled) hop does not open new budgets.
+    expect(
+      (await get("/ip-trusted", { "x-forwarded-for": `203.0.113.1, ${proxyHop}` })).status,
+    ).toBe(200);
+    expect(
+      (await get("/ip-trusted", { "x-forwarded-for": `203.0.113.2, ${proxyHop}` })).status,
+    ).toBe(200);
+    expect(
+      (await get("/ip-trusted", { "x-forwarded-for": `203.0.113.3, ${proxyHop}` })).status,
+    ).toBe(429);
+    // A different rightmost hop is a different budget.
+    expect(
+      (await get("/ip-trusted", { "x-forwarded-for": `203.0.113.3, ${otherHop}` })).status,
+    ).toBe(200);
+  });
+
+  test("a consumeWhen group charges nothing on 200 and charges on 401", async () => {
+    const ip = `ip-${crypto.randomUUID()}`;
+    const email = `${crypto.randomUUID()}@example.com`;
+    for (let index = 0; index < 4; index++) {
+      const ok = await postLogin(ip, email, "correct horse");
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get("ratelimit-remaining")).toBe("2");
+      expect(ok.headers.get("ratelimit-limit")).toBe("2");
+    }
+    const refused = await postLogin(ip, email, "wrong");
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get("ratelimit-remaining")).toBe("1");
+    const refusedAgain = await postLogin(ip, email, "wrong");
+    expect(refusedAgain.status).toBe(401);
+    expect(refusedAgain.headers.get("ratelimit-remaining")).toBe("0");
+  });
+
+  test("a blocked key is refused before the handler runs", async () => {
+    const ip = `ip-${crypto.randomUUID()}`;
+    const email = `${crypto.randomUUID()}@example.com`;
+    await postLogin(ip, email, "wrong");
+    await postLogin(ip, email, "wrong");
+    const callsBefore = loginHandlerCalls;
+    const walled = await postLogin(ip, email, "correct horse");
+    expect(walled.status).toBe(429);
+    expect(walled.headers.get("retry-after")).toBe("60");
+    expect(walled.headers.get("ratelimit-remaining")).toBe("0");
+    expect(loginHandlerCalls).toBe(callsBefore);
+  });
+
+  test("several keys are charged together: ip and email each become walls", async () => {
+    const attackerIp = `ip-${crypto.randomUUID()}`;
+    const victim = `${crypto.randomUUID()}@example.com`;
+    const other = `${crypto.randomUUID()}@example.com`;
+    const otherIp = `ip-${crypto.randomUUID()}`;
+    expect((await postLogin(attackerIp, victim, "wrong")).status).toBe(401);
+    expect((await postLogin(attackerIp, victim, "wrong")).status).toBe(401);
+    // The victim's email is walled, whoever asks.
+    expect((await postLogin(otherIp, victim, "correct horse")).status).toBe(429);
+    // The attacker's ip is walled, whichever email it names.
+    expect((await postLogin(attackerIp, other, "correct horse")).status).toBe(429);
+    // Unrelated ip + email pairs are untouched.
+    expect((await postLogin(otherIp, other, "correct horse")).status).toBe(200);
   });
 });

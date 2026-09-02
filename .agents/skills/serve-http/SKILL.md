@@ -5,7 +5,7 @@ description: Define and serve an HTTP API in a @structure-based app - schema-typ
 
 # Serve an HTTP API
 
-Thin bindings over `@effect/platform` `HttpApi`: schema-typed endpoints with full inference, problem-details error mapping that never leaks internals, OpenAPI docs, health probes, and a Bun server with graceful shutdown. The api surface lives in `packages/http/src/` (`api.ts`, `cqrs.ts`, `docs.ts`, `errors.ts`, `health.ts`, `middleware.ts`, `serve.ts`); `packages/http/README.md` documents it, the tests show working usage.
+Thin bindings over `@effect/platform` `HttpApi`: schema-typed endpoints with full inference, problem-details error mapping that never leaks internals, OpenAPI docs, health probes, and a Bun server with graceful shutdown. The api surface lives in `packages/http/src/` (`api.ts`, `cqrs.ts`, `docs.ts`, `errors.ts`, `health.ts`, `middleware.ts`, `rateLimit.ts`, `serve.ts`); `packages/http/README.md` documents it, the tests show working usage.
 
 ## Steps
 
@@ -44,7 +44,8 @@ serve({ port: 3000, gracePeriod: Duration.seconds(5) }).pipe(
    The stack includes the standard middleware: correlation, boundary logging, metrics, problem mapping. The log line (`http request`) and the `http_server*` / `http_request_duration_seconds` metrics carry `method`, `route`, `status`, `durationMs` and the ids — `route` is the matched endpoint template (`/users/:id`) or `(unmatched)`, never the requested path, so nothing carried in a path segment reaches a log sink or a metric label. Propagated `x-request-id` / `x-correlation-id` are kept only when they match `^[A-Za-z0-9_-]{1,64}$`; otherwise a fresh uuid is minted and echoed.
 
 5. **Error mapping**: return typed failures (`InvariantViolation`, `PermissionDenied`, ...) — `toProblem`/`withDefaultErrors` map them to problem+status (`Unauthenticated` → 401, `PermissionDenied` → 403); internals and stacks never cross the wire.
-6. **Tests:** real sockets, no fixed ports — `serveTest` on a random port, read `HttpServer.address`. Follow `packages/http/test/http.test.ts`.
+6. **Rate limit** (public or credential routes): provide `rateLimitLayer({ store, groups })` next to the api implementation — `storeFromUrl(redisUrl)` picks Redis (shared budgets) or in-memory (single replica). Each group has a bounded `label`, a `rule` (`points`/`windowMillis`/`blockMillis`), a `match`, and `key` or `keys`. Key IPs with `clientIp(request, { trustProxy })` where `trustProxy` is a setting that is `true` only behind a proxy you operate (it then takes the rightmost `x-forwarded-for` hop; otherwise only the socket address counts). Counted responses carry `RateLimit-*`/`X-RateLimit-*`; denials are `429` + `Retry-After`. For a login wall use `keys` (ip + email digest) with `consumeWhen: (response) => response.status === 401` so successes are free and a victim's address cannot be locked by naming it.
+7. **Tests:** real sockets, no fixed ports — `serveTest` on a random port, read `HttpServer.address`. Follow `packages/http/test/http.test.ts` (and `rateLimit.test.ts` for limiter groups).
 
 ## Rules
 
