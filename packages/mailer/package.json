@@ -1,0 +1,35 @@
+{
+  "name": "@structure-ai/mailer",
+  "version": "0.0.0",
+  "description": "Transactional email: one Mailer service over pluggable drivers (SMTP, Resend, capture), typed templates with previews, transient-only bounded retry, per-driver metrics.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/mailer"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@structure-ai/config": "workspace:*",
+    "@structure-ai/observability": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}
