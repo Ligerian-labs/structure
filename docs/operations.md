@@ -26,6 +26,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 - Declare each migration's SQL (`defineMigration(id, name, up, { sql })`) so the checksum covers content, not just id and name; `ViewModel.migration` does this for generated tables. Upgrading from a release without checksums needs no action: the first `run` adds the column and adopts the current checksums for rows recorded before it existed.
 - Incompatible changes: expand → migrate/backfill → switch readers/writers → contract, each step a separate migration, deployed separately.
 - Auth schema: on Postgres, put `auth-pg`'s `migration(id)` in the application's single `makeSet` so the migrator applies it under the same lock and transaction as the event store, jobs, and view models; `auth-pg.migrate(sql)` (Bun `SQL`) and `auth-sqlite.migrate` are the all-in-one alternatives for apps without a set. Either way, one migration owner; serving processes construct `makeAuthStore` without migrating — the stores never create tables.
+- `eventsourcing-pg.migrate` (run by its `layer` at build) also creates the `idempotency` table behind the cqrs `IdempotencyStore`; the same single-owner rule applies when several instances share the database.
 
 ## Shutdown
 
@@ -51,6 +52,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 - **Repeated `ConcurrencyConflict` on one aggregate** — a hot aggregate. `executeWithRetry` absorbs incidental races; sustained conflict is a modeling signal (aggregate too big), not a retry-tuning problem.
 - **Poisoned event (fails a projection handler)** — the projection halts at its checkpoint (at-least-once, pre-checkpoint failure). Fix the handler or add an upcaster for the event's schema version, redeploy, and the projection resumes from the checkpoint.
 - **Duplicate deliveries downstream** — verify the consumer wraps effects in `Inbox.dedupe`; the transport is at-least-once on purpose.
+- **Idempotency table growth or a key stuck `InFlight` (409)** — records expire after `idempotencyTtl` (default 24 hours, measured from the last claim or completion); schedule `purgeExpiredIdempotency` to reclaim space. A claim survives only a crash mid-dispatch (failures and timeouts release it): the key is refused as in flight until the TTL passes — callers use a new key, or shorten the TTL to the retry window. Never shrink the TTL below the longest legitimate client retry span, or replays become duplicates.
 - **Auth token/session store growth** — delete expired digests and consumed tombstones with a bounded tenant-aware job. Never inspect or log raw incoming bearer values while diagnosing cleanup.
 - **OAuth provider outage** — preserve password, magic-link, and passkey paths; provider HTTP has one bounded attempt and no nested retry. Alert on the provider/action aggregate, not identities.
 - **Suspected credential compromise** — revoke all user sessions atomically, rotate affected OAuth/provider/mail credentials, preserve safe audit events, and follow the application's user notification procedure.

@@ -22,7 +22,7 @@ flowchart LR
 ```
 
 - The **edge** (`http`, `cli`, `mcp`) translates transport concerns and dispatches; it holds no business logic.
-- The **bus** (`cqrs`) owns boundary validation (shape), authorization of the action, idempotency keys, tracing/metrics. Business rules live one step deeper.
+- The **bus** (`cqrs`) owns boundary validation (shape), authorization of the action, idempotency keys (scoped per actor and command, bound to a payload hash, claimed before the handler runs), tracing/metrics. Business rules live one step deeper.
 - **Authorization** (`authorization`) is a typed policy value (roles × `resource:action` permissions, conditional grants, scoped roles) checked against the `Principal` attached to the fiber; the bus `Authorizer` and HTTP guards are adapters over it. It fails closed and distinguishes `Unauthenticated` (401) from `PermissionDenied` (403).
 - The **aggregate** (`domain`) is a pure decider: `decide` accepts/rejects, `evolve` folds. The same definition serves state-stored and event-sourced persistence.
 - The **aggregate store** (`eventsourcing`) enforces optimistic concurrency (`expectedVersion` append) and stamps event metadata (correlation/causation).
@@ -65,9 +65,9 @@ Every framework error is a `Data.TaggedError` carrying `classification`:
 
 | Classification | Meaning | Retry? | Edge mapping (http/cli) |
 | --- | --- | --- | --- |
-| `transient` | Timeouts, throttling, transport | Yes, bounded backoff + jitter | 504 / exit 75 |
+| `transient` | Timeouts, throttling, transport, idempotent dispatch still in flight | Yes, bounded backoff + jitter | 504 (409 for in-flight) / exit 75 |
 | `permanent` | Validation, invariants, not-found, authn/authz | Never | 400/401/403/404 / exit 1 |
-| `conflict` | Optimistic concurrency lost | Reload then retry the whole command | 409 / exit 1 |
+| `conflict` | Optimistic concurrency lost; idempotency key reused with another payload | Reload then retry the whole command; pick a new key | 409 / exit 1 |
 | declared business failure | A command/query's declared `failure` schema | Never (caller decides) | 422, `_tag`-discriminated body |
 
 The classification is decided where the error is born and preserved across layers — retry policies, HTTP status mapping, and CLI exit codes all read it instead of guessing from error types.

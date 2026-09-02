@@ -15,13 +15,7 @@ const runTest = (scenario: Scenario): Promise<void> => {
   const tables = tableNames({ tablePrefix });
   const dropTables = Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    for (const table of [
-      tables.events,
-      tables.snapshots,
-      tables.checkpoints,
-      tables.outbox,
-      tables.inbox,
-    ]) {
+    for (const table of Object.values(tables)) {
       yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
     }
   }).pipe(Effect.orDie);

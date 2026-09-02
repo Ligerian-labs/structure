@@ -1,6 +1,7 @@
 import type * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
 import { PgClient } from "@effect/sql-pg";
+import type { IdempotencyStore } from "@structure-ai/cqrs";
 import type {
   CheckpointStore,
   EventStore,
@@ -11,12 +12,19 @@ import type {
 import { Layer, Redacted } from "effect";
 import { checkpointStoreLayer } from "./CheckpointStore.js";
 import { eventStoreLayer } from "./EventStore.js";
+import { idempotencyStoreLayer } from "./IdempotencyStore.js";
 import { inboxLayer, outboxLayer } from "./Outbox.js";
 import { snapshotStoreLayer } from "./SnapshotStore.js";
 import { type AdapterOptions, migrate } from "./schema.js";
 
-/** All five ports this package implements. */
-export type StoreServices = EventStore | SnapshotStore | CheckpointStore | Outbox | Inbox;
+/** The five eventsourcing ports plus the cqrs idempotency store. */
+export type StoreServices =
+  | EventStore
+  | SnapshotStore
+  | CheckpointStore
+  | Outbox
+  | Inbox
+  | IdempotencyStore;
 
 /**
  * Every adapter merged, on top of an existing `SqlClient`. Assumes the
@@ -31,6 +39,7 @@ export const storesLayer = (
     checkpointStoreLayer(options),
     outboxLayer(options),
     inboxLayer(options),
+    idempotencyStoreLayer(options),
   );
 
 /** Configuration for the all-in-one `layer`. */
@@ -49,9 +58,9 @@ export interface PgAdaptersConfig extends AdapterOptions {
 
 /**
  * Everything in one layer: a `PgClient` (configured from `options.url` or
- * `DATABASE_URL`), the schema migration (run at layer build), and all five
- * port adapters. The client is exposed too, so callers can run their own
- * queries.
+ * `DATABASE_URL`), the schema migration (run at layer build), and every
+ * adapter in `storesLayer`. The client is exposed too, so callers can run
+ * their own queries.
  */
 export const layer = (
   options?: PgAdaptersConfig,

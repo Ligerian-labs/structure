@@ -206,6 +206,7 @@
         "@effect/platform": "catalog:",
         "@effect/sql": "catalog:",
         "@effect/sql-pg": "catalog:",
+        "@structure-ai/cqrs": "workspace:*",
         "@structure-ai/domain": "workspace:*",
         "@structure-ai/eventsourcing": "workspace:*",
         "effect": "catalog:",

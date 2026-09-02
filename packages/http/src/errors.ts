@@ -204,6 +204,8 @@ const internal = (correlationId: string | undefined): InternalServerProblem =>
  * - `PermissionDenied` → 403 (policy denial; `@structure-ai/authorization`)
  * - `NotFound`         → 404 (entity + id)
  * - `ConcurrencyConflict` → 409
+ * - `IdempotencyMismatch` → 409 (key reused with another payload)
+ * - `IdempotencyInFlight` → 409 (same key still running; retry later)
  * - `DispatchTimeout`  → 504
  * - `RouteNotFound`    → 404
  * - anything else (including defects) → 500 with the correlation id only
@@ -288,6 +290,18 @@ export const toProblem = (error: unknown, correlationId?: string): HttpProblem =
         ...withCorrelation,
       });
     }
+    case "IdempotencyMismatch":
+      return new ConflictProblem({
+        error: "IdempotencyMismatch",
+        message: "idempotency key was already used with a different payload",
+        ...withCorrelation,
+      });
+    case "IdempotencyInFlight":
+      return new ConflictProblem({
+        error: "IdempotencyInFlight",
+        message: "a request with this idempotency key is still in progress",
+        ...withCorrelation,
+      });
     case "DispatchTimeout": {
       const tag = stringField(error, "tag");
       return new GatewayTimeoutProblem({
