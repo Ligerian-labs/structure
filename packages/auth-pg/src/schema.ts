@@ -18,6 +18,11 @@ export interface TableNames {
   readonly passkeys: string;
   readonly apiKeys: string;
   readonly totp: string;
+  readonly oauthClients: string;
+  readonly oauthCodes: string;
+  readonly oauthConsents: string;
+  readonly oauthTokens: string;
+  readonly oauthEndSessionHints: string;
 }
 
 export const tableNames = (options: AdapterOptions = {}): TableNames => {
@@ -33,6 +38,11 @@ export const tableNames = (options: AdapterOptions = {}): TableNames => {
     passkeys: `${prefix}passkeys`,
     apiKeys: `${prefix}api_keys`,
     totp: `${prefix}totp`,
+    oauthClients: `${prefix}oauth2_clients`,
+    oauthCodes: `${prefix}oauth2_codes`,
+    oauthConsents: `${prefix}oauth2_consents`,
+    oauthTokens: `${prefix}oauth2_tokens`,
+    oauthEndSessionHints: `${prefix}oauth2_endsession_hints`,
   };
 };
 
@@ -179,6 +189,71 @@ export const migrate = (
         `;
         await tx`
           ALTER TABLE ${tx(tables.sessions)} ADD COLUMN IF NOT EXISTS elevated_at TIMESTAMPTZ
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthClients)} (
+            tenant_id TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            client_name TEXT,
+            client_type TEXT NOT NULL CHECK (client_type IN ('confidential', 'public')),
+            secret_hash TEXT,
+            redirect_uris TEXT NOT NULL,
+            scopes TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, client_id)
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthCodes)} (
+            tenant_id TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            redirect_uri TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            code_challenge TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            consumed_at TIMESTAMPTZ,
+            PRIMARY KEY (tenant_id, code_hash)
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthConsents)} (
+            tenant_id TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            granted_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, client_id, user_id)
+          )
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthTokens)} (
+            tenant_id TEXT NOT NULL,
+            token_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+            client_id TEXT NOT NULL,
+            user_id TEXT,
+            scope TEXT NOT NULL,
+            token_hash TEXT,
+            expires_at TIMESTAMPTZ NOT NULL,
+            revoked_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, token_id)
+          )
+        `;
+        await tx`
+          CREATE INDEX IF NOT EXISTS ${tx(`${tables.oauthTokens}_hash_idx`)}
+          ON ${tx(tables.oauthTokens)} (tenant_id, token_hash)
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.oauthEndSessionHints)} (
+            tenant_id TEXT NOT NULL,
+            hint_hash TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            consumed_at TIMESTAMPTZ,
+            PRIMARY KEY (tenant_id, hint_hash)
+          )
         `;
         await tx`
           CREATE INDEX IF NOT EXISTS ${tx(`${tables.passkeys}_user_idx`)}

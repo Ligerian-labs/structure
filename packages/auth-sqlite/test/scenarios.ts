@@ -5,6 +5,7 @@ import {
   type AuthStore,
   type AuthUser,
   IdentityConflict,
+  type OAuthServerStore,
   type OAuthStateRecord,
   type PasskeyRecord,
   type PasswordCredential,
@@ -438,4 +439,103 @@ export const registerTotpScenarios = (makeHarness: MakeHarness): void => {
       );
       expect(persisted?.elevatedAt).toEqual(later);
     }));
+};
+
+export interface OAuthServerHarness {
+  readonly oauthServer: OAuthServerStore;
+  readonly remakeOAuthServer: () => OAuthServerStore;
+}
+
+export const registerOAuthServerScenarios = (
+  makeHarness: () => Promise<OAuthServerHarness>,
+): void => {
+  test("oauth server state persists and consumes single-use atomically", async () => {
+    const harness = await makeHarness();
+    try {
+      const store = harness.oauthServer;
+      const remake = harness.remakeOAuthServer();
+      const at = now;
+      await run(
+        store.putClient({
+          tenantId: "tenant-a",
+          clientId: "as_client-1",
+          clientType: "confidential",
+          secretHash: "hash-1",
+          redirectUris: ["https://agent.example.com/callback"],
+          scopes: ["mcp:tools"],
+          createdAt: at,
+        }),
+      );
+      const client = await run(remake.findClient("tenant-a", "as_client-1"));
+      expect(client?.secretHash).toBe("hash-1");
+      expect(client?.redirectUris).toEqual(["https://agent.example.com/callback"]);
+
+      await run(
+        store.putAuthorizationCode({
+          tenantId: "tenant-a",
+          codeHash: "code-hash",
+          clientId: "as_client-1",
+          userId: "user-1",
+          redirectUri: "https://agent.example.com/callback",
+          scope: ["mcp:tools"],
+          codeChallenge: "challenge",
+          expiresAt: later,
+        }),
+      );
+      const consumed = await run(remake.consumeAuthorizationCode("tenant-a", "code-hash", now));
+      expect(consumed?.clientId).toBe("as_client-1");
+      const replay = await run(store.consumeAuthorizationCode("tenant-a", "code-hash", now));
+      expect(replay).toBeUndefined();
+
+      await run(
+        store.putConsent({
+          tenantId: "tenant-a",
+          clientId: "as_client-1",
+          userId: "user-1",
+          scope: ["mcp:tools"],
+          grantedAt: at,
+        }),
+      );
+      expect((await run(remake.findConsent("tenant-a", "as_client-1", "user-1")))?.scope).toEqual([
+        "mcp:tools",
+      ]);
+
+      await run(
+        store.putToken({
+          tenantId: "tenant-a",
+          tokenId: "token-1",
+          kind: "refresh",
+          clientId: "as_client-1",
+          userId: "user-1",
+          scope: ["mcp:tools"],
+          tokenHash: "token-hash",
+          expiresAt: later,
+          createdAt: at,
+        }),
+      );
+      const token = await run(remake.findTokenByHash("tenant-a", "token-hash"));
+      expect(token?.tokenId).toBe("token-1");
+      await run(store.revokeToken("tenant-a", "token-1", later));
+      const revoked = await run(store.findTokenById("tenant-a", "token-1"));
+      expect(revoked?.revokedAt).toEqual(later);
+
+      await run(
+        store.putEndSessionHint({
+          tenantId: "tenant-a",
+          hintHash: "hint-hash",
+          expiresAt: later,
+        }),
+      );
+      expect(
+        (await run(remake.consumeEndSessionHint("tenant-a", "hint-hash", now)))?.hintHash,
+      ).toBe("hint-hash");
+      expect(await run(store.consumeEndSessionHint("tenant-a", "hint-hash", now))).toBeUndefined();
+    } finally {
+      await harnessClose(harness);
+    }
+  });
+};
+
+const harnessClose = async (harness: OAuthServerHarness): Promise<void> => {
+  await (harness as unknown as { readonly close?: () => Promise<void> }).close?.();
 };

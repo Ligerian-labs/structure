@@ -272,6 +272,59 @@ Semantics:
 - **Linking**: one local identity ↔ one external subject; automatic linking by verified email stays behind the app's `AccountLinkPolicy`; `unlinkOAuthIdentity` is the explicit owner action (audited as `oauth-unlink`).
 - Works alongside the fixed social providers and password/magic-link flows (`providerId` `"oidc"` by default).
 
+## OAuth 2.1 authorization server (provider side)
+
+Act **as** the OAuth server so agent clients (Claude Code, connectors, CLIs) obtain scoped tokens against your instance's own API:
+
+```ts
+import {
+  generateSigningKey,
+  makeAuthorizationServer,
+  inMemoryOAuthServerStore, // or makeOAuthServerStore from auth-sqlite / auth-pg
+} from "@structure-ai/auth";
+import { Effect } from "effect";
+
+const key = yield* generateSigningKey(); // RS256; rotate by moving current → previous
+
+const as = makeAuthorizationServer({
+  store: inMemoryOAuthServerStore(),
+  resolveTenant: (tenantId) => Effect.succeed({ baseUrl }),
+  signingKeys: { current: key },
+  // Registration gates — env switches, never code removal. BOTH CLOSED by default.
+  registration: { anonymous: false, signedIn: false },
+});
+
+// RFC 7591-style registration (only while a gate is open):
+const client = yield* as.registerClient("tenant-a", {
+  clientType: "confidential", // secret hashed at rest, shown once
+  redirectUris: ["https://agent.example.com/callback"],
+  scopes: ["mcp:tools", "data:export"],
+}, { kind: "signed-in", userId: "user-1" });
+
+// Authorization code + PKCE (S256 only; plain refused):
+const decision = yield* as.authorize({ /* clientId, redirectUri, scope, codeChallenge */ }, userId);
+// → { consentRequired } until grantConsent, then { redirectUrl } with a 60s single-use code.
+const tokens = yield* as.exchangeCode({ /* clientId, clientSecret?, code, codeVerifier, redirectUri */ });
+// → JWT access token (RS256, kid-headered) + rotating refresh token.
+
+// Refresh / revoke / introspect / JWKS:
+yield* as.refresh({ ... });     // rotation: the old refresh token dies on use
+yield* as.revoke({ ... });      // RFC 7009: idempotent, unknown tokens still succeed
+yield* as.introspect({ ... });  // active + scope/client/user/expiry
+as.jwks();                      // current + previous public keys
+```
+
+Hardening, carried from the template's incident history:
+
+- **`authorize` validates params before anything else**; unknown client or unregistered `redirect_uri` fails closed — never a redirect.
+- **Registration gates are options**, never code removal; both default closed.
+- **Scope-restricted tokens**: `verifyAccessToken` returns `{ sub, aud, scope, tid }`; compose it into a `@structure-ai/authorization` machine principal (scope-conditioned role) — unlisted routes fail closed for machine principals.
+- **JWKS rotation invalidates nothing**: the previous key keeps verifying (and revocation is still honored) until it is dropped.
+- **No route ever hands a caller a provider grant** — this server only ever issues *its own* tokens.
+- **End-session** acts only for its caller: single-use hints with a bounded grace (default 5 minutes), consumed atomically.
+
+Storage: `OAuthServerStore` port (clients, single-use codes, consents, tokens, end-session hints) with an in-memory adapter here and `makeOAuthServerStore` in `auth-sqlite` / `auth-pg`.
+
 ## Persistence contract
 
 `AuthStore` is application-owned. Its compound mutation methods are intentional transaction boundaries:
@@ -322,6 +375,7 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 | `RateLimiter`, `AuthAuditSink`, `AccountLinkPolicy`, `EmailSender` | Application policy and side-effect ports. |
 | `makeApiKeys`, `ApiKeyStore`, `inMemoryApiKeyStore`, `ApiKeyPeppers` | Machine credentials: mint/verify/revoke with pepper-versioned HMAC hashes, scopes, pinning. |
 | `makeTotp`, `verifyTotpCode`, `totpCode`, `generateTotpSecret`, `generateRecoveryCodes` | TOTP second factor: enrollment, verification with lockout, recovery codes, session elevation. |
+| `makeAuthorizationServer`, `OAuthServerStore`, `generateSigningKey` | OAuth 2.1 provider: clients, code+PKCE, refresh rotation, revocation, introspection, JWKS, end-session hints. |
 | `Auth*Error`, `InvalidAuthRoutes`, `RateLimitExceeded`, `UnsupportedPasskey` | Classified safe failures. |
 
 See `test/` for executable password, magic-link, OAuth, passkey, rate-limit/audit, and HTTP examples.

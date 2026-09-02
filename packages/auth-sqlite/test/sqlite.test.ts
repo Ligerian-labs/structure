@@ -1,9 +1,10 @@
 import { describe } from "bun:test";
 import { SQL } from "bun";
 import { Effect } from "effect";
-import { makeApiKeyStore, makeAuthStore, migrate } from "../src/index.js";
+import { makeApiKeyStore, makeAuthStore, makeOAuthServerStore, migrate } from "../src/index.js";
 import {
   registerApiKeyScenarios,
+  registerOAuthServerScenarios,
   registerStoreScenarios,
   registerTotpScenarios,
 } from "./scenarios.js";
@@ -17,6 +18,8 @@ const makeHarness = async () => {
     remakeApiKeys: () => makeApiKeyStore(sql),
     store: makeAuthStore(sql),
     remake: () => makeAuthStore(sql),
+    oauthServer: makeOAuthServerStore(sql),
+    remakeOAuthServer: () => makeOAuthServerStore(sql),
     close: () => sql.close(),
   };
 };
@@ -25,4 +28,5 @@ describe("SQLite AuthStore", () => {
   registerStoreScenarios(makeHarness);
   registerApiKeyScenarios(makeHarness);
   registerTotpScenarios(makeHarness);
+  registerOAuthServerScenarios(makeHarness);
 });
