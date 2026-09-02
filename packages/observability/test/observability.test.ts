@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Layer, Logger, LogLevel, Redacted } from "effect";
+import { Effect, FiberRef, HashSet, Layer, Logger, LogLevel, Redacted } from "effect";
 import {
   Correlation,
   type JsonLoggerOptions,
   type LogRecord,
   layer,
   layerJson,
+  layerPretty,
   Metrics,
   makeJsonLogger,
   ServiceMeta,
@@ -266,5 +267,43 @@ describe("layer", () => {
         expect(meta.name).toBe("svc");
       }).pipe(Effect.provide(obs)),
     );
+  });
+});
+
+describe("one logger per process", () => {
+  // What `BunRuntime.runMain` does before any app layer runs (unless told not to).
+  const runMainPrettyLogger = Logger.replace(Logger.defaultLogger, Logger.prettyLoggerDefault);
+  // Effect always keeps `tracerLogger` (log → span events) alongside the
+  // printing logger; only the printing ones matter here.
+  const installedLoggers = FiberRef.get(FiberRef.currentLoggers).pipe(
+    Effect.map((loggers) =>
+      HashSet.toValues(loggers).filter((logger) => logger !== Logger.tracerLogger),
+    ),
+  );
+
+  test("layerJson replaces runMain's pretty logger too: one JSON line per record", async () => {
+    const lines: Array<string> = [];
+    const loggers = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* Effect.log("once");
+        return yield* installedLoggers;
+      }).pipe(
+        Effect.provide(
+          layerJson((line) => lines.push(line)).pipe(Layer.provide(ServiceMeta.layer(service))),
+        ),
+        Effect.provide(runMainPrettyLogger),
+      ),
+    );
+    expect(lines).toHaveLength(1);
+    expect(loggers).toHaveLength(1);
+    expect(loggers).not.toContain(Logger.prettyLoggerDefault);
+    expect(loggers).not.toContain(Logger.defaultLogger);
+  });
+
+  test("layerPretty on top of runMain's pretty logger still installs exactly one logger", async () => {
+    const loggers = await Effect.runPromise(
+      installedLoggers.pipe(Effect.provide(layerPretty), Effect.provide(runMainPrettyLogger)),
+    );
+    expect(loggers).toEqual([Logger.prettyLoggerDefault]);
   });
 });

@@ -1,4 +1,15 @@
-import { Cause, Effect, HashMap, Layer, List, Logger, LogLevel, Redacted } from "effect";
+import {
+  Cause,
+  Effect,
+  FiberRef,
+  HashMap,
+  HashSet,
+  Layer,
+  List,
+  Logger,
+  LogLevel,
+  Redacted,
+} from "effect";
 import { ServiceMeta } from "./ServiceMeta.js";
 
 const MAX_STRING = 2048;
@@ -185,15 +196,28 @@ export const makeJsonLogger = (
   });
 };
 
-/** Replaces the default logger with the structured JSON logger. */
+/**
+ * Installs the structured JSON logger as the process's only printing logger:
+ * it replaces Effect's default logger and also removes the pretty logger that
+ * `BunRuntime.runMain` swaps in before app layers run (`launch` from
+ * `@structure-ai/runtime` disables it; this covers apps on plain `runMain`,
+ * which would otherwise print every record twice).
+ */
 export const layerJson = (
   write?: (line: string) => void,
   options?: JsonLoggerOptions,
 ): Layer.Layer<never, never, ServiceMeta> =>
   Layer.unwrapEffect(
-    Effect.map(ServiceMeta, (service) =>
-      Logger.replace(Logger.defaultLogger, makeJsonLogger(service, write, options)),
-    ),
+    Effect.map(ServiceMeta, (service) => {
+      const json = makeJsonLogger(service, write, options);
+      return Layer.fiberRefLocallyScopedWith(FiberRef.currentLoggers, (loggers) =>
+        loggers.pipe(
+          HashSet.remove(Logger.defaultLogger),
+          HashSet.remove(Logger.prettyLoggerDefault),
+          HashSet.add(json),
+        ),
+      );
+    }),
   );
 
 /** Minimum-level filter as a standalone layer. */

@@ -206,3 +206,41 @@ describe("runToCompletion", () => {
     expect(outcome._tag).toBe("Failed");
   });
 });
+
+const launchFixture = async (
+  logFormat: "json" | "pretty",
+): Promise<{ readonly code: number; readonly stdout: Array<string>; readonly stderr: string }> => {
+  const fixture = new URL("./fixtures/launch-logger.ts", import.meta.url).pathname;
+  const proc = Bun.spawn([process.execPath, "run", fixture, logFormat], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, NO_COLOR: "1" },
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout: stdout.split("\n").filter((line) => line.length > 0), stderr };
+};
+
+describe("launch", () => {
+  test("a launched app with the JSON logger emits exactly one line per record", async () => {
+    const { code, stdout, stderr } = await launchFixture("json");
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toHaveLength(1);
+    const record = JSON.parse(stdout[0] ?? "") as { event: string; level: string };
+    expect(record.event).toBe("launched");
+    expect(record.level).toBe("INFO");
+  }, 20_000);
+
+  test("a launched app with the pretty logger emits exactly one pretty line per record", async () => {
+    const { code, stdout, stderr } = await launchFixture("pretty");
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toHaveLength(1);
+    expect(stdout[0]).toContain("launched");
+    expect(() => JSON.parse(stdout[0] ?? "")).toThrow();
+  }, 20_000);
+});

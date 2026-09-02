@@ -5,7 +5,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 ## Startup order (owned by `@structure-ai/runtime`)
 
 1. Load + validate configuration — `ConfigLoadError` prints **every** issue and exits 1 before any work is accepted.
-2. Initialize telemetry (`Observability.layer`; export is off when `OTLP_URL` is unset — the app still runs).
+2. Initialize telemetry (`Observability.layer`; export is off when `OTLP_URL` is unset — the app still runs). One logger per process: `launch` disables `runMain`'s pretty logger and `layerJson` removes it as a backstop, so each record is printed once (`LOG_FORMAT=pretty` for a human-readable one locally).
 3. Establish resources (SQL client, event store, buses, durable auth store/rate limiter when auth is enabled).
 4. `Readiness.setReady` — only now does `/health/ready` return 200.
 

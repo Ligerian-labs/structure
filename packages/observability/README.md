@@ -34,7 +34,7 @@ const handler = Effect.gen(function* () {
 | `Correlation.within(ctx)` / `Correlation.scoped()` | Merge correlation/causation/request/actor ids into the fiber; annotate logs and spans. `scoped` mints a correlationId when absent. |
 | `Correlation.current` / `Correlation.newId()` | Read the active context / make an id. |
 | `Metrics.boundary(name)` / `Metrics.track(name)` | Traffic + error counters and latency histogram, plus a span, for a named boundary. |
-| `makeJsonLogger(service, write?, options?)` / `layerJson(write?, options?)` | The structured logger; inject `write` to capture output in tests. `options.redactKeys` censors keys at any depth. |
+| `makeJsonLogger(service, write?, options?)` / `layerJson(write?, options?)` | The structured logger; inject `write` to capture output in tests. `options.redactKeys` censors keys at any depth. `layerJson` becomes the only printing logger: it replaces the default logger and drops the pretty one `BunRuntime.runMain` installs (`@structure-ai/runtime`'s `launch` already disables it). |
 | `layerPretty` / `layerSilent` / `layerMinimumLevel(level)` | Dev logger, no-logs (tests), level filter. |
 | `layerOtlp({ baseUrl, headers? })` | Pure-Effect OTLP export of traces/metrics/logs (no OTel JS SDK). |
 | `observabilitySettings` | Ready-made `@structure-ai/config` settings (`LOG_LEVEL`, `LOG_FORMAT`, `OTLP_URL`). |
