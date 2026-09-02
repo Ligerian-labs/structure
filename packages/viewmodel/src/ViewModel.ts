@@ -273,9 +273,14 @@ export const createTableSql = <Fields extends Schema.Struct.Fields>(
 export const migration = <Fields extends Schema.Struct.Fields>(
   def: ViewModelDef<Fields>,
   id: number,
-): Migration =>
-  defineMigration(
+): Migration => {
+  const sql = createTableSql(def);
+  // Declaring the DDL makes the recorded checksum cover the table shape, so a
+  // view model edited after its migration ran is reported as drift.
+  return defineMigration(
     id,
     `create_${def.table}`,
-    Effect.flatMap(SqlClient, (sql) => sql.unsafe(createTableSql(def))).pipe(Effect.asVoid),
+    Effect.flatMap(SqlClient, (client) => client.unsafe(sql)).pipe(Effect.asVoid),
+    { sql },
   );
+};

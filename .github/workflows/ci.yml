@@ -82,6 +82,9 @@ jobs:
       - name: Run auth pg adapter tests against real Postgres
         working-directory: packages/auth-pg
         run: bun test
+      - name: Run migrations tests against real Postgres
+        working-directory: packages/migrations
+        run: bun test
 
   test-nisshi:
     name: Nisshi adapter tests (SQLite + Postgres sidecars)
