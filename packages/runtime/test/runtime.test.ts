@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Settings, toLayer } from "@structure-ai/config";
 import { layerSilent } from "@structure-ai/observability";
-import { Context, Duration, Effect, Fiber, Layer } from "effect";
+import { Context, Deferred, Duration, Effect, Exit, Fiber, Layer, Ref } from "effect";
 import { Readiness, runToCompletion, Shutdown, type ShutdownOptions } from "../src/index.js";
 
 const runReadiness = <A>(effect: Effect.Effect<A, never, Readiness>): Promise<A> =>
@@ -161,6 +161,219 @@ describe("Shutdown", () => {
       }),
     );
   });
+
+  test("awaitShutdown resolves only once every finalizer has drained", async () => {
+    const log: Array<string> = [];
+    await runShutdown(
+      Effect.gen(function* () {
+        const shutdown = yield* Shutdown;
+        yield* shutdown.onShutdown(
+          "slow-ish",
+          Effect.sleep(Duration.millis(20)).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                log.push("slow-ish");
+              }),
+            ),
+          ),
+        );
+        const waiter = yield* Effect.fork(
+          shutdown.awaitShutdown.pipe(Effect.map((reason) => ({ reason, seen: [...log] }))),
+        );
+        yield* Effect.fork(shutdown.trigger("first"));
+        expect(yield* Fiber.join(waiter)).toEqual({ reason: "first", seen: ["slow-ish"] });
+      }),
+    );
+  });
+
+  test("a second trigger returns only after the running drain completed", async () => {
+    const log: Array<string> = [];
+    await runShutdown(
+      Effect.gen(function* () {
+        const shutdown = yield* Shutdown;
+        yield* shutdown.onShutdown(
+          "slow-ish",
+          Effect.sleep(Duration.millis(20)).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                log.push("slow-ish");
+              }),
+            ),
+          ),
+        );
+        const first = yield* Effect.fork(shutdown.trigger("first"));
+        yield* shutdown.trigger("second");
+        expect(log).toEqual(["slow-ish"]);
+        yield* Fiber.join(first);
+      }),
+    );
+  });
+
+  test("the per-finalizer timeout holds when trigger runs inside an interruption handler", async () => {
+    const log: Array<string> = [];
+    await runShutdown(
+      Effect.gen(function* () {
+        const shutdown = yield* Shutdown;
+        yield* shutdown.onShutdown(
+          "fast",
+          Effect.sync(() => {
+            log.push("fast");
+          }),
+        );
+        yield* shutdown.onShutdown("hung", Effect.never);
+        const fiber = yield* Effect.fork(
+          Effect.never.pipe(Effect.onInterrupt(() => shutdown.trigger("interrupted"))),
+        );
+        yield* Effect.yieldNow();
+        const started = Date.now();
+        yield* Fiber.interrupt(fiber);
+        expect(Date.now() - started).toBeLessThan(1_000);
+        expect(log).toEqual(["fast"]);
+      }),
+      { finalizerTimeout: Duration.millis(30) },
+    );
+  });
+});
+
+describe("runToCompletion with a Shutdown coordinator", () => {
+  const layers = shutdownLayers();
+
+  interface Observed {
+    readonly name: string;
+    readonly ready: boolean;
+  }
+
+  const shutdownProgram = (options: {
+    readonly ready: Deferred.Deferred<void>;
+    readonly observed: Ref.Ref<ReadonlyArray<Observed>>;
+    readonly resolved?: Deferred.Deferred<string>;
+  }): Effect.Effect<void, never, Shutdown | Readiness> =>
+    Effect.gen(function* () {
+      const readiness = yield* Readiness;
+      const shutdown = yield* Shutdown;
+      for (const name of ["a", "b", "c"]) {
+        yield* shutdown.onShutdown(
+          name,
+          Effect.gen(function* () {
+            const ready = yield* readiness.isReady;
+            yield* Ref.update(options.observed, (list) => [...list, { name, ready }]);
+          }),
+        );
+      }
+      yield* readiness.setReady;
+      yield* Deferred.succeed(options.ready, undefined);
+      const reason = yield* shutdown.awaitShutdown;
+      if (options.resolved !== undefined) yield* Deferred.succeed(options.resolved, reason);
+    });
+
+  test("interrupting the main fiber runs finalizers in reverse order after flipping readiness", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const ready = yield* Deferred.make<void>();
+        const resolved = yield* Deferred.make<string>();
+        const observed = yield* Ref.make<ReadonlyArray<Observed>>([]);
+        const main = yield* Effect.fork(
+          runToCompletion(shutdownProgram({ ready, observed, resolved }), layers),
+        );
+        yield* Deferred.await(ready);
+        const exit = yield* Fiber.interrupt(main);
+        expect(Exit.isInterrupted(exit)).toBe(true);
+        expect(yield* Ref.get(observed)).toEqual([
+          { name: "c", ready: false },
+          { name: "b", ready: false },
+          { name: "a", ready: false },
+        ]);
+        // The program itself saw awaitShutdown resolve and ran to its end.
+        expect(yield* Deferred.await(resolved)).toBe("interrupted");
+      }),
+    );
+  });
+
+  test("an injected signal resolves awaitShutdown with its name once the finalizers drained", async () => {
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const ready = yield* Deferred.make<void>();
+        const resolved = yield* Deferred.make<string>();
+        const stop = yield* Deferred.make<string>();
+        const observed = yield* Ref.make<ReadonlyArray<Observed>>([]);
+        const main = yield* Effect.fork(
+          runToCompletion(shutdownProgram({ ready, observed, resolved }), layers, {
+            signal: Deferred.await(stop),
+          }),
+        );
+        yield* Deferred.await(ready);
+        yield* Deferred.succeed(stop, "SIGTERM");
+        expect(yield* Deferred.await(resolved)).toBe("SIGTERM");
+        expect((yield* Ref.get(observed)).map((entry) => entry.name)).toEqual(["c", "b", "a"]);
+        return yield* Fiber.join(main);
+      }),
+    );
+    expect(outcome).toEqual({ _tag: "Success" });
+  });
+
+  test("an injected signal stops a program that never ends on its own, as Success", async () => {
+    const log: Array<string> = [];
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const stop = yield* Deferred.make<string>();
+        const program = Effect.gen(function* () {
+          const shutdown = yield* Shutdown;
+          yield* shutdown.onShutdown(
+            "server",
+            Effect.sync(() => {
+              log.push("server");
+            }),
+          );
+          yield* Deferred.succeed(stop, "SIGINT");
+          yield* Effect.never;
+        });
+        return yield* runToCompletion(program, layers, { signal: Deferred.await(stop) });
+      }),
+    );
+    expect(outcome).toEqual({ _tag: "Success" });
+    expect(log).toEqual(["server"]);
+  });
+
+  test("without a Shutdown service the program runs untouched", async () => {
+    const outcome = await Effect.runPromise(
+      runToCompletion(Effect.void, Layer.empty, { signal: Effect.succeed("SIGTERM") }),
+    );
+    expect(outcome).toEqual({ _tag: "Success" });
+  });
+});
+
+describe("launch signals", () => {
+  test("SIGTERM resolves awaitShutdown with the signal name after draining the finalizers", async () => {
+    const fixture = new URL("./fixtures/launch-signal.ts", import.meta.url).pathname;
+    const proc = Bun.spawn([process.execPath, "run", fixture], { stdout: "pipe", stderr: "pipe" });
+    const lines: Array<string> = [];
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    const readUntil = async (predicate: () => boolean): Promise<void> => {
+      while (!predicate()) {
+        const chunk = await reader.read();
+        if (chunk.done) return;
+        buffered += decoder.decode(chunk.value, { stream: true });
+        const parts = buffered.split("\n");
+        buffered = parts.pop() ?? "";
+        lines.push(...parts);
+      }
+    };
+    await readUntil(() => lines.includes("ready"));
+    expect(lines).toEqual(["ready"]);
+    proc.kill("SIGTERM");
+    await readUntil(() => false);
+    const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+    expect(stderr).toBe("");
+    expect(lines).toEqual([
+      "ready",
+      "finalizer drain-jobs ready=false",
+      "finalizer close-db ready=false",
+      "shutdown SIGTERM",
+    ]);
+    expect(code).toBe(0);
+  }, 20_000);
 });
 
 class AppConfig extends Context.Tag("@structure-ai/runtime/test/AppConfig")<

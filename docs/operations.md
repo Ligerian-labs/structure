@@ -29,7 +29,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 
 ## Shutdown
 
-`Shutdown.trigger` (or SIGINT/SIGTERM via `launch`) marks unready, then runs finalizers in reverse registration order, each bounded (default 5s — a hung finalizer is logged and skipped), inside an overall grace period (default 30s hard deadline). Register finalizers for: HTTP drain, projection/relay loops, SQL pools.
+`Shutdown.trigger` (or SIGINT/SIGTERM, which `launch` routes into `trigger(<signal>)`) marks unready, then runs finalizers in reverse registration order, each bounded (default 5s — a hung finalizer is logged and skipped), inside an overall grace period (default 30s hard deadline). `awaitShutdown` resolves with the signal name once the drain completed; the program then ends, layers tear down (`serve` drops the listener here), and the process exits 0. A second signal ends the process at once. Register finalizers for: HTTP drain, projection/relay loops, SQL pools.
 
 ## Telemetry signals worth alerting on
 

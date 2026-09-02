@@ -13,7 +13,7 @@ const program = Effect.gen(function* () {
   const shutdown = yield* Shutdown;
   yield* shutdown.onShutdown("close-db", closeDb);
   yield* readiness.setReady;
-  yield* shutdown.awaitShutdown; // block until SIGINT/SIGTERM or trigger()
+  yield* shutdown.awaitShutdown; // resolves with "SIGTERM"/"SIGINT"/the trigger() reason, after the finalizers drained
 });
 
 launch(program, {
@@ -21,6 +21,16 @@ launch(program, {
   gracePeriod: Duration.seconds(30),
 });
 ```
+
+## Shutdown path
+
+`launch` routes SIGTERM/SIGINT into the coordinator when the layers provide `Shutdown`: the signal becomes `trigger("SIGTERM")`, readiness flips unready, finalizers drain in reverse registration order (each under its timeout, on a daemon fiber so an interruption cannot cut the drain short), `awaitShutdown` resolves with the signal name, the program ends, layers tear down (`@structure-ai/http`'s `serve` drops its listener here), and the process exits 0. A program that never ends by itself (`Effect.never`-style servers) is interrupted once the drain completed. `runMain`'s own reaction to the signal — interrupting the main fiber — is bridged to `trigger("interrupted")` and awaited, so the two listeners can fire in any order; the reason is the signal name whenever the signal is seen first, which is the normal case. A second signal ends the process immediately (default OS behavior); `gracePeriod` bounds the whole teardown.
+
+`trigger` is idempotent and every call returns once the drain completed; `awaitShutdown` does the same and yields the reason. Put shutdown work in `onShutdown` finalizers, not after `awaitShutdown`: once it resolves the program is expected to end.
+
+`runToCompletion(program, layers, { signal? })` never observes OS signals: `signal` (typically `Deferred.await(stop)`) injects a reason exactly as SIGTERM would under `launch`, and interrupting the returned effect drains the coordinator too. A program stopped through the shutdown path is reported as `Success`, matching the exit code 0 `launch` produces.
+
+Calling `BunRuntime.runMain` yourself instead of `launch`? Then nothing routes signals to the coordinator: bridge the interruption `runMain` performs with `program.pipe(Effect.onInterrupt(() => shutdown.trigger("interrupted")))`.
 
 ## Exports
 

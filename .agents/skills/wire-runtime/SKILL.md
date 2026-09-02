@@ -19,19 +19,20 @@ const program = Effect.gen(function* () {
   const shutdown = yield* Shutdown;
   yield* shutdown.onShutdown("close-db", closeDb);   // reverse order, each ≤ timeout
   yield* Readiness.setReady;                        // starts NOT ready
-  yield* shutdown.awaitShutdown;                    // SIGINT/SIGTERM or trigger()
+  yield* shutdown.awaitShutdown;                    // resolves with "SIGTERM"/"SIGINT"/trigger() reason once finalizers drained
 });
 ```
 
 2. **Register dependency checks** on `Readiness` (db reachable, queue connected) — `/health/ready` from `@structure-ai/http` reports them by name; a check defect reports `ok: false`, never crashes the probe.
-3. **Launch** with layers and a hard grace-period deadline: `launch(program, { layers, gracePeriod: Duration.seconds(30) })`. `ConfigLoadError` prints every issue and exits 1.
+3. **Launch** with layers and a hard grace-period deadline: `launch(program, { layers, gracePeriod: Duration.seconds(30) })`. `ConfigLoadError` prints every issue and exits 1. `launch` routes SIGTERM/SIGINT into `Shutdown.trigger(<signal>)`: readiness flips, finalizers drain in reverse order, `awaitShutdown` resolves, the program ends, layers tear down, exit 0 (a program that never ends by itself is interrupted after the drain). If you call `BunRuntime.runMain` yourself, bridge its interruption: `program.pipe(Effect.onInterrupt(() => shutdown.trigger("interrupted")))`.
 4. **Prefer layers over imperative cleanup**: put resources in `Layer.scoped` so finalizers compose with shutdown automatically; use `onShutdown` only for resources acquired outside the Effect world.
-5. **Tests:** `runToCompletion(program, layers)` returns `{ _tag: "Success" | "ConfigInvalid" | "Failed", ... }` instead of exiting. Follow `packages/runtime/test/runtime.test.ts`.
+5. **Tests:** `runToCompletion(program, layers, { signal? })` returns `{ _tag: "Success" | "ConfigInvalid" | "Failed", ... }` instead of exiting and never observes OS signals; inject one with `signal: Deferred.await(stop)` and complete `stop` with a reason to exercise the shutdown path (interrupting the returned effect drains it too). Follow `packages/runtime/test/runtime.test.ts`.
 
 ## Rules
 
 - Every resource gets a finalizer; a slow or failing one is logged and skipped, bounded by its timeout — don't rely on teardown that can hang.
 - Set ready only after the process can actually serve; anything registered before that reports not-ready, which is correct.
+- Shutdown work goes in `onShutdown` finalizers, not after `awaitShutdown` — once it resolves the program is expected to end.
 - Entrypoints compose the layers; layer wiring (config → observability → stores → http) is the whole startup order.
 - Never `process.exit` inside library or handler code — exit policy belongs to `launch`/`runToCompletion`.
 
