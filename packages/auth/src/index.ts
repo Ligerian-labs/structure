@@ -83,6 +83,20 @@ export {
   validateReturnTo,
 } from "./oauth.js";
 export {
+  type DiscoveredOidc,
+  discoverOidc,
+  type OidcDiscovery,
+  type OidcProviderConfig,
+  type OidcTokenValidationInput,
+  validateIdToken,
+} from "./oidc.js";
+export {
+  type OidcSettingsValue,
+  oidcProviderConfig,
+  oidcProvisioningPolicy,
+  oidcSettings,
+} from "./oidcSettings.js";
+export {
   type AuthAction,
   type AuthAuditEvent,
   type AuthAuditSink,
@@ -96,6 +110,7 @@ export {
   type AuthService,
   type AuthServiceError,
   type EmailSender,
+  type IdentityProvisionRequest,
   type MakeAuthOptions,
   makeAuth,
   type RegisterPasswordInput,

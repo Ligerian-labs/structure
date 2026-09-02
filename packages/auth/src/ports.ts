@@ -44,7 +44,8 @@ export interface AuthAuditEvent {
     | "sessions-revoked"
     | "apikey-mint"
     | "apikey-revoke"
-    | "totp-locked";
+    | "totp-locked"
+    | "oauth-unlink";
   readonly outcome: "succeeded";
   readonly userId?: string;
   readonly provider?: OAuthProviderId;

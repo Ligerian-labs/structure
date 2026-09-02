@@ -75,6 +75,15 @@ export interface MakeAuthOptions {
   readonly oauthHttpClient?: OAuthHttpClient;
   readonly oauthProviderResolver?: OAuthProviderResolver;
   readonly accountLinkPolicy?: AccountLinkPolicy;
+  /**
+   * Gate for provisioning brand-new identities: consulted before an unknown
+   * external identity creates an account. Absent (default), provisioning is
+   * allowed — the social-provider behavior. Wire it to JIT settings for
+   * generic OIDC (default off: only already-known identities sign in).
+   */
+  readonly identityProvisioning?: {
+    readonly allow: (request: IdentityProvisionRequest) => Effect.Effect<boolean>;
+  };
   readonly rateLimiter: RateLimiter;
   readonly audit?: AuthAuditSink;
   /**
@@ -92,6 +101,14 @@ export interface RegisterPasswordInput {
   readonly email: string;
   readonly password: string;
   readonly displayName?: string;
+}
+
+/** An unknown external identity asking to become an account. */
+export interface IdentityProvisionRequest {
+  readonly tenantId: TenantId;
+  readonly provider: import("./model.js").OAuthProviderId;
+  readonly subject: string;
+  readonly email?: string;
 }
 
 export interface AuthService {
@@ -186,6 +203,12 @@ export interface AuthService {
     tenantId: TenantId,
     response: PasskeyAuthenticationResponse,
   ) => Effect.Effect<AuthSession, AuthServiceError>;
+  /** Unlinks an external identity from the signed-in user (owner action). */
+  readonly unlinkOAuthIdentity: (
+    tenantId: TenantId,
+    sessionToken: Redacted.Redacted<string>,
+    provider: import("./model.js").OAuthProviderId,
+  ) => Effect.Effect<void, AuthServiceError>;
 }
 
 export type AuthServiceError =
@@ -380,6 +403,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
   const oauthHttp = options.oauthHttpClient ?? fetchOAuthHttpClient();
   const oauthProviders = options.oauthProviderResolver ?? defaultOAuthProviderResolver;
   const accountLinking = options.accountLinkPolicy ?? denyAccountLinking;
+  const provisioning = options.identityProvisioning;
   const rateLimiter = options.rateLimiter;
   const audit = options.audit ?? noOpAuthAuditSink;
   const primitives: AuthPrimitives = {
@@ -886,6 +910,22 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
               user;
           }
         } else {
+          const provisioned =
+            provisioning === undefined ||
+            (yield* Effect.map(
+              provisioning.allow({
+                tenantId: input.tenantId,
+                provider: input.provider,
+                subject: profile.subject,
+                ...(profile.email === undefined ? {} : { email: profile.email }),
+              }),
+              (allowed): boolean => allowed,
+            ));
+          if (!provisioned) {
+            // JIT off: unknown identities are indistinguishable from wrong
+            // credentials — no account enumeration.
+            return yield* new InvalidCredentials({ reason: "oauth-identity" });
+          }
           const now = primitives.now();
           user = {
             id: primitives.randomToken(18),
@@ -1051,6 +1091,18 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
                 })),
               }),
         };
+      }),
+    unlinkOAuthIdentity: (tenantId, sessionToken, provider) =>
+      Effect.gen(function* () {
+        const config = yield* configFor(tenantId);
+        void config;
+        yield* limit(tenantId, "oauth-complete", tokenValue(sessionToken));
+        const session = yield* getSession(tenantId, sessionToken);
+        yield* options.store.removeOAuthIdentity(tenantId, session.user.id, provider);
+        yield* recordAudit(tenantId, "oauth-unlink", "succeeded", {
+          userId: session.user.id,
+          provider,
+        });
       }),
     finishPasskeyAuthentication: (tenantId, response) =>
       Effect.gen(function* () {

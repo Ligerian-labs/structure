@@ -457,6 +457,13 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
              ${identity.email ?? null}, ${identity.createdAt.toISOString()})
         `;
       }).pipe(Effect.asVoid),
+    removeOAuthIdentity: (tenantId, userId, provider) =>
+      read("remove-oauth-identity", async () => {
+        await sql`
+          DELETE FROM ${sql(tables.oauthIdentities)}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId} AND provider = ${provider}
+        `;
+      }).pipe(Effect.asVoid),
     putPasskeyChallenge: (record) =>
       write("put-passkey-challenge", record.tenantId, "passkey-challenge", async () => {
         await sql`

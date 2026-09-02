@@ -24,6 +24,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@structure-ai/config": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

@@ -13,6 +13,8 @@ import type {
 export interface OAuthTokens {
   readonly accessToken: Redacted.Redacted<string>;
   readonly tokenType?: string;
+  /** OpenID Connect ID token, when the provider issues one. */
+  readonly idToken?: Redacted.Redacted<string>;
 }
 
 export interface OAuthHttpClient {
@@ -343,10 +345,12 @@ export const exchangeOAuthCode = (
     }
     const accessToken = yield* requiredString(tokenBody.access_token, "access-token");
     const tokenType = optionalString(tokenBody.token_type);
+    const idToken = optionalString(tokenBody.id_token);
     return yield* provider.fetchProfile(
       {
         accessToken: Redacted.make(accessToken),
         ...(tokenType === undefined ? {} : { tokenType }),
+        ...(idToken === undefined ? {} : { idToken: Redacted.make(idToken) }),
       },
       client,
     );

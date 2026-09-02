@@ -32,6 +32,7 @@
       "name": "@structure-ai/auth",
       "version": "0.0.0",
       "dependencies": {
+        "@structure-ai/config": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
