@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
 import { AuthStoreError } from "@structure-ai/auth";
@@ -255,6 +256,12 @@ export interface AuthMigration {
   readonly id: number;
   readonly name: string;
   readonly up: Effect.Effect<void, SqlError, SqlClient.SqlClient>;
+  /**
+   * sha-256 (hex) over the JSON encoding of `[id, name, statements]` — the
+   * same recipe as `defineMigration` with declared `sql`, so the migrator's
+   * drift detection covers the auth DDL itself.
+   */
+  readonly checksum: string;
 }
 
 /**
@@ -265,18 +272,23 @@ export interface AuthMigration {
  * transaction. The DDL is idempotent, so re-running `up` outside the
  * migrator's bookkeeping is a no-op.
  */
-export const migration = (id: number, options: AdapterOptions = {}): AuthMigration => ({
-  id,
-  name: `create_${options.tablePrefix ?? DEFAULT_PREFIX}schema`,
-  up: Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql.withTransaction(
-      Effect.forEach(schemaStatements(options), (statement) => sql.unsafe(statement), {
-        discard: true,
-      }),
-    );
-  }),
-});
+export const migration = (id: number, options: AdapterOptions = {}): AuthMigration => {
+  const name = `create_${options.tablePrefix ?? DEFAULT_PREFIX}schema`;
+  const statements = schemaStatements(options);
+  return {
+    id,
+    name,
+    up: Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.withTransaction(
+        Effect.forEach(statements, (statement) => sql.unsafe(statement), { discard: true }),
+      );
+    }),
+    checksum: createHash("sha256")
+      .update(JSON.stringify([id, name, [...statements]]))
+      .digest("hex"),
+  };
+};
 
 /**
  * Creates the complete auth schema in one transaction over a Bun `SQL`
