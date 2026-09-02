@@ -14,17 +14,33 @@ Implements **four** ports: `EventStore`, `SnapshotStore`, `CheckpointStore`, `In
 
 ## Usage
 
+SQLite sidecar:
+
 ```ts
 import { layer, runPendingRelay } from "@structure-ai/eventsourcing-nisshi";
 
 const durable = layer({
   brokerUrl: "tcp://127.0.0.1:9092", // must equal the broker's advertised listener
-  filename: "./sidecar.db",           // sqlite sidecar; ":memory:" for tests
+  filename: "./sidecar.db",           // ":memory:" for tests
   topic: "events",                    // single partition, created when missing
 });
-
-// On an existing SqlClient + NisshiClient: storesLayer(options) (run migrate() first).
 ```
+
+PostgreSQL sidecar:
+
+```ts
+import { layerPg } from "@structure-ai/eventsourcing-nisshi";
+
+const durable = layerPg({
+  brokerUrl: "tcp://127.0.0.1:9092",
+  url: "postgres://app:secret@db:5432/app", // defaults to DATABASE_URL
+  applicationName: "orders",
+  maxConnections: 10,
+  topic: "events",
+});
+```
+
+On an existing SQLite or PostgreSQL `SqlClient` plus `NisshiClient`, use `storesLayer(options)` and run `migrate(options)` first.
 
 Run the orphan relay in a worker (or every app instance, it is idempotent):
 
@@ -37,7 +53,9 @@ Effect.runFork(runPendingRelay({ pollInterval: 500 }));
 | Option | Default | Notes |
 | --- | --- | --- |
 | `brokerUrl` | — | Broker listener; must match `--kafka-advertised-listener-url`. |
-| `filename` | — | Sidecar SQLite file (`":memory:"` works). |
+| `filename` (`layer`) | — | Sidecar SQLite file (`":memory:"` works). |
+| `url` (`layerPg`) | `DATABASE_URL` / libpq defaults | Sidecar PostgreSQL connection URL. |
+| `applicationName` / `maxConnections` (`layerPg`) | driver defaults | PostgreSQL pool options. |
 | `topic` | `"events"` | Must have exactly one partition (verified; ADR-0015). |
 | `createTopic` | `true` | Create the topic at layer start when missing. |
 | `schemaValidation` | `true` | Validate envelopes client-side before produce. |
@@ -49,14 +67,16 @@ Effect.runFork(runPendingRelay({ pollInterval: 500 }));
 
 ## Production topologies
 
-Nisshi backs the same broker with pluggable storage:
+The **sidecar** may be SQLite (`layer`) or PostgreSQL (`layerPg`). Use PostgreSQL when multiple app instances can command the same aggregate: the concurrency ledger must be shared. A process-local SQLite sidecar is only safe for a single writer instance.
+
+Separately, Nisshi backs the broker with pluggable storage:
 
 - **PostgreSQL** — `nisshi --storage-engine postgres://user:pass@host:5432/db`
 - **S3-compatible** — `nisshi --storage-engine s3://bucket/prefix` (11-nines durability class)
 - **libSQL/SQLite** — `nisshi --storage-engine sqlite://nisshi.db` (single host)
 
-Run one broker process per availability need — brokers are stateless, all are leaders; durability comes from the storage engine, not broker replication. Set `--kafka-advertised-listener-url` to the address clients dial.
+The sidecar and broker storage may share one PostgreSQL server, but use separate schemas/credentials and backup policies. Run one broker process per availability need — brokers are stateless, all are leaders; durability comes from the storage engine, not broker replication. Set `--kafka-advertised-listener-url` to the address clients dial.
 
 ## Tests
 
-`bun test` skips broker suites unless `NISSHI_URL` is set; CI installs a pinned Nisshi release and runs them. The wire quirks this client encodes (trailing `throttle_time_ms` in Produce, metadata-triggered topic auto-creation, empty-topic high watermark of 1, whole-batch fetch granularity) are pinned by tests in `test/protocol.test.ts`.
+`bun test` skips broker suites unless `NISSHI_URL` is set; PostgreSQL-sidecar scenarios additionally require `DATABASE_URL`. CI installs a pinned Nisshi release, starts PostgreSQL, and runs both sidecar suites. The wire quirks this client encodes (trailing `throttle_time_ms` in Produce, metadata-triggered topic auto-creation, empty-topic high watermark of 1, whole-batch fetch granularity) are pinned by tests in `test/protocol.test.ts`.

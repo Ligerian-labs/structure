@@ -27,6 +27,7 @@
     "effect": "catalog:",
     "@effect/sql": "catalog:",
     "@effect/sql-sqlite-bun": "catalog:",
+    "@effect/sql-pg": "catalog:",
     "@structure-ai/domain": "workspace:*",
     "@structure-ai/eventsourcing": "workspace:*"
   },

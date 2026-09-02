@@ -84,11 +84,24 @@ jobs:
         run: bun test
 
   test-nisshi:
-    name: Nisshi adapter tests
+    name: Nisshi adapter tests (SQLite + Postgres sidecars)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       NISSHI_VERSION: v0.7.0-pre.2
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -114,7 +127,7 @@ jobs:
             sleep 0.5
           done
           echo "broker never came up"; exit 1
-      - name: Run nisshi adapter tests against real broker
+      - name: Run nisshi adapter tests against real broker and Postgres sidecar
         working-directory: packages/eventsourcing-nisshi
         env:
           NISSHI_URL: tcp://127.0.0.1:19092

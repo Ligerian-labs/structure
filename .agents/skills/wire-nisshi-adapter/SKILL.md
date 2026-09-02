@@ -18,19 +18,32 @@ nisshi --kafka-listener-url tcp://0.0.0.0:9092 --kafka-advertised-listener-url t
 
    The advertised listener must equal what the app dials — Nisshi reports it in metadata.
 
-2. **Swap the layer** (replaces `InMemoryAll` or the SQL adapters):
+2. **Swap the layer** (replaces `InMemoryAll` or the SQL adapters). Use SQLite for one app instance:
 
 ```ts
 import { layer, runPendingRelay } from "@structure-ai/eventsourcing-nisshi";
 
 const stores = layer({
   brokerUrl: settings.brokerUrl,   // tcp://host:9092
-  filename: "./sidecar.db",        // sqlite sidecar for the ledger/snapshots/checkpoints/inbox
+  filename: "./sidecar.db",        // ledger/snapshots/checkpoints/inbox
   topic: "events",                 // single partition; created and verified at start
 });
 ```
 
-   On an existing `SqlClient` + `NisshiClient`: `storesLayer(options)`; run `migrate(options)` once first.
+   Use a shared PostgreSQL sidecar when multiple instances may command the same aggregate:
+
+```ts
+import { layerPg } from "@structure-ai/eventsourcing-nisshi";
+
+const stores = layerPg({
+  brokerUrl: settings.brokerUrl,
+  url: settings.databaseUrl,       // defaults to DATABASE_URL
+  applicationName: "orders",
+  topic: "events",
+});
+```
+
+   On an existing SQLite or PostgreSQL `SqlClient` plus `NisshiClient`: `storesLayer(options)`; run `migrate(options)` once first.
 
 3. **Run the orphan relay** in a worker (or every instance — it is idempotent): `Effect.runFork(runPendingRelay({ pollInterval: 500 }))`. It re-produces events whose append crashed between ledger reservation and broker ack.
 
@@ -43,4 +56,4 @@ const stores = layer({
 - Never create the events topic with more than **one partition** — `position` semantics and every checkpoint depend on the total order (ADR-0015).
 - Keep infinite retention, no compaction: the topic is the raw history; snapshots are only a cache.
 - Do not probe for the topic's existence via metadata before creating it — Nisshi auto-creates probed topics with four partitions; the layer creates-then-verifies for you.
-- Tests need a broker: they skip unless `NISSHI_URL` is set (CI installs a pinned release). Local: `nisshi --storage-engine memory://t/` and export the listener.
+- Tests need a broker: they skip unless `NISSHI_URL` is set. PostgreSQL-sidecar scenarios also require `DATABASE_URL` (CI supplies both). Local: `nisshi --storage-engine memory://t/` and export the listener.

@@ -5,7 +5,14 @@ export {
   validateWireEvent,
   type WireEvent,
 } from "./envelope.js";
-export { layer, type NisshiAdaptersConfig, type StoreServices, storesLayer } from "./layer.js";
+export {
+  layer,
+  layerPg,
+  type NisshiAdaptersConfig,
+  type NisshiPgConfig,
+  type StoreServices,
+  storesLayer,
+} from "./layer.js";
 export {
   decodeRecordBatch,
   encodeRecordBatch,
