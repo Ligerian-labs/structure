@@ -57,6 +57,10 @@ export const launch = <E, R, LE>(
     ),
   );
   BunRuntime.runMain(app, {
+    // The app picks its logger through the observability layer; without this
+    // `runMain` installs Bun's pretty logger first and `layerJson` would sit
+    // next to it, printing every record twice.
+    disablePrettyLogger: true,
     teardown: (exit, onExit) => {
       if (configFailed) {
         onExit(1);
