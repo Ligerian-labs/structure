@@ -1,0 +1,38 @@
+{
+  "name": "@structure-ai/jobs",
+  "version": "0.0.0",
+  "description": "Delayed and recurring jobs on PostgreSQL: named schema-typed handlers, SKIP LOCKED dispatch with heartbeat leases, cron scheduling with timezones, at-least-once delivery, dead letters, graceful drain, per-job metrics.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/jobs"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@structure-ai/config": "workspace:*",
+    "@structure-ai/observability": "workspace:*",
+    "@structure-ai/runtime": "workspace:*",
+    "@effect/sql": "catalog:",
+    "@effect/sql-pg": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

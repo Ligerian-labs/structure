@@ -228,6 +228,22 @@
         "typescript": "catalog:",
       },
     },
+    "packages/jobs": {
+      "name": "@structure-ai/jobs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/sql": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@structure-ai/config": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
+        "@structure-ai/runtime": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/mailer": {
       "name": "@structure-ai/mailer",
       "version": "0.0.0",
@@ -587,6 +603,8 @@
     "@structure-ai/eventsourcing-sqlite": ["@structure-ai/eventsourcing-sqlite@workspace:packages/eventsourcing-sqlite"],
 
     "@structure-ai/http": ["@structure-ai/http@workspace:packages/http"],
+
+    "@structure-ai/jobs": ["@structure-ai/jobs@workspace:packages/jobs"],
 
     "@structure-ai/mailer": ["@structure-ai/mailer@workspace:packages/mailer"],
 
