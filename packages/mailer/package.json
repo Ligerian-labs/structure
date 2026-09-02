@@ -1,7 +1,7 @@
 {
   "name": "@structure-ai/mailer",
   "version": "0.0.0",
-  "description": "Transactional email: one Mailer service over pluggable drivers (SMTP, Resend, capture), typed templates with previews, transient-only bounded retry, per-driver metrics.",
+  "description": "Transactional email: one Mailer service over pluggable drivers (SMTP, Resend, Brevo, capture), typed templates with previews, transient-only bounded retry, per-driver metrics.",
   "license": "MIT",
   "type": "module",
   "repository": {
