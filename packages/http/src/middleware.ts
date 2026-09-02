@@ -80,6 +80,7 @@ const knownTags: ReadonlySet<string> = new Set([
   "PermissionDenied",
   "NotFound",
   "ConcurrencyConflict",
+  "TooManyRequestsProblem",
   "DispatchTimeout",
   "InvariantViolation",
   "HandlerNotFound",

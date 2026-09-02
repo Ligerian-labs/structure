@@ -54,6 +54,11 @@ export class ConflictProblem extends Schema.Class<ConflictProblem>("ConflictProb
   HttpApiSchema.annotations({ status: 409 }),
 ) {}
 
+/** 429: rate limit exceeded; retry after the advertised delay. */
+export class TooManyRequestsProblem extends Schema.Class<TooManyRequestsProblem>(
+  "TooManyRequestsProblem",
+)(problemFields, HttpApiSchema.annotations({ status: 429 })) {}
+
 /** 504: the handler did not finish within its deadline. */
 export class GatewayTimeoutProblem extends Schema.Class<GatewayTimeoutProblem>(
   "GatewayTimeoutProblem",
@@ -71,6 +76,7 @@ export type HttpProblem =
   | ForbiddenProblem
   | NotFoundProblem
   | ConflictProblem
+  | TooManyRequestsProblem
   | GatewayTimeoutProblem
   | InternalServerProblem;
 
@@ -81,6 +87,7 @@ export const HttpProblemSchema = Schema.Union(
   ForbiddenProblem,
   NotFoundProblem,
   ConflictProblem,
+  TooManyRequestsProblem,
   GatewayTimeoutProblem,
   InternalServerProblem,
 );
@@ -98,9 +105,11 @@ export const problemStatus = (problem: HttpProblem): number =>
             ? NotFoundProblem
             : problem instanceof ConflictProblem
               ? ConflictProblem
-              : problem instanceof GatewayTimeoutProblem
-                ? GatewayTimeoutProblem
-                : InternalServerProblem,
+              : problem instanceof TooManyRequestsProblem
+                ? TooManyRequestsProblem
+                : problem instanceof GatewayTimeoutProblem
+                  ? GatewayTimeoutProblem
+                  : InternalServerProblem,
   );
 
 /**
