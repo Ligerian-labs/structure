@@ -50,10 +50,22 @@ const limiter = rateLimitLayer({
   store: makeInMemoryStore(),
   groups: [
     {
-      label: "auth",                       // bounded metric/log label
-      rule: { points: 10, windowMillis: 60_000, blockMillis: 30_000 },
-      match: (request) => request.url.startsWith("/auth"),
-      key: (request) => principalIdOr(request) ?? clientIp(request),
+      label: "api",                        // bounded metric/log label
+      rule: { points: 100, windowMillis: 60_000, blockMillis: 30_000 },
+      match: (request) => request.url.startsWith("/api"),
+      key: (request) => principalIdOr(request) ?? clientIp(request, { trustProxy }),
+    },
+    {
+      // Login wall: keyed by ip AND email, charged only when the credential is refused.
+      label: "login",
+      rule: { points: 10, windowMillis: 15 * 60_000, blockMillis: 15 * 60_000 },
+      match: (request) => request.method === "POST" && request.url.startsWith("/auth/login"),
+      keys: (request) =>
+        request.json.pipe(
+          Effect.map((body) => [`ip:${clientIp(request, { trustProxy })}`, `email:${emailDigest(body)}`]),
+          Effect.catchAll(() => Effect.succeed([`ip:${clientIp(request, { trustProxy })}`])),
+        ),
+      consumeWhen: (response) => response.status === 401,
     },
   ],
 });
@@ -63,19 +75,24 @@ const limiter = rateLimitLayer({
 Semantics:
 
 - `OPTIONS` preflights and `/health/*` probes **never consume budget**;
-- a denied request gets `429` + `Retry-After` (problem body with the correlation id) and a warning log tagged with the route label;
+- every counted response — success or error — carries `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` (seconds until the budget is fully restored) and their `X-RateLimit-*` twins; a fail-open response after a store failure carries none;
+- a denied request gets `429` + `Retry-After` (seconds; problem body with the correlation id), the quota headers with `remaining: 0`, and a warning log tagged with the route label;
+- a group with `consumeWhen` is a **consume-on-failure wall**: the store is `peek`ed before the handler (429 when a key is blocked, the handler never runs) and charged after it only when the predicate holds for the response. A handler failure is evaluated as the problem response the package would render for it (`Unauthenticated`/`UnauthorizedProblem` → 401, unknown errors → 500) and re-raised unchanged;
+- `keys` charges several budgets together under the group's rule (each key its own budget; refused when any is exhausted) — prefix keys by kind, they share one namespace; `undefined` entries are dropped and a request with no key is unlimited;
 - store failures **fail open** by default (counted as `http_rate_limit_store_errors_total`); `onStoreError: "deny"` fails closed;
-- metrics: `http_rate_limit_consumed_total` / `http_rate_limit_blocked_total`, tagged `route`.
+- metrics: `http_rate_limit_consumed_total` (actual charges) / `http_rate_limit_blocked_total`, tagged `route`.
 
-Stores:
+Stores (`RateLimitStore` = `consume` + `peek`, both returning a `RateLimitDecision` with `allowed`, `retryAfterMillis`, `limit`, `remaining`, `resetMillis`):
 
 | Store | Use |
 | --- | --- |
 | `makeInMemoryStore()` | Single replica: bounded key map, lazy sweep, atomic in one event loop turn. |
-| `makeRedisStore({ url })` | Shared across replicas: atomic sliding window + block in one Lua `EVAL` over a dependency-free RESP2 client (`makeRedisClient`). |
+| `makeRedisStore({ url })` | Shared across replicas: atomic sliding window + block in one Lua `EVAL` (one script per operation) over a dependency-free RESP2 client (`makeRedisClient`). |
 | `storeFromUrl(url?)` | No URL → in-memory + startup warning stating single-replica scope; URL → Redis store. |
 
-Keys come from the app (principal id, IP, route+principal…): `clientIp(request)` extracts best-effort client IPs (`x-forwarded-for` → `x-real-ip` → socket). Because `@structure-ai/http` never depends on `@structure-ai/authorization`, principal-keyed groups resolve their key through a closure the app owns (e.g. reading `Principal.current` from its own composition).
+`peek` never spends a point or installs a block: a full window is refused until its oldest hit ages out; a block installed by `consume` is reported with its remaining time.
+
+Keys come from the app (principal id, IP, route+principal…). `clientIp(request, { trustProxy })` extracts the client IP and the option is required so the spoofable path is never picked by accident: with `trustProxy: true` the **rightmost** `x-forwarded-for` hop (the one your proxy appended) wins, then `x-real-ip`, then the socket; with `trustProxy: false` both headers are ignored and only the socket address counts — any client can set them. Set it from a setting that is `true` only when a proxy you operate terminates every connection. Because `@structure-ai/http` never depends on `@structure-ai/authorization`, principal-keyed groups resolve their key through a closure the app owns (e.g. reading `Principal.current` from its own composition).
 
 ## Errors
 

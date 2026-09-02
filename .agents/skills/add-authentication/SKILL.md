@@ -35,6 +35,7 @@ const auth = makeAuth({
 ## Rules
 
 - Production must provide a durable/shared rate limiter; `allowAllRateLimiter` is for tests and prototypes only.
+- HTTP walls in front of the auth routes use `@structure-ai/http`'s `rateLimitLayer`: key the login group with `keys` (ip via `clientIp(request, { trustProxy })` + email digest) and `consumeWhen: (response) => response.status === 401`, so a successful login costs nothing and ten POSTs naming a victim's address cannot lock that account (see the http README, "Rate limiting"). `trustProxy` is a setting, `true` only behind a proxy you operate.
 - Raw one-time/session tokens and OAuth client secrets never enter storage, logs, audit events, or errors — they are `Redacted` at the boundary.
 - Enumeration-safe responses: password-reset and magic-link requests give no account-existence signal.
 - A successful password reset or change revokes every older session.

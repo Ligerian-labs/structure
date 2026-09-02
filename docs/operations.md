@@ -43,6 +43,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 | `ai_tokens_*_total` spikes | LLM cost anomaly |
 | Log records with `level: ERROR` | Every one carries the cause once, at the owning boundary |
 | Auth rate-limit denials by stable action | Credential stuffing, mail abuse, or insufficient limiter capacity; never label by email/user/token |
+| `http_rate_limit_blocked_total` by `route`, `http_rate_limit_store_errors_total` > 0 | Abuse or an under-sized budget on that route group; store errors mean the limiter is failing open (or closed, if configured) — check Redis |
 | Auth dependency failures and OAuth provider latency | Mail/provider/storage degradation affecting sign-in journeys |
 | Expired auth tokens/sessions/challenges awaiting cleanup | Retention job failure or store growth; raw bearer values must never be present |
 
@@ -61,3 +62,5 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 ## Environments
 
 No environment-name branching anywhere: behavior differences ride on explicit settings (`Settings.*`), documented per package via `Settings.renderDocs`. Secrets enter as env vars, load as `Redacted`, and never appear in logs, traces, or errors. An env var set to an empty or whitespace-only value counts as unset (`docker compose` forwards `VAR=${VAR:-}` as `VAR=`): the setting's default applies and `optional` settings load `None`; `blankMeansUnset: false` on `load` keeps the literal empty string.
+
+One such setting deserves a warning: the `trustProxy` flag passed to `clientIp` (HTTP rate limiting). Keep it `false` unless a proxy you operate terminates every connection and appends the client address to `x-forwarded-for`; with it on, a directly reachable replica lets any client choose its own rate-limit bucket.
