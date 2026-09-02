@@ -1,6 +1,7 @@
 import { Settings } from "@structure-ai/config";
 import { type Config, Effect, Layer, Option } from "effect";
 import type { EmailDriver } from "./driver.js";
+import { makeBrevoDriver } from "./drivers/brevo.js";
 import { makeCaptureDriver } from "./drivers/capture.js";
 import { makeResendDriver } from "./drivers/resend.js";
 import { makeSmtpDriver } from "./drivers/smtp.js";
@@ -9,13 +10,14 @@ import { Mailer, type MailerOptions, makeMailer } from "./mailer.js";
 
 /**
  * Standard mailer settings — flat, validated at load time. Secrets
- * (`MAIL_SMTP_PASSWORD`, `MAIL_RESEND_API_KEY`) load as `Redacted` values.
+ * (`MAIL_SMTP_PASSWORD`, `MAIL_RESEND_API_KEY`, `MAIL_BREVO_API_KEY`) load as
+ * `Redacted` values.
  * Nest under a prefix with `Settings.nested("APP", mailerSettings)` when the
  * host app needs its own namespace.
  */
 export const mailerSettings = Settings.struct({
-  driver: Settings.literal("MAIL_DRIVER", ["capture", "smtp", "resend"], {
-    description: "outbound driver: smtp, resend, or capture (records in memory)",
+  driver: Settings.literal("MAIL_DRIVER", ["capture", "smtp", "resend", "brevo"], {
+    description: "outbound driver: smtp, resend, brevo, or capture (records in memory)",
     default: "capture",
   }),
   from: Settings.string("MAIL_FROM", {
@@ -43,6 +45,14 @@ export const mailerSettings = Settings.struct({
   resendBaseUrl: Settings.optional(
     Settings.url("MAIL_RESEND_BASE_URL", { description: "Resend API base URL override" }),
   ),
+  brevoApiKey: Settings.optional(
+    Settings.secret("MAIL_BREVO_API_KEY", {
+      description: "Brevo API key (required for brevo)",
+    }),
+  ),
+  brevoBaseUrl: Settings.optional(
+    Settings.url("MAIL_BREVO_BASE_URL", { description: "Brevo API base URL override" }),
+  ),
 });
 
 /** The loaded value type of {@link mailerSettings}. */
@@ -54,7 +64,7 @@ const missing = (setting: string): MailValidationError =>
 
 /**
  * Builds the driver a `mailerSettings` value selects, validating the
- * combination (smtp needs a host; resend needs an API key) — misconfiguration
+ * combination (smtp needs a host; resend and brevo need an API key) — misconfiguration
  * fails with a typed error at composition, before the first send.
  */
 export const driverFromSettings = (
@@ -90,6 +100,19 @@ export const driverFromSettings = (
                 apiKey,
                 ...(Option.isSome(settings.resendBaseUrl)
                   ? { baseUrl: Option.getOrThrow(settings.resendBaseUrl).toString() }
+                  : {}),
+              }),
+            ),
+        });
+      case "brevo":
+        return yield* Option.match(settings.brevoApiKey, {
+          onNone: () => Effect.fail(missing("MAIL_BREVO_API_KEY")),
+          onSome: (apiKey) =>
+            Effect.succeed(
+              makeBrevoDriver({
+                apiKey,
+                ...(Option.isSome(settings.brevoBaseUrl)
+                  ? { baseUrl: Option.getOrThrow(settings.brevoBaseUrl).toString() }
                   : {}),
               }),
             ),

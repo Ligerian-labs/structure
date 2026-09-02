@@ -179,6 +179,31 @@ describe("mailer settings", () => {
     expect(error._tag).toBe("MailValidationError");
   });
 
+  test("rejects brevo selection without an api key at composition time", async () => {
+    const settings = await run(load(mailerSettings, { overrides: { MAIL_DRIVER: "brevo" } }));
+    const error = await run(Effect.flip(driverFromSettings(settings)));
+    expect(error._tag).toBe("MailValidationError");
+    if (error._tag === "MailValidationError") expect(error.field).toBe("MAIL_BREVO_API_KEY");
+    const layerError = await run(Effect.flip(Effect.provide(Mailer, layerFromSettings(settings))));
+    expect(layerError._tag).toBe("MailValidationError");
+  });
+
+  test("resolves the brevo driver from its key and keeps it redacted", async () => {
+    const settings = await run(
+      load(mailerSettings, {
+        overrides: {
+          MAIL_DRIVER: "brevo",
+          MAIL_BREVO_API_KEY: "xkeysib-secret",
+          MAIL_BREVO_BASE_URL: "https://brevo.test",
+        },
+      }),
+    );
+    expect(settings.brevoApiKey).toEqual(Option.some(Redacted.make("xkeysib-secret")));
+    expect(String(settings.brevoApiKey)).not.toContain("xkeysib-secret");
+    const driver = await run(driverFromSettings(settings));
+    expect(driver.name).toBe("brevo");
+  });
+
   test("layerFromSettings resolves a capture driver by default", async () => {
     const settings = await run(load(mailerSettings, { overrides: {} }));
     const service = await run(Effect.provide(Mailer, layerFromSettings(settings)));

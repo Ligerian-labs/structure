@@ -1,6 +1,6 @@
 # @structure-ai/mailer
 
-Transactional email for Effect applications behind one port: a `Mailer` service over pluggable `EmailDriver`s — SMTP (dependency-free client over `node:net`/`node:tls`), Resend (HTTP API), and an in-memory capture driver for tests and local development.
+Transactional email for Effect applications behind one port: a `Mailer` service over pluggable `EmailDriver`s — SMTP (dependency-free client over `node:net`/`node:tls`), Resend and Brevo (HTTP APIs), and an in-memory capture driver for tests and local development.
 
 Messages are schema-validated (`effect/Schema`) before any driver sees them — including CRLF-injection checks on every header field. Delivery failures are classified `transient` (SMTP 4yz, timeouts, provider 5xx/429 — retried with bounded jittered backoff) or `permanent` (SMTP 5yz, provider 4xx — fail fast). Every send is logged and measured without ever logging the subject or body.
 
@@ -56,6 +56,7 @@ const previews = renderPreviews([previewEntry(invite)]);
 | --- | --- | --- |
 | `makeSmtpDriver({ host, port, user, password, … })` | Direct SMTP relay; STARTTLS when advertised, AUTH PLAIN/LOGIN. One connection per message. | 5yz → permanent, 4yz/timeouts/TLS → transient |
 | `makeResendDriver({ apiKey, baseUrl? })` | Resend HTTP API over `fetch` (`fetchImpl` injectable for tests). | 4xx → permanent, 429/408/425/5xx/network → transient |
+| `makeBrevoDriver({ apiKey, baseUrl? })` | Brevo transactional API (`POST /v3/smtp/email`, `api-key` header) over `fetch` (`fetchImpl` injectable for tests). Metrics label `brevo`. | 4xx → permanent, 429/408/425/5xx/network → transient |
 | `makeCaptureDriver()` | Tests and dev: records every message, never fails. | — |
 
 Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message); the SMTP driver renders proper `multipart/mixed` containers, RFC 2047 encoded-words for non-ASCII subjects and display names, dot-stuffed DATA payloads, and base64 transfer encoding for all bodies.
@@ -66,11 +67,11 @@ Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message
 
 ## Settings
 
-`mailerSettings` (`@structure-ai/config`) selects the driver and its credentials; secrets load `Redacted`. `layerFromSettings(settings)` resolves and validates the combination (SMTP requires `MAIL_SMTP_HOST`, Resend requires `MAIL_RESEND_API_KEY`) before the first send.
+`mailerSettings` (`@structure-ai/config`) selects the driver and its credentials; secrets load `Redacted`. `layerFromSettings(settings)` resolves and validates the combination (SMTP requires `MAIL_SMTP_HOST`, Resend requires `MAIL_RESEND_API_KEY`, Brevo requires `MAIL_BREVO_API_KEY`) before the first send.
 
 | Name | Type | Required | Default | Secret |
 | --- | --- | --- | --- | --- |
-| `MAIL_DRIVER` | `"capture" \| "smtp" \| "resend"` | no | `capture` | |
+| `MAIL_DRIVER` | `"capture" \| "smtp" \| "resend" \| "brevo"` | no | `capture` | |
 | `MAIL_FROM` | string | no | `no-reply@localhost` | |
 | `MAIL_SMTP_HOST` | string | when driver=smtp | — | |
 | `MAIL_SMTP_PORT` | port | no | `587` | |
@@ -78,6 +79,8 @@ Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message
 | `MAIL_SMTP_PASSWORD` | secret | no | — | yes |
 | `MAIL_RESEND_API_KEY` | secret | when driver=resend | — | yes |
 | `MAIL_RESEND_BASE_URL` | url | no | — | |
+| `MAIL_BREVO_API_KEY` | secret | when driver=brevo | — | yes |
+| `MAIL_BREVO_BASE_URL` | url | no | — | |
 
 ## Errors
 

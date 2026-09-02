@@ -1,6 +1,6 @@
 /**
  * `@structure-ai/mailer` — transactional email over one port: SMTP, Resend,
- * and capture drivers; typed templates with preview data; bounded
+ * Brevo, and capture drivers; typed templates with preview data; bounded
  * transient-only retry; per-driver delivery metrics; secrets stay redacted
  * and message content never reaches logs.
  */
@@ -9,6 +9,10 @@ export type {
   DriverError,
   EmailDriver,
 } from "./driver.js";
+export {
+  type BrevoOptions,
+  makeBrevoDriver,
+} from "./drivers/brevo.js";
 export {
   type CapturedEmail,
   makeCaptureDriver,
