@@ -1,4 +1,17 @@
 export {
+  type ApiKeyPeppers,
+  type ApiKeyRecord,
+  type ApiKeyServiceError,
+  type ApiKeyStanding,
+  type ApiKeyStore,
+  type ApiKeys,
+  inMemoryApiKeyStore,
+  type MakeApiKeysOptions,
+  type MintApiKeyInput,
+  type MintedApiKey,
+  makeApiKeys,
+} from "./apikey.js";
+export {
   type Argon2idOptions,
   argon2id,
   decodeBase64Url,

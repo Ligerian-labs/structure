@@ -16,6 +16,7 @@ export interface TableNames {
   readonly oauthIdentities: string;
   readonly passkeyChallenges: string;
   readonly passkeys: string;
+  readonly apiKeys: string;
 }
 
 export const tableNames = (options: AdapterOptions = {}): TableNames => {
@@ -29,6 +30,7 @@ export const tableNames = (options: AdapterOptions = {}): TableNames => {
     oauthIdentities: `${prefix}oauth_identities`,
     passkeyChallenges: `${prefix}passkey_challenges`,
     passkeys: `${prefix}passkeys`,
+    apiKeys: `${prefix}api_keys`,
   };
 };
 
@@ -161,6 +163,27 @@ export const migrate = (
         await tx`
           CREATE INDEX IF NOT EXISTS ${tx(`${tables.passkeys}_user_idx`)}
           ON ${tx(tables.passkeys)} (tenant_id, user_id)
+        `;
+        await tx`
+          CREATE TABLE IF NOT EXISTS ${tx(tables.apiKeys)} (
+            tenant_id TEXT NOT NULL,
+            key_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            name TEXT,
+            scopes TEXT NOT NULL,
+            secret_hash TEXT NOT NULL,
+            pepper_version INTEGER NOT NULL CHECK (pepper_version >= 1),
+            workspace_id TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            revoked_at TEXT,
+            PRIMARY KEY (tenant_id, key_id)
+          )
+        `;
+        await tx`
+          CREATE INDEX IF NOT EXISTS ${tx(`${tables.apiKeys}_user_idx`)}
+          ON ${tx(tables.apiKeys)} (tenant_id, user_id)
         `;
       });
     },
