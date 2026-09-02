@@ -26,6 +26,9 @@
 - [@structure-ai/auth](packages/auth/README.md): tenant-aware password lifecycle, magic links, passkeys, Google/GitHub/X/LinkedIn OAuth, opaque sessions, Web Request handler with stable-id configurable route paths (startup-validated), storage/policy/rate-limit/audit ports, in-memory test adapter; no external auth dependencies.
 - [@structure-ai/auth-sqlite](packages/auth-sqlite/README.md): Bun-native SQLite AuthStore, schema migration, tenant-scoped constraints, atomic one-time consumption, password/session transactions, passkey counter compare-and-set.
 - [@structure-ai/auth-pg](packages/auth-pg/README.md): Bun-native PostgreSQL implementation of the same durable AuthStore and migration contract; integration tests use DATABASE_URL.
+- [@structure-ai/eventsourcing-dynamodb](packages/eventsourcing-dynamodb/README.md): the five event-sourcing ports over one DynamoDB table — ULID global feed (approximate order, exact per-stream), TransactWriteItems append with conditional stream head + transactional outbox, sparse status GSI, TTL'd inbox, ensureTables bootstrap; DynamoDB Local tests.
+- [@structure-ai/viewmodel-dynamodb](packages/viewmodel-dynamodb/README.md): ViewStore over the same table with declared access patterns (partition/sort fields → sparse composite-key GSIs via ensureViewIndexes); undeclared queries fail loudly with UndeclaredAccessPattern; client-side sort/paging.
+- [@structure-ai/auth-dynamodb](packages/auth-dynamodb/README.md): AuthStore over the same table — companion index items for uniqueness, Delete-ReturnValues-ALL_OLD atomic token consumption, tenant-scoped session/passkey user indexes, IdentityConflict mapping.
 
 ## Documentation
 
