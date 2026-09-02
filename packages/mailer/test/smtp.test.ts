@@ -146,7 +146,11 @@ describe("smtp driver", () => {
     await run(makeSmtpDriver(options()).send(message));
     const payload = fake.dataPayloads[fake.dataPayloads.length - 1] ?? "";
     expect(payload).toContain("Subject: Quarterly export");
-    expect(payload).toContain('Content-Type: multipart/alternative; boundary="');
+    const separator = payload.indexOf("\r\n\r\n");
+    expect(separator).toBeGreaterThan(0);
+    expect(payload.slice(0, separator)).toContain(
+      'Content-Type: multipart/alternative; boundary="',
+    );
     expect(payload).toContain("Content-Transfer-Encoding: base64");
     expect(payload).toContain(Buffer.from("here is your export", "utf8").toString("base64"));
     expect(payload).not.toContain("here is your export");
@@ -195,6 +199,45 @@ describe("smtp driver", () => {
 });
 
 describe("smtp message rendering", () => {
+  const splitAtBody = (rendered: string): { headerBlock: string; body: string } => {
+    const separator = rendered.indexOf("\r\n\r\n");
+    expect(separator).toBeGreaterThan(0);
+    return { headerBlock: rendered.slice(0, separator), body: rendered.slice(separator + 4) };
+  };
+  const decodeBase64Body = (body: string): string =>
+    Buffer.from(body.replace(/\r\n/gu, ""), "base64").toString("utf8");
+
+  test("text-only messages declare Content-Type in the header block, not the body", () => {
+    const { headerBlock, body } = splitAtBody(
+      renderSmtpMessage({ ...message, html: undefined }, "structure-mailer"),
+    );
+    expect(headerBlock).toContain("Content-Type: text/plain; charset=utf-8");
+    expect(headerBlock).toContain("Content-Transfer-Encoding: base64");
+    expect(body).not.toContain("Content-Type:");
+    expect(decodeBase64Body(body)).toBe("here is your export");
+  });
+
+  test("html-only messages declare Content-Type in the header block, not the body", () => {
+    const { headerBlock, body } = splitAtBody(
+      renderSmtpMessage({ ...message, text: undefined }, "structure-mailer"),
+    );
+    expect(headerBlock).toContain("Content-Type: text/html; charset=utf-8");
+    expect(headerBlock).toContain("Content-Transfer-Encoding: base64");
+    expect(body).not.toContain("Content-Type:");
+    expect(decodeBase64Body(body)).toBe("<p>here is your export</p>");
+  });
+
+  test("multipart/alternative declares its boundary in the header block", () => {
+    const { headerBlock, body } = splitAtBody(renderSmtpMessage(message, "structure-mailer"));
+    const declared = /Content-Type: multipart\/alternative; boundary="([^"]+)"/u.exec(headerBlock);
+    expect(declared).not.toBeNull();
+    const delimiter = declared?.[1] ?? "";
+    expect(body.startsWith(`--${delimiter}\r\n`)).toBe(true);
+    expect(body.endsWith(`--${delimiter}--`)).toBe(true);
+    expect(body).toContain("Content-Type: text/plain; charset=utf-8");
+    expect(body).toContain("Content-Type: text/html; charset=utf-8");
+  });
+
   test("stuffDots doubles leading dots and normalizes line endings", () => {
     expect(stuffDots("a\r\n.b\n.c")).toBe("a\r\n..b\r\n..c");
     expect(stuffDots(".")).toBe("..");
@@ -218,6 +261,30 @@ describe("smtp message rendering", () => {
     expect(rendered).toContain('Content-Type: multipart/mixed; boundary="');
     expect(rendered).toContain('Content-Disposition: attachment; filename="report.csv"');
     expect(rendered).not.toContain("a,b\n1,2");
+  });
+
+  test("multipart/mixed declares its boundary in the header block", () => {
+    const rendered = renderSmtpMessage(
+      {
+        ...message,
+        attachments: [
+          {
+            filename: "report.csv",
+            contentType: "text/csv",
+            contentBase64: Buffer.from("a,b\n1,2\n", "utf8").toString("base64"),
+          },
+        ],
+      },
+      "structure-mailer",
+    );
+    const { headerBlock, body } = splitAtBody(rendered);
+    const declared = /Content-Type: multipart\/mixed; boundary="([^"]+)"/u.exec(headerBlock);
+    expect(declared).not.toBeNull();
+    const delimiter = declared?.[1] ?? "";
+    expect(body.startsWith(`--${delimiter}\r\n`)).toBe(true);
+    expect(body.endsWith(`--${delimiter}--`)).toBe(true);
+    expect(body).toContain("Content-Type: multipart/alternative; boundary=");
+    expect(body).toContain('Content-Disposition: attachment; filename="report.csv"');
   });
 
   test("custom headers are appended after the standard set", () => {
