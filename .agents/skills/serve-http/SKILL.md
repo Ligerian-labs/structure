@@ -5,7 +5,7 @@ description: Define and serve an HTTP API in a @structure-based app - schema-typ
 
 # Serve an HTTP API
 
-Thin bindings over `@effect/platform` `HttpApi`: schema-typed endpoints with full inference, problem-details error mapping that never leaks internals, OpenAPI docs, health probes, and a Bun server with graceful shutdown. The api surface lives in `packages/http/src/` (`api.ts`, `cqrs.ts`, `docs.ts`, `errors.ts`, `health.ts`, `serve.ts`) — the package has no README; the sources and tests are the reference.
+Thin bindings over `@effect/platform` `HttpApi`: schema-typed endpoints with full inference, problem-details error mapping that never leaks internals, OpenAPI docs, health probes, and a Bun server with graceful shutdown. The api surface lives in `packages/http/src/` (`api.ts`, `cqrs.ts`, `docs.ts`, `errors.ts`, `health.ts`, `middleware.ts`, `serve.ts`); `packages/http/README.md` documents it, the tests show working usage.
 
 ## Steps
 
@@ -41,7 +41,7 @@ serve({ port: 3000, gracePeriod: Duration.seconds(5) }).pipe(
 );
 ```
 
-   The stack includes the standard middleware: correlation, boundary logging, metrics, problem mapping.
+   The stack includes the standard middleware: correlation, boundary logging, metrics, problem mapping. The log line (`http request`) and the `http_server*` / `http_request_duration_seconds` metrics carry `method`, `route`, `status`, `durationMs` and the ids — `route` is the matched endpoint template (`/users/:id`) or `(unmatched)`, never the requested path, so nothing carried in a path segment reaches a log sink or a metric label. Propagated `x-request-id` / `x-correlation-id` are kept only when they match `^[A-Za-z0-9_-]{1,64}$`; otherwise a fresh uuid is minted and echoed.
 
 5. **Error mapping**: return typed failures (`InvariantViolation`, `PermissionDenied`, ...) — `toProblem`/`withDefaultErrors` map them to problem+status (`Unauthenticated` → 401, `PermissionDenied` → 403); internals and stacks never cross the wire.
 6. **Tests:** real sockets, no fixed ports — `serveTest` on a random port, read `HttpServer.address`. Follow `packages/http/test/http.test.ts`.
@@ -52,6 +52,7 @@ serve({ port: 3000, gracePeriod: Duration.seconds(5) }).pipe(
 - Every endpoint declares its success and error schemas; OpenAPI docs are generated, not maintained by hand.
 - GET payloads decode from url search params — every encoded field must be a string (or string array); build the endpoint manually for anything richer.
 - Use `serve`'s `gracePeriod` for load-balancer drain; readiness must go unready before the listener stops.
+- Never annotate logs or metrics with the raw request path or query; label by route template (`Middleware.routeLabel(api)` — `extra` for routes mounted outside the api) and treat everything a client sends as data, not as a label.
 
 ## Verify
 

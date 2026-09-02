@@ -37,6 +37,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 | Signal | Meaning |
 | --- | --- |
 | `<boundary>_errors_total` rising vs `_calls_total` | A boundary (bus dispatch, HTTP, AI) is failing — check its span/logs via the shared correlationId |
+| `http_request_duration_seconds{method,route,status}` p99 by `route` | One endpoint template is slow or erroring; `route="(unmatched)"` volume rising is scanning traffic. Labels are templates, never raw paths — a raw path in any label is a bug |
 | Projection checkpoint vs latest event position | Read models are lagging; users see stale views |
 | Outbox pending age / dead letters > 0 | Integration events not leaving; dead letters carry the last error text |
 | `ai_tokens_*_total` spikes | LLM cost anomaly |

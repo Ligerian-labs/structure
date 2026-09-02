@@ -24,6 +24,21 @@ serve({ port: 3000 }).pipe(
 
 `serve` installs the standard middleware stack — correlation ids, one structured log line per request, boundary metrics, problem mapping — and graceful shutdown (readiness flips unready before the listener stops).
 
+## Boundary telemetry
+
+Every request produces one `http request` log line and a set of metrics, all labelled by the **matched endpoint template** (`/things/:id`), never by the requested path — a path segment can carry a share secret or an invitation token, and a template keeps metric cardinality bounded. Requests that match no endpoint are labelled `(unmatched)`, so probed URLs never reach the logs either.
+
+| Signal | Labels / annotations |
+| --- | --- |
+| log line `http request` (info) | `method`, `route`, `status`, `durationMs`, `requestId`, `correlationId` — never the path, query, headers or bodies |
+| `http_server_calls_total`, `http_server_errors_total`, `http_server_duration_ms` | `method`, `route` |
+| `http_request_duration_seconds` (histogram, seconds) | `method`, `route`, `status` |
+| span `http_server` | `http.method`, `http.route` |
+
+`Middleware.layer` derives the templates from the mounted api (`HttpApi.reflect`, prefixes included). Composing the stack by hand: `Middleware.standard(app, { routeLabel: Middleware.routeLabel(api, { extra: ["/docs", "/openapi.json"] }) })` — `extra` lists templates for routes mounted next to the api (docs, static files); without a resolver every request logs `(unmatched)`.
+
+Propagated `x-request-id` / `x-correlation-id` headers are reused only when they match `^[A-Za-z0-9_-]{1,64}$` (`Middleware.isSafeId`); anything else is replaced by a fresh uuid, which is what the response headers and every log line carry — a client cannot inject bytes into the log stream or span attributes through those headers.
+
 ## Rate limiting
 
 `rateLimitLayer` (or the `rateLimit` HttpApp middleware) enforces per-route-group budgets with `points` per sliding `windowMillis` and a `blockMillis` lockout:
