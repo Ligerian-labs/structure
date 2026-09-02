@@ -141,6 +141,50 @@ Invalid shapes, unknown ids, and same-method path collisions (a `:provider` segm
 
 Magic-link/reset/verification emails land on application pages. Those pages POST the token to the matching endpoint so link scanners do not consume credentials merely by fetching a URL.
 
+## API keys
+
+Machine credentials for CLIs, CI jobs, and agents: `sk_<keyId>_<pepperVersion>_<secret>` keys with bounded power.
+
+```ts
+import { inMemoryApiKeyStore, makeApiKeys } from "@structure-ai/auth";
+import { Effect, Redacted } from "effect";
+
+const apiKeys = makeApiKeys({
+  store: inMemoryApiKeyStore(), // or makeApiKeyStore from auth-sqlite / auth-pg
+  peppers: {
+    current: { version: 2, pepper: Redacted.make(process.env.AUTH_APIKEY_PEPPER_V2) },
+    retired: [{ version: 1, pepper: Redacted.make(process.env.AUTH_APIKEY_PEPPER_V1) }],
+  },
+  // The owning user must still stand (exists / live membership): dead users
+  // answer 401 before any workspace or scope answer.
+  resolveUser: (tenantId, userId) => userStillStands(tenantId, userId),
+});
+
+const minted = yield* apiKeys.mint("tenant-a", {
+  userId: "user-1",
+  name: "ci-deploy",
+  scopes: ["data:export"],     // the only powers this key holds
+  workspaceId: "ws-1",         // optional per-key pinning
+  expiresAt: new Date("2027-01-01"),
+});
+// Show Redacted.value(minted.key) once; only its HMAC-SHA256 hash is stored.
+
+const standing = yield* apiKeys.verify("tenant-a", bearerToken);
+// standing.principal: { id, kind: "service", roles: ["machine"], attributes: { scopes, workspaceId } }
+// Feed it to @structure-ai/authorization: define a "machine" role granting
+// only scope-conditioned permissions — unlisted routes fail closed, human
+// principals keep theirs. Workspace mismatch (request workspace !=
+// standing.workspaceId) is the app's 403; dead credentials already answered 401.
+```
+
+Semantics:
+
+- **Hashed at rest**: `HMAC-SHA256(pepper, secret)`; secrets are 32 random bytes (hex, so the key format can never split).
+- **Pepper versioning**: keys minted under older peppers keep verifying while those peppers stay listed in `retired`; the first successful use rehashes the key under the current pepper (lazy rotation). A pepper removed from the set rejects its remaining keys.
+- **Constant-time** comparisons; garbage keys fail shape checks without a store lookup.
+- **Expiry and last-use tracking** on every record; revocation is immediate.
+- Storage: `ApiKeyStore` port with an in-memory adapter here and `makeApiKeyStore` in `@structure-ai/auth-sqlite` / `@structure-ai/auth-pg` (tenant-scoped, hash-rotation aware).
+
 ## Persistence contract
 
 `AuthStore` is application-owned. Its compound mutation methods are intentional transaction boundaries:
@@ -188,6 +232,7 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 | `OAuthProvider*`, `builtInOAuthProvider`, `fetchOAuthHttpClient` | Provider definitions, tenant resolver, exchange/profile engine, HTTP port. |
 | `verifyPasskeyRegistration`, `verifyPasskeyAuthentication` | Strict WebAuthn/COSE verification used by the service. |
 | `RateLimiter`, `AuthAuditSink`, `AccountLinkPolicy`, `EmailSender` | Application policy and side-effect ports. |
+| `makeApiKeys`, `ApiKeyStore`, `inMemoryApiKeyStore`, `ApiKeyPeppers` | Machine credentials: mint/verify/revoke with pepper-versioned HMAC hashes, scopes, pinning. |
 | `Auth*Error`, `InvalidAuthRoutes`, `RateLimitExceeded`, `UnsupportedPasskey` | Classified safe failures. |
 
 See `test/` for executable password, magic-link, OAuth, passkey, rate-limit/audit, and HTTP examples.

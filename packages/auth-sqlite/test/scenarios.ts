@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import {
+  type ApiKeyRecord,
+  type ApiKeyStore,
   type AuthStore,
   type AuthUser,
   IdentityConflict,
@@ -13,6 +15,8 @@ import { Effect, Redacted } from "effect";
 export interface StoreHarness {
   readonly store: AuthStore;
   readonly remake: () => AuthStore;
+  readonly apiKeys: ApiKeyStore;
+  readonly remakeApiKeys: () => ApiKeyStore;
   readonly close: () => Promise<void>;
 }
 
@@ -260,5 +264,50 @@ export const registerStoreScenarios = (makeHarness: MakeHarness): void => {
         await fail(store.updatePasskeyCounter("tenant-a", "credential-id", 1, 3)),
       ).toBeInstanceOf(IdentityConflict);
       expect(await run(store.listPasskeys("tenant-a", "passkey-user"))).toHaveLength(1);
+    }));
+};
+
+export const registerApiKeyScenarios = (makeHarness: MakeHarness): void => {
+  const apiKeyRecord = (keyId: string): ApiKeyRecord => ({
+    tenantId: "tenant-a",
+    keyId,
+    userId: "user-1",
+    scopes: ["data:export"],
+    secretHash: `hash-${keyId}`,
+    pepperVersion: 1,
+    workspaceId: "ws-1",
+    createdAt: now,
+  });
+
+  test("api keys persist, track last use, rotate hashes, and revoke", () =>
+    withHarness(makeHarness, async ({ apiKeys, remakeApiKeys }) => {
+      await run(apiKeys.create(apiKeyRecord("key-1")));
+
+      const persisted = await run(remakeApiKeys().findByKeyId("tenant-a", "key-1"));
+      expect(persisted?.secretHash).toBe("hash-key-1");
+      expect(persisted?.scopes).toEqual(["data:export"]);
+
+      await run(apiKeys.markUsed("tenant-a", "key-1", later));
+      const touched = await run(apiKeys.findByKeyId("tenant-a", "key-1"));
+      expect(touched?.lastUsedAt).toEqual(later);
+
+      // Lazy pepper rotation rewrites hash + version together.
+      await run(apiKeys.replaceHash("tenant-a", "key-1", "hash-v2", 2));
+      const rotated = await run(apiKeys.findByKeyId("tenant-a", "key-1"));
+      expect(rotated?.secretHash).toBe("hash-v2");
+      expect(rotated?.pepperVersion).toBe(2);
+
+      await run(apiKeys.revoke("tenant-a", "key-1", later));
+      const revoked = await run(apiKeys.findByKeyId("tenant-a", "key-1"));
+      expect(revoked?.revokedAt).toEqual(later);
+      expect((await run(apiKeys.listByUser("tenant-a", "user-1"))).map((r) => r.keyId)).toEqual([
+        "key-1",
+      ]);
+    }));
+
+  test("api keys stay tenant-scoped", () =>
+    withHarness(makeHarness, async ({ apiKeys }) => {
+      await run(apiKeys.create(apiKeyRecord("key-1")));
+      expect(await run(apiKeys.findByKeyId("tenant-b", "key-1"))).toBeUndefined();
     }));
 };

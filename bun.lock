@@ -35,6 +35,7 @@
         "effect": "catalog:",
       },
       "devDependencies": {
+        "@structure-ai/authorization": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
       },

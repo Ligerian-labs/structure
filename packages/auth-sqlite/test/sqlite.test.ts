@@ -1,10 +1,21 @@
 import { describe } from "bun:test";
 import { SQL } from "bun";
 import { Effect } from "effect";
-import { makeAuthStore, migrate } from "../src/index.js";
-import { registerStoreScenarios } from "./scenarios.js";
+import { makeApiKeyStore, makeAuthStore, migrate } from "../src/index.js";
+import { registerApiKeyScenarios, registerStoreScenarios } from "./scenarios.js";
 
 describe("SQLite AuthStore", () => {
+  registerApiKeyScenarios(async () => {
+    const sql = new SQL("sqlite://:memory:");
+    await Effect.runPromise(migrate(sql));
+    return {
+      apiKeys: makeApiKeyStore(sql),
+      remakeApiKeys: () => makeApiKeyStore(sql),
+      close: () => sql.close(),
+      store: makeAuthStore(sql),
+      remake: () => makeAuthStore(sql),
+    };
+  });
   registerStoreScenarios(async () => {
     const sql = new SQL("sqlite://:memory:");
     await Effect.runPromise(migrate(sql));
@@ -12,6 +23,8 @@ describe("SQLite AuthStore", () => {
     return {
       store: makeAuthStore(sql),
       remake: () => makeAuthStore(sql),
+      apiKeys: makeApiKeyStore(sql),
+      remakeApiKeys: () => makeApiKeyStore(sql),
       close: () => sql.close(),
     };
   });

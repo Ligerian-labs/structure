@@ -14,7 +14,8 @@ export type AuthAction =
   | "oauth-start"
   | "oauth-complete"
   | "passkey-register"
-  | "passkey-authenticate";
+  | "passkey-authenticate"
+  | "apikey-verify";
 
 export interface RateLimitRequest {
   readonly tenantId: TenantId;
@@ -33,7 +34,12 @@ export const allowAllRateLimiter: RateLimiter = { check: () => Effect.void };
 
 export interface AuthAuditEvent {
   readonly tenantId: TenantId;
-  readonly action: AuthAction | "session-sign-out" | "sessions-revoked";
+  readonly action:
+    | AuthAction
+    | "session-sign-out"
+    | "sessions-revoked"
+    | "apikey-mint"
+    | "apikey-revoke";
   readonly outcome: "succeeded";
   readonly userId?: string;
   readonly provider?: OAuthProviderId;
