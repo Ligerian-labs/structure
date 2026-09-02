@@ -1,26 +1,56 @@
+import * as HttpApi from "@effect/platform/HttpApi";
 import * as HttpApiBuilder from "@effect/platform/HttpApiBuilder";
+import type * as HttpApiGroup from "@effect/platform/HttpApiGroup";
 import * as HttpApp from "@effect/platform/HttpApp";
 import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import { Correlation, Metrics } from "@structure-ai/observability";
-import { Cause, Clock, Effect, type Layer, Option } from "effect";
+import {
+  Cause,
+  Clock,
+  Effect,
+  FiberRef,
+  type Layer,
+  Metric,
+  MetricBoundaries,
+  MetricLabel,
+  Option,
+} from "effect";
+import { globalValue } from "effect/GlobalValue";
 import { DeclaredBusinessFailure } from "./cqrs.js";
 import { defaultErrorResponse, HttpProblemSchema } from "./errors.js";
 
+// --- propagated ids ----------------------------------------------------------
+
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Whether a propagated id may be reused: 1–64 characters of
+ * `[A-Za-z0-9_-]`. Anything else (whitespace, control bytes, blobs) is
+ * treated as absent, so a client can never write arbitrary bytes into the log
+ * stream, span attributes, or response headers through `x-request-id` /
+ * `x-correlation-id`.
+ */
+export const isSafeId = (value: string): boolean => SAFE_ID.test(value);
+
+const propagatedId = (value: string | undefined): string =>
+  value !== undefined && isSafeId(value) ? value : Correlation.newId();
+
 /**
  * Request correlation: reads `x-request-id` / `x-correlation-id` from the
- * incoming request (generating fresh uuids when absent), runs the request in
- * a `Correlation.within` scope — so every log line, span and CQRS dispatch
- * below carries the ids — and stamps both headers on the outgoing response
- * (whatever produced it) via a pre-response handler.
+ * incoming request — keeping them only when {@link isSafeId}, minting fresh
+ * uuids otherwise — runs the request in a `Correlation.within` scope so every
+ * log line, span and CQRS dispatch below carries the ids, and stamps both
+ * (sanitized) headers on the outgoing response, whatever produced it, via a
+ * pre-response handler.
  */
 export const correlation = <E, R>(
   app: HttpApp.Default<E, R>,
 ): HttpApp.Default<E, R | HttpServerRequest.HttpServerRequest> =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const requestId = request.headers["x-request-id"] ?? Correlation.newId();
-    const correlationId = request.headers["x-correlation-id"] ?? Correlation.newId();
+    const requestId = propagatedId(request.headers["x-request-id"]);
+    const correlationId = propagatedId(request.headers["x-correlation-id"]);
     yield* HttpApp.appendPreResponseHandler((_request, response) =>
       Effect.succeed(
         HttpServerResponse.setHeaders(response, {
@@ -32,18 +62,142 @@ export const correlation = <E, R>(
     return yield* Correlation.within({ requestId, correlationId })(app);
   });
 
+// --- route labels ------------------------------------------------------------
+
+/** Route label for requests that matched no known endpoint template. */
+export const UNMATCHED_ROUTE = "(unmatched)";
+
 /**
- * One structured log line per request at the boundary: method, path, status
- * and duration (ms) as log annotations — never bodies, never headers. The
- * line is emitted just before the response is sent, so the logged status is
- * the one on the wire.
+ * Resolves the bounded label telemetry uses for a request: the matched
+ * endpoint template (`/things/:id`), or {@link UNMATCHED_ROUTE}. `path` is the
+ * request path without its query string.
+ */
+export type RouteLabel = (method: string, path: string) => string;
+
+/** Options for {@link routeLabel}. */
+export interface RouteLabelOptions {
+  /**
+   * Templates for routes mounted next to the api rather than declared on it
+   * (docs, static mounts…), matched for any method. Same syntax as endpoint
+   * paths: `:name` segments are parameters, `*` matches the rest.
+   */
+  readonly extra?: ReadonlyArray<`/${string}`>;
+}
+
+interface RoutePattern {
+  readonly method: string | undefined;
+  readonly template: string;
+  readonly matcher: RegExp;
+}
+
+const escapeLiteral = (segment: string): string => segment.replace(/[^A-Za-z0-9_]/g, "\\$&");
+
+/**
+ * Compiles a router template into an anchored matcher: `:name` (optionally
+ * constrained, `:id(\\d+)`) matches one non-empty segment, `*` matches the
+ * rest of the path, everything else is literal.
+ */
+const compileTemplate = (template: string): RegExp => {
+  const source = template
+    .split("/")
+    .map((segment) =>
+      segment === "*"
+        ? ".*"
+        : segment.replace(/:[A-Za-z0-9_]+(?:\([^)]*\))?|[^:]+|:/g, (token) =>
+            token.startsWith(":") && token.length > 1 ? "[^/]+" : escapeLiteral(token),
+          ),
+    )
+    .join("/");
+  return new RegExp(`^${source}$`);
+};
+
+const matchRoute = (patterns: ReadonlyArray<RoutePattern>): RouteLabel => {
+  const byMethod = new Map<string | undefined, Array<RoutePattern>>();
+  for (const pattern of patterns) {
+    const bucket = byMethod.get(pattern.method) ?? [];
+    bucket.push(pattern);
+    byMethod.set(pattern.method, bucket);
+  }
+  return (method, path) => {
+    const candidates = [...(byMethod.get(method) ?? []), ...(byMethod.get(undefined) ?? [])];
+    for (const candidate of candidates) {
+      if (candidate.matcher.test(path)) return candidate.template;
+    }
+    return UNMATCHED_ROUTE;
+  };
+};
+
+/**
+ * Builds a {@link RouteLabel} from an api's declared endpoints (via
+ * `HttpApi.reflect`, so group and api prefixes are included). The label is the
+ * endpoint's path template — never the requested path — which keeps
+ * capabilities carried in path segments (share secrets, invitation tokens)
+ * out of logs and metric labels, and keeps metric cardinality bounded.
+ *
+ * ```ts
+ * const resolve = Middleware.routeLabel(api, { extra: ["/docs", "/openapi.json"] });
+ * resolve("GET", "/things/secret-token"); // "/things/:id"
+ * resolve("GET", "/wp-admin");            // "(unmatched)"
+ * ```
+ */
+export const routeLabel = <Id extends string, Groups extends HttpApiGroup.HttpApiGroup.Any, E, R>(
+  api: HttpApi.HttpApi<Id, Groups, E, R>,
+  options?: RouteLabelOptions,
+): RouteLabel => {
+  const patterns: Array<RoutePattern> = [];
+  HttpApi.reflect(api, {
+    onGroup: () => {},
+    onEndpoint: ({ endpoint }) => {
+      patterns.push({
+        method: endpoint.method,
+        template: endpoint.path,
+        matcher: compileTemplate(endpoint.path),
+      });
+    },
+  });
+  for (const template of options?.extra ?? []) {
+    patterns.push({ method: undefined, template, matcher: compileTemplate(template) });
+  }
+  return matchRoute(patterns);
+};
+
+/** The route label of the request being served; `(unmatched)` outside {@link withRouteLabel}. */
+export const currentRouteLabel: FiberRef.FiberRef<string> = globalValue(
+  "@structure-ai/http/Middleware/currentRouteLabel",
+  () => FiberRef.unsafeMake<string>(UNMATCHED_ROUTE),
+);
+
+/**
+ * Resolves the request's route label once and makes it the
+ * {@link currentRouteLabel} for everything below — the boundary logger and
+ * metrics read it there. Outermost layer of the standard stack.
+ */
+export const withRouteLabel =
+  (resolve: RouteLabel) =>
+  <E, R>(app: HttpApp.Default<E, R>): HttpApp.Default<E, R | HttpServerRequest.HttpServerRequest> =>
+    Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
+      Effect.locally(
+        app,
+        currentRouteLabel,
+        resolve(request.method, request.url.split("?")[0] ?? request.url),
+      ),
+    );
+
+// --- boundary logging and metrics -------------------------------------------
+
+/**
+ * One structured log line per request at the boundary, as log annotations:
+ * `method`, `route` (the matched template or `(unmatched)`), `status`,
+ * `durationMs`, and the correlation ids — never the raw path, never bodies,
+ * never headers. The line is emitted just before the response is sent, so
+ * the logged status is the one on the wire.
  */
 export const logger = <E, R>(
   app: HttpApp.Default<E, R>,
 ): HttpApp.Default<E, R | HttpServerRequest.HttpServerRequest> =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const path = request.url.split("?")[0] ?? request.url;
+    const route = yield* FiberRef.get(currentRouteLabel);
     const started = yield* Clock.currentTimeMillis;
     const context = yield* Correlation.current;
     yield* HttpApp.appendPreResponseHandler((_request, response) =>
@@ -51,7 +205,7 @@ export const logger = <E, R>(
         Effect.logInfo("http request").pipe(
           Effect.annotateLogs({
             method: request.method,
-            path,
+            route,
             status: response.status,
             durationMs: ended - started,
             ...(context.correlationId !== undefined && { correlationId: context.correlationId }),
@@ -64,13 +218,61 @@ export const logger = <E, R>(
     return yield* app;
   });
 
+const REQUEST_DURATION_BOUNDARIES_SECONDS: ReadonlyArray<number> = [
+  0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+];
+
 /**
- * Boundary metrics for the whole HTTP server under the single low-cardinality
- * name `http_server`: call counter, error counter and latency histogram (the
- * raw request path never becomes part of a metric name).
+ * Per-route latency histogram, in seconds, tagged `method`, `route` and
+ * `status` — the labels dashboards slice by. Cardinality is bounded by the
+ * api's endpoint templates.
  */
-export const metrics = <E, R>(app: HttpApp.Default<E, R>): HttpApp.Default<E, R> =>
-  Metrics.track("http_server")(app);
+export const requestDuration = Metric.histogram(
+  "http_request_duration_seconds",
+  MetricBoundaries.fromIterable(REQUEST_DURATION_BOUNDARIES_SECONDS),
+  "HTTP request latency by route template",
+);
+
+const serverBoundary = Metrics.boundary("http_server");
+
+const tagBoundary = (labels: ReadonlyArray<MetricLabel.MetricLabel>): Metrics.BoundaryMetrics => ({
+  calls: Metric.taggedWithLabels(serverBoundary.calls, labels),
+  errors: Metric.taggedWithLabels(serverBoundary.errors, labels),
+  duration: Metric.taggedWithLabels(serverBoundary.duration, labels),
+});
+
+/**
+ * Boundary metrics for the whole HTTP server: the `http_server` call, error
+ * and latency signals tagged `method` and `route`, plus
+ * {@link requestDuration} (`http_request_duration_seconds{method,route,status}`)
+ * observed once the status is known. Only these metrics are tagged — nothing
+ * nested (bus dispatch, rate limiting) inherits the labels. The raw request
+ * path never becomes a metric name or label.
+ */
+export const metrics = <E, R>(
+  app: HttpApp.Default<E, R>,
+): HttpApp.Default<E, R | HttpServerRequest.HttpServerRequest> =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const route = yield* FiberRef.get(currentRouteLabel);
+    const labels = [MetricLabel.make("method", request.method), MetricLabel.make("route", route)];
+    const started = yield* Clock.currentTimeMillis;
+    yield* HttpApp.appendPreResponseHandler((_request, response) =>
+      Effect.flatMap(Clock.currentTimeMillis, (ended) =>
+        Metric.update(
+          Metric.taggedWithLabels(requestDuration, [
+            ...labels,
+            MetricLabel.make("status", String(response.status)),
+          ]),
+          (ended - started) / 1000,
+        ).pipe(Effect.as(response)),
+      ),
+    );
+    return yield* Metrics.track(
+      "http_server",
+      tagBoundary(labels),
+    )(app).pipe(Effect.annotateSpans({ "http.method": request.method, "http.route": route }));
+  });
 
 /** Error tags this package knows how to render as problem responses. */
 const knownTags: ReadonlySet<string> = new Set([
@@ -129,21 +331,42 @@ export const problems = <E, R>(app: HttpApp.Default<E, R>): HttpApp.Default<E, R
     }),
   );
 
+/** Options for {@link standard}. */
+export interface StandardOptions {
+  /**
+   * How requests are labelled in logs and metrics. Default: every request is
+   * `(unmatched)` — pass `routeLabel(api)` (what {@link layer} does) to get
+   * endpoint templates.
+   */
+  readonly routeLabel?: RouteLabel;
+}
+
 /**
- * The standard middleware stack, outermost first: correlation → logging →
- * metrics → problem mapping.
+ * The standard middleware stack, outermost first: route label → correlation
+ * → logging → metrics → problem mapping.
  */
 export const standard = <E, R>(
   app: HttpApp.Default<E, R>,
+  options?: StandardOptions,
 ): HttpApp.Default<E, R | HttpServerRequest.HttpServerRequest> =>
-  correlation(logger(metrics(problems(app))));
+  withRouteLabel(options?.routeLabel ?? (() => UNMATCHED_ROUTE))(
+    correlation(logger(metrics(problems(app)))),
+  );
 
 /**
- * The standard stack as an `HttpApi`-level middleware layer. Provide it next
- * to your api implementation (`serve`/`serveTest` already do):
+ * The standard stack as an `HttpApi`-level middleware layer, labelling
+ * requests with the mounted api's endpoint templates. Provide it next to
+ * your api implementation (`serve`/`serveTest` already do):
  *
  * ```ts
  * HttpApiBuilder.serve().pipe(Layer.provide(Middleware.layer), ...)
  * ```
  */
-export const layer: Layer.Layer<never> = HttpApiBuilder.middleware(standard);
+export const layer: Layer.Layer<never, never, HttpApi.Api> = HttpApiBuilder.middleware(
+  Effect.map(
+    HttpApi.Api,
+    ({ api }) =>
+      <E, R>(app: HttpApp.Default<E, R>) =>
+        standard(app, { routeLabel: routeLabel(api) }),
+  ),
+);
