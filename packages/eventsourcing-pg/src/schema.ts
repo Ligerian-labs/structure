@@ -1,9 +1,10 @@
 import * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
 import { Effect } from "effect";
+import type { IdempotencyStoreOptions } from "./IdempotencyStore.js";
 
 /** Options shared by every adapter in this package. */
-export interface AdapterOptions {
+export interface AdapterOptions extends IdempotencyStoreOptions {
   /** Prefix prepended to every table name (default: none). */
   readonly tablePrefix?: string;
 }
@@ -15,6 +16,7 @@ export interface TableNames {
   readonly checkpoints: string;
   readonly outbox: string;
   readonly inbox: string;
+  readonly idempotency: string;
 }
 
 /** Table names for the given options (default: unprefixed). */
@@ -26,6 +28,7 @@ export const tableNames = (options?: AdapterOptions): TableNames => {
     checkpoints: `${prefix}checkpoints`,
     outbox: `${prefix}outbox`,
     inbox: `${prefix}inbox`,
+    idempotency: `${prefix}idempotency`,
   };
 };
 
@@ -35,7 +38,9 @@ export const tableNames = (options?: AdapterOptions): TableNames => {
  * package-level `layer` does so automatically).
  *
  * The outbox has an extra `seq BIGSERIAL` column (not part of the port)
- * so `pending` can return entries in stable enqueue order.
+ * so `pending` can return entries in stable enqueue order. The idempotency
+ * table backs `@structure-ai/cqrs`'s `IdempotencyStore`: one row per
+ * `(tag, actor, key)` claim, expiring at `expires_at`.
  */
 export const migrate = (
   options?: AdapterOptions,
@@ -89,5 +94,22 @@ export const migrate = (
         processed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (consumer_id, message_id)
       )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.idempotency)} (
+        tag TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        key TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('claimed', 'completed')),
+        result JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (tag, actor, key)
+      )
+    `;
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS ${sql(`${tables.idempotency}_expires_at_idx`)}
+      ON ${sql(tables.idempotency)} (expires_at)
     `;
   });

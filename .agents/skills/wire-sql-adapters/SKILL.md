@@ -5,7 +5,7 @@ description: Replace in-memory event-sourcing adapters with durable SQLite or Po
 
 # Wire durable SQL adapters
 
-The same five ports (`EventStore`, `SnapshotStore`, `CheckpointStore`, `Outbox`, `Inbox`) ship in-memory for tests; `@structure-ai/eventsourcing-sqlite` (bun:sqlite) and `-pg` (`@effect/sql-pg`) swap them for durable storage without touching domain code. These packages document themselves through `src/index.ts` and shared test scenarios (`packages/eventsourcing-sqlite/test/scenarios.ts`) — there is no README; behavior parity across adapters is enforced by running the same scenarios against each.
+The same five ports (`EventStore`, `SnapshotStore`, `CheckpointStore`, `Outbox`, `Inbox`) ship in-memory for tests; `@structure-ai/eventsourcing-sqlite` (bun:sqlite) and `-pg` (`@effect/sql-pg`) swap them for durable storage without touching domain code. Behavior parity across adapters is enforced by running the same scenarios (`packages/<adapter>/test/scenarios.ts`) against each; `-pg` additionally ships the durable `@structure-ai/cqrs` `IdempotencyStore` (`packages/eventsourcing-pg/README.md`).
 
 ## Steps
 
@@ -21,7 +21,8 @@ const durable = layer({ filename: "./app.db" });            // sqlite
 
    On an existing `SqlClient` (shared with view models/migrations): `storesLayer(options)` — run `migrate(options)` yourself first, once, in the designated migration process.
 
-2. **Use `tableNames({ tablePrefix })`** to namespace tables (`events`, `snapshots`, `checkpoints`, `outbox`, `inbox` per prefix) — required for pg test isolation, available for multi-app databases.
+2. **Use `tableNames({ tablePrefix })`** to namespace tables (`events`, `snapshots`, `checkpoints`, `outbox`, `inbox`, and on pg `idempotency` per prefix) — required for pg test isolation, available for multi-app databases.
+   - pg: `layer`/`storesLayer` also provide the cqrs `IdempotencyStore` (`idempotencyTtl`, default 24 hours) — provide it to `CommandBus.layer` instead of `IdempotencyStore.inMemory`, and run `purgeExpiredIdempotency(options)` on a schedule.
 3. **Transactional outbox**: prefer `appendWithOutbox(stream, expectedVersion, events, messages)` — events + outbox rows commit in one transaction, so a crash between "decided" and "notified" is impossible.
 4. **Wire `OutboxRelay.run`** in a worker (or every instance, if cheap): pending → publish → mark, exponential backoff with jitter, dead letters after `maxAttempts` with the last error kept.
 5. **Tests:** sqlite via `layer({ filename: ":memory:" })` — same scenarios as in-memory; pg tests must skip unless `DATABASE_URL` is set (see `packages/eventsourcing-pg/test/pg.test.ts`: unique table prefix per run, tables dropped after).

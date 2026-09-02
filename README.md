@@ -15,7 +15,7 @@ Monorepo of small, independently importable packages under the `@structure-ai/*`
 | `@structure-ai/authorization` | Typed roles × permissions matrix (inheritance, wildcards, conditional grants, scoped roles), fiber-propagated principal, guards for effects, the CQRS bus and HTTP routes, 401/403 semantics. |
 | `@structure-ai/eventsourcing` | Event store / snapshot / checkpoint / outbox / inbox ports, aggregate runtime with optimistic concurrency, projections with checkpoints and rebuild, in-memory adapters. |
 | `@structure-ai/eventsourcing-sqlite` | Durable adapters over `bun:sqlite`. |
-| `@structure-ai/eventsourcing-pg` | Durable adapters over PostgreSQL (`@effect/sql-pg`). |
+| `@structure-ai/eventsourcing-pg` | Durable adapters over PostgreSQL (`@effect/sql-pg`), plus a durable cqrs idempotency store. |
 | `@structure-ai/viewmodel` | Schema-defined read models (query-side "ORM"): typed stores, generated table migrations, and event-driven hydration with rebuild. |
 | `@structure-ai/migrations` | Versioned, ordered, forward-only SQL migrations (dialect-agnostic over `@effect/sql`), with status reporting and a ready-made CLI command group. |
 | `@structure-ai/runtime` | App bootstrap: config-first startup, readiness checks, shutdown coordinator with bounded finalizers, Bun entrypoint. |

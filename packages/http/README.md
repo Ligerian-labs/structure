@@ -64,4 +64,4 @@ Keys come from the app (principal id, IP, route+principal…): `clientIp(request
 
 ## Errors
 
-Failures render as problem-details responses (`{ error, message, correlationId?, issues? }`): `ValidationFailed` → 400, `Unauthenticated` → 401, `Unauthorized`/`PermissionDenied` → 403, `NotFound` → 404, `ConcurrencyConflict` → 409, `TooManyRequests` → 429 (+ `Retry-After`), `DispatchTimeout` → 504, anything else → 500 with the correlation id only. Use `withDefaultErrors(endpoint)` to declare the set on an endpoint.
+Failures render as problem-details responses (`{ error, message, correlationId?, issues? }`): `ValidationFailed` → 400, `Unauthenticated` → 401, `Unauthorized`/`PermissionDenied` → 403, `NotFound` → 404, `ConcurrencyConflict`/`IdempotencyMismatch`/`IdempotencyInFlight` → 409, `TooManyRequests` → 429 (+ `Retry-After`), `DispatchTimeout` → 504, anything else → 500 with the correlation id only. Use `withDefaultErrors(endpoint)` to declare the set on an endpoint.

@@ -1,7 +1,7 @@
 {
   "name": "@structure-ai/eventsourcing-pg",
   "version": "0.0.0",
-  "description": "PostgreSQL (@effect/sql-pg) adapters for @structure-ai/eventsourcing: event store, checkpoints, outbox, inbox.",
+  "description": "PostgreSQL (@effect/sql-pg) adapters for @structure-ai/eventsourcing: event store, checkpoints, outbox, inbox; plus a durable @structure-ai/cqrs idempotency store.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -29,6 +29,7 @@
     "@effect/experimental": "catalog:",
     "@effect/sql": "catalog:",
     "@effect/sql-pg": "catalog:",
+    "@structure-ai/cqrs": "workspace:*",
     "@structure-ai/domain": "workspace:*",
     "@structure-ai/eventsourcing": "workspace:*"
   },

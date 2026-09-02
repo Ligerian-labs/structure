@@ -1,8 +1,14 @@
 import { ValidationFailed } from "@structure-ai/domain";
 import { Correlation, Metrics } from "@structure-ai/observability";
-import { Context, Duration, Effect, Layer, Option, Schema } from "effect";
+import { Context, Data, Duration, Effect, Layer, Option, Schema } from "effect";
 import { ArrayFormatter, type ParseError } from "effect/ParseResult";
-import { DispatchTimeout, HandlerNotFound, type Unauthorized } from "./errors.js";
+import {
+  DispatchTimeout,
+  HandlerNotFound,
+  IdempotencyInFlight,
+  IdempotencyMismatch,
+  type Unauthorized,
+} from "./errors.js";
 import { HandlerRegistry, type Registration } from "./handler.js";
 import type {
   CommandDefinition,
@@ -15,9 +21,12 @@ import type {
 /** Per-dispatch options supplied by the caller. */
 export interface DispatchOptions {
   /**
-   * Commands only: a caller-chosen key making the dispatch idempotent. A
-   * key that already completed returns the cached success without running
-   * the handler again.
+   * Commands only: a caller-chosen key making the dispatch idempotent. The
+   * key is scoped to the acting principal and the command tag, and bound to
+   * the payload it was first used with: a replay by the same actor with the
+   * same payload returns the cached success without running the handler
+   * again; a different payload fails `IdempotencyMismatch`; a dispatch that
+   * is still running fails `IdempotencyInFlight`.
    */
   readonly idempotencyKey?: string;
   /**
@@ -31,7 +40,13 @@ export interface DispatchOptions {
 }
 
 /** Failures the bus itself can produce, before or around the handler. */
-export type DispatchError = ValidationFailed | HandlerNotFound | Unauthorized | DispatchTimeout;
+export type DispatchError =
+  | ValidationFailed
+  | HandlerNotFound
+  | Unauthorized
+  | DispatchTimeout
+  | IdempotencyMismatch
+  | IdempotencyInFlight;
 
 /** What the authorization hook sees: the action, not the endpoint. */
 export interface AuthorizationRequest {
@@ -61,35 +76,109 @@ export class Authorizer extends Context.Tag("@structure-ai/cqrs/Authorizer")<
 }
 
 /**
- * Port for command idempotency. `begin` returns the cached success of an
- * already-completed `(key, tag)` pair, `complete` records one. This gives
- * at-least-once semantics with replay suppression: two *concurrent*
- * dispatches of the same key may both run the handler — durable
- * exactly-once belongs to an event-sourcing inbox, not this bus.
+ * Identity of one idempotent dispatch as the store sees it. Records are
+ * keyed by `(tag, actor, key)`: the same key from two principals never
+ * collides, and an anonymous dispatch (`actor` undefined) is its own scope.
+ * `payloadHash` is the sha-256 (hex) of the validated payload in its wire
+ * form with object keys sorted, so equal payloads hash equally regardless
+ * of key order.
+ */
+export interface IdempotencyContext {
+  readonly key: string;
+  readonly tag: string;
+  readonly actor?: string;
+  readonly payloadHash: string;
+}
+
+/**
+ * What `begin` found for the context:
+ *
+ * - `Completed` — the same actor already ran this key with this payload;
+ *   `result` is the wire-encoded success recorded by `complete`.
+ * - `Claimed` — nothing was recorded (or an expired record was replaced);
+ *   the caller now owns the key and must `complete` or `release` it.
+ * - `InFlight` — a claim exists but no result yet: another dispatch is
+ *   still running.
+ * - `Mismatch` — a record exists for this key with a different payload
+ *   hash, whatever its state.
+ */
+export type BeginOutcome = Data.TaggedEnum<{
+  Completed: { readonly result: unknown };
+  Claimed: Record<never, never>;
+  InFlight: Record<never, never>;
+  Mismatch: Record<never, never>;
+}>;
+export const BeginOutcome = Data.taggedEnum<BeginOutcome>();
+
+/** Port for command idempotency; see {@link IdempotencyStore}. */
+export interface IdempotencyStoreService {
+  /**
+   * Atomically claims the context or reports why it cannot. Two concurrent
+   * `begin` calls for the same context must yield exactly one `Claimed`.
+   */
+  readonly begin: (context: IdempotencyContext) => Effect.Effect<BeginOutcome>;
+  /**
+   * Records the wire-encoded success of a claimed context. Later `begin`
+   * calls for the same context return `Completed` with this value.
+   */
+  readonly complete: (context: IdempotencyContext, result: unknown) => Effect.Effect<void>;
+  /**
+   * Frees a claim whose dispatch failed or was interrupted, so a retry can
+   * run the handler. Must not discard a completed record.
+   */
+  readonly release: (context: IdempotencyContext) => Effect.Effect<void>;
+}
+
+/**
+ * Port for command idempotency. The bus claims `(tag, actor, key)` before
+ * running the handler, records the encoded success on completion and
+ * releases the claim on failure. Results are stored in their wire form,
+ * so durable implementations only ever hold JSON. This bus suppresses
+ * replays and duplicate concurrent runs of one key; durable exactly-once
+ * processing of *events* belongs to an event-sourcing inbox, not here.
  */
 export class IdempotencyStore extends Context.Tag("@structure-ai/cqrs/IdempotencyStore")<
   IdempotencyStore,
-  {
-    readonly begin: (key: string, tag: string) => Effect.Effect<Option.Option<unknown>>;
-    readonly complete: (key: string, tag: string, result: unknown) => Effect.Effect<void>;
-  }
+  IdempotencyStoreService
 >() {
   /**
    * Process-local store; entries live for the lifetime of the layer. Use a
-   * durable implementation for idempotency across restarts or instances.
+   * durable implementation (e.g. `@structure-ai/eventsourcing-pg`) for
+   * idempotency across restarts or instances.
    */
   static readonly inMemory: Layer.Layer<IdempotencyStore> = Layer.sync(IdempotencyStore, () => {
-    const completed = new Map<string, unknown>();
-    const compositeKey = (key: string, tag: string): string => `${tag}\u0000${key}`;
+    type Record =
+      | { readonly state: "claimed"; readonly payloadHash: string }
+      | { readonly state: "completed"; readonly payloadHash: string; readonly result: unknown };
+    const records = new Map<string, Record>();
+    const compositeKey = (context: IdempotencyContext): string =>
+      `${context.tag}\u0000${context.actor ?? ""}\u0000${context.key}`;
     return {
-      begin: (key, tag) =>
+      begin: (context) =>
         Effect.sync(() => {
-          const id = compositeKey(key, tag);
-          return completed.has(id) ? Option.some(completed.get(id)) : Option.none();
+          const id = compositeKey(context);
+          const existing = records.get(id);
+          if (existing === undefined) {
+            records.set(id, { state: "claimed", payloadHash: context.payloadHash });
+            return BeginOutcome.Claimed();
+          }
+          if (existing.payloadHash !== context.payloadHash) return BeginOutcome.Mismatch();
+          return existing.state === "claimed"
+            ? BeginOutcome.InFlight()
+            : BeginOutcome.Completed({ result: existing.result });
         }),
-      complete: (key, tag, result) =>
+      complete: (context, result) =>
         Effect.sync(() => {
-          completed.set(compositeKey(key, tag), result);
+          records.set(compositeKey(context), {
+            state: "completed",
+            payloadHash: context.payloadHash,
+            result,
+          });
+        }),
+      release: (context) =>
+        Effect.sync(() => {
+          const id = compositeKey(context);
+          if (records.get(id)?.state === "claimed") records.delete(id);
         }),
     };
   });
@@ -104,11 +193,88 @@ const formatIssues = (error: ParseError): ReadonlyArray<string> =>
 const metricName = (kind: MessageKind, tag: string): string =>
   `cqrs_${kind}_${tag.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
 
+/** Rebuilds a JSON value with object keys sorted (recursively), dropping `undefined` members. */
+const canonical = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== "object") return value;
+  const source = value as Readonly<Record<string, unknown>>;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(source).sort()) {
+    const member = source[key];
+    if (member !== undefined) sorted[key] = canonical(member);
+  }
+  return sorted;
+};
+
+/** Stable JSON text of a wire value; key order never changes the output. */
+const stableJson = (value: unknown): string =>
+  JSON.stringify(canonical(value), (_key, member: unknown) =>
+    typeof member === "bigint" ? member.toString() : member,
+  ) ?? "null";
+
+/** Lowercase hex sha-256 of the text (web crypto — Bun, Node and browsers). */
+const sha256Hex = (text: string): Effect.Effect<string> =>
+  Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))).pipe(
+    Effect.map((digest) =>
+      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    ),
+  );
+
+/**
+ * Runs `execute` under the idempotency protocol: encode the payload to its
+ * wire form and hash it, claim `(tag, actor, key)`, then either replay the
+ * recorded success (decoded back to the domain type), refuse, or run the
+ * handler and record its encoded success — releasing the claim if the run
+ * fails, times out or is interrupted.
+ */
+const idempotent = <PayloadType, PayloadEncoded, SuccessType, SuccessEncoded, E>(
+  store: IdempotencyStoreService,
+  definition: {
+    readonly tag: string;
+    readonly payload: Schema.Schema<PayloadType, PayloadEncoded>;
+    readonly success: Schema.Schema<SuccessType, SuccessEncoded>;
+  },
+  key: string,
+  actor: string | undefined,
+  payload: PayloadType,
+  execute: Effect.Effect<SuccessType, E>,
+): Effect.Effect<SuccessType, E | IdempotencyMismatch | IdempotencyInFlight> =>
+  Effect.gen(function* () {
+    // The definition's schemas decoded this payload, so encoding it back
+    // cannot fail short of a schema that is not round-trippable (a defect).
+    const encodedPayload = yield* Schema.encode(definition.payload)(payload).pipe(Effect.orDie);
+    const payloadHash = yield* sha256Hex(stableJson(encodedPayload));
+    const context: IdempotencyContext = {
+      key,
+      tag: definition.tag,
+      payloadHash,
+      ...(actor !== undefined && { actor }),
+    };
+    const outcome = yield* store.begin(context);
+    switch (outcome._tag) {
+      case "Completed":
+        return yield* Schema.decodeUnknown(definition.success)(outcome.result).pipe(Effect.orDie);
+      case "InFlight":
+        return yield* Effect.fail(new IdempotencyInFlight({ tag: definition.tag, key }));
+      case "Mismatch":
+        return yield* Effect.fail(new IdempotencyMismatch({ tag: definition.tag, key }));
+      case "Claimed": {
+        const completed = yield* Effect.gen(function* () {
+          const result = yield* execute;
+          const encoded = yield* Schema.encode(definition.success)(result).pipe(Effect.orDie);
+          return { result, encoded };
+        }).pipe(Effect.onError(() => store.release(context)));
+        yield* store.complete(context, completed.encoded);
+        return completed.result;
+      }
+    }
+  });
+
 const makeDispatch = (
   kind: MessageKind,
   registry: ReadonlyMap<string, Registration>,
   authorizer: Context.Tag.Service<Authorizer>,
-  store: Option.Option<Context.Tag.Service<IdempotencyStore>>,
+  store: Option.Option<IdempotencyStoreService>,
 ) => {
   const boundaries = new Map<string, Metrics.BoundaryMetrics>();
   const boundaryFor = (name: string): Metrics.BoundaryMetrics => {
@@ -213,18 +379,12 @@ const makeDispatch = (
         }),
       );
 
-      // 3. Idempotency, commands only: a completed key short-circuits to the
-      // cached success without re-running (and without re-tracing) anything.
+      // 3. Idempotency, commands only: the key is claimed for this actor and
+      // payload before the handler runs; a completed key short-circuits to
+      // the recorded success without re-running (or re-tracing) anything.
       const key = options?.idempotencyKey;
       if (kind === "command" && key !== undefined && Option.isSome(store)) {
-        const cached = yield* store.value.begin(key, definition.tag);
-        if (Option.isSome(cached)) {
-          // The store only ever holds this tag's completed successes.
-          return cached.value as SuccessType;
-        }
-        const result = yield* traced;
-        yield* store.value.complete(key, definition.tag, result);
-        return result;
+        return yield* idempotent(store.value, definition, key, actor, payload, traced);
       }
 
       return yield* traced;
@@ -235,9 +395,10 @@ const makeDispatch = (
 export interface CommandBusService {
   /**
    * Runs the pipeline for one command: decode payload (`ValidationFailed`
-   * on bad shape), authorize the action, consult the idempotency store when
-   * a key is given, then execute the single registered handler traced,
-   * measured and under the optional timeout.
+   * on bad shape), authorize the action, claim the idempotency key when one
+   * is given (scoped to the actor, bound to the payload), then execute the
+   * single registered handler traced, measured and under the optional
+   * timeout.
    */
   readonly dispatch: <
     Tag extends string,

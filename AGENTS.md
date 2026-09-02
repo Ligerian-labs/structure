@@ -19,7 +19,7 @@ Effect-based framework monorepo for agent-focused backend software. Bun workspac
 | `@structure-ai/cqrs` | Define commands/queries, register handlers, dispatch through the buses. |
 | `@structure-ai/authorization` | Define the roles × permissions matrix (`Policy.define`), attach a `Principal`, guard effects / the CQRS bus / HTTP routes. |
 | `@structure-ai/eventsourcing` | Event store, aggregate runtime, projections, outbox/inbox (in-memory adapters). |
-| `@structure-ai/eventsourcing-sqlite` / `-pg` | Durable adapters for the same ports. |
+| `@structure-ai/eventsourcing-sqlite` / `-pg` | Durable adapters for the same ports (`-pg` also ships the durable cqrs `IdempotencyStore`). |
 | `@structure-ai/eventsourcing-nisshi` | Same ports over a Nisshi (Kafka-API) broker: single-partition event topic, SQLite or PostgreSQL sidecar for optimistic concurrency/snapshots/checkpoints/inbox; no Outbox (ADR-0015). |
 | `@structure-ai/viewmodel` | Schema-defined read models: typed stores, generated table migrations, event-driven hydration. |
 | `@structure-ai/migrations` | Forward-only SQL migrations (`defineMigration`/`makeSet`/`run`/`status` + CLI group). |

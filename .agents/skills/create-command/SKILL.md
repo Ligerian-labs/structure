@@ -35,8 +35,8 @@ export const handlers = HandlerRegistry.layer(
 4. **Expose it:**
    - HTTP: `HttpCqrs.command(ApproveInvoice)` as the endpoint handler, or `commandEndpoint(name, path, def)` one-liner (`packages/http/README.md`). Problem responses and OpenAPI come for free.
    - MCP: `toolFromCommand(ApproveInvoice)` (`packages/mcp/README.md`).
-5. **Idempotency:** if callers may retry, pass `idempotencyKey` on dispatch; durable exactly-once belongs to the eventsourcing inbox.
-6. **Tests:** dispatch roundtrip, validation failure (bad payload → `ValidationFailed`, handler not invoked), plus one per exposed surface. Follow `packages/cqrs/test/cqrs.test.ts` and `packages/http/test/http.test.ts`.
+5. **Idempotency:** if callers may retry, pass `idempotencyKey` on dispatch (HTTP: the bridge forwards `x-idempotency-key`). The key is scoped to the actor and the command tag and bound to the payload: same actor + same payload replays the stored success without running the handler; a different payload fails `IdempotencyMismatch` (409); a still-running dispatch fails `IdempotencyInFlight` (409, retry later); another actor's same key runs independently. Always pass `actor` (bridge `actor` option / `Correlation.within`) — anonymous dispatches share one scope. The command's `success` schema must round-trip through encode/decode (results are stored in wire form). Production: provide `@structure-ai/eventsourcing-pg`'s `IdempotencyStore` (`layer`/`idempotencyStoreLayer`, `idempotencyTtl`) instead of the in-memory default, and schedule `purgeExpiredIdempotency`. Exactly-once *event* processing still belongs to the eventsourcing inbox.
+6. **Tests:** dispatch roundtrip, validation failure (bad payload → `ValidationFailed`, handler not invoked), idempotent replay when a key is used (same key twice → one handler run; different payload → `IdempotencyMismatch`), plus one per exposed surface. Follow `packages/cqrs/test/cqrs.test.ts` and `packages/http/test/http.test.ts`.
 
 ## Rules
 

@@ -1,5 +1,10 @@
 export { checkpointStoreLayer } from "./CheckpointStore.js";
 export { appendWithOutbox, eventStoreLayer } from "./EventStore.js";
+export {
+  type IdempotencyStoreOptions,
+  idempotencyStoreLayer,
+  purgeExpiredIdempotency,
+} from "./IdempotencyStore.js";
 export { layer, type PgAdaptersConfig, type StoreServices, storesLayer } from "./layer.js";
 export { inboxLayer, outboxLayer } from "./Outbox.js";
 export { snapshotStoreLayer } from "./SnapshotStore.js";

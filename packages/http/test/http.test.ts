@@ -297,6 +297,25 @@ describe("business failures", () => {
     expect(body.idempotencyKey).toBe("idem-42");
   });
 
+  test("reusing an idempotency key with a different payload is a 409 problem", async () => {
+    const post = (body: unknown) =>
+      fetch(`${baseUrl}/orders`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-idempotency-key": "idem-409" },
+        body: JSON.stringify(body),
+      });
+    const first = await post({ name: "ok", sku: "sku-1" });
+    expect(first.status).toBe(200);
+    const replay = await post({ name: "ok", sku: "sku-1" });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(await first.json());
+    const mismatch = await post({ name: "ok", sku: "sku-2" });
+    expect(mismatch.status).toBe(409);
+    const problem = (await mismatch.json()) as { error: string; correlationId?: string };
+    expect(problem.error).toBe("IdempotencyMismatch");
+    expect(problem.correlationId).toBeDefined();
+  });
+
   test("declared failure schemas are documented in openapi.json", async () => {
     const response = await fetch(`${baseUrl}/openapi.json`);
     const spec = await response.text();
@@ -379,5 +398,20 @@ describe("problem mapping", () => {
 
     const busDenied = toProblem({ _tag: "Unauthorized", tag: "ApproveInvoice" });
     expect(problemStatus(busDenied)).toBe(403);
+  });
+
+  test("idempotency refusals map to 409 without leaking the key", () => {
+    const mismatch = toProblem({
+      _tag: "IdempotencyMismatch",
+      tag: "PlaceOrder",
+      key: "secret-key",
+    });
+    expect(problemStatus(mismatch)).toBe(409);
+    expect(mismatch.error).toBe("IdempotencyMismatch");
+    expect(JSON.stringify(mismatch)).not.toContain("secret-key");
+
+    const inFlight = toProblem({ _tag: "IdempotencyInFlight", tag: "PlaceOrder", key: "k" });
+    expect(problemStatus(inFlight)).toBe(409);
+    expect(inFlight.error).toBe("IdempotencyInFlight");
   });
 });
