@@ -228,6 +228,19 @@
         "typescript": "catalog:",
       },
     },
+    "packages/mailer": {
+      "name": "@structure-ai/mailer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@structure-ai/config": "workspace:*",
+        "@structure-ai/observability": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/mcp": {
       "name": "@structure-ai/mcp",
       "version": "0.0.0",
@@ -256,6 +269,7 @@
       },
       "devDependencies": {
         "@effect/experimental": "catalog:",
+        "@effect/sql-pg": "catalog:",
         "@effect/sql-sqlite-bun": "catalog:",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -559,6 +573,8 @@
     "@structure-ai/eventsourcing-sqlite": ["@structure-ai/eventsourcing-sqlite@workspace:packages/eventsourcing-sqlite"],
 
     "@structure-ai/http": ["@structure-ai/http@workspace:packages/http"],
+
+    "@structure-ai/mailer": ["@structure-ai/mailer@workspace:packages/mailer"],
 
     "@structure-ai/mcp": ["@structure-ai/mcp@workspace:packages/mcp"],
 
