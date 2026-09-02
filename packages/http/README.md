@@ -39,6 +39,42 @@ Every request produces one `http request` log line and a set of metrics, all lab
 
 Propagated `x-request-id` / `x-correlation-id` headers are reused only when they match `^[A-Za-z0-9_-]{1,64}$` (`Middleware.isSafeId`); anything else is replaced by a fresh uuid, which is what the response headers and every log line carry — a client cannot inject bytes into the log stream or span attributes through those headers.
 
+## One listener: HttpApi + raw mounts + static assets
+
+The self-hosted shape (one image, one port) serves the `HttpApi`, raw web handlers such as `makeAuthHandler` from `@structure-ai/auth` or an MCP transport, and an embedded SPA from the same `serve` layer:
+
+```ts
+serve({
+  port: 3000,
+  gracePeriod: Duration.seconds(5),
+  mounts: [
+    { prefix: "/auth", handler: auth.handler },   // (Request) => Promise<Response>
+    { prefix: "/mcp", handler: mcpHandler },
+  ],
+  static: {
+    directory: "./dist",                          // the SPA build
+    spaFallback: "index.html",                    // client-side routes
+    cacheControl: (path) =>
+      path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache",
+  },
+});
+```
+
+Precedence is fixed and does not depend on layer build order:
+
+1. **Mounts** — evaluated before the router; the longest matching prefix wins. A prefix matches itself and everything below it on a segment boundary (`/api` matches `/api` and `/api/x`, never `/apix`). Handlers get the request untouched (full path, query, body): prefix stripping is theirs, as it would be on their own `Bun.serve`. Prefixes must be absolute, without trailing slash (except `/`), query or fragment, and unique — violations fail the layer at startup with `InvalidMounts`.
+2. **HttpApi routes** — including `Docs.layer()` and `Health.group`, so the SPA fallback never shadows `/docs` or `/health/*`.
+3. **Static assets** — only for `GET`/`HEAD` the router did not match, under `static.prefix` (default `/`): an existing file below `directory` (a directory answers with its `index.html`, never a listing), else `spaFallback` when the request's `Accept` lists `text/html` (a navigation), else nothing.
+4. **The 404 problem** — every unmatched path ends in the HttpApi `NotFound` mapping.
+
+Every branch runs inside the same middleware boundary: correlation headers are stamped on mount and static responses, each request gets its log line and metrics (api routes labelled by endpoint template, mounts by `<prefix>/*`, static files and the fallback as `(unmatched)` — see "Boundary telemetry"), and a mount handler that rejects is answered with the 500 problem carrying only the correlation id (the cause is logged). Mounts and static files share the readiness flip and the `gracePeriod` drain with the api routes. `HttpApi`-level middleware layers such as `rateLimitLayer` apply to the router only, not to mounts (auth handlers bring their own limits).
+
+Static serving is bounded on purpose: decoded path segments only (no `.`/`..`, no dotfiles, no control bytes or backslashes), symlink targets are resolved and must stay inside the real root, every response carries `x-content-type-options: nosniff`, a weak `etag` (a matching `if-none-match` answers `304`), `last-modified` and `vary: accept-encoding`; a precompressed sibling (`<file>.br`, then `<file>.gz`) is served with its `content-encoding` when the client accepts it. Content types come from the file extension. Range requests are not supported. Invalid options (`prefix` shape, unsafe `spaFallback`) fail the layer with `InvalidStaticOptions`.
+
+### Testing the composed surface
+
+`serveTest` keeps its zero-config shape; `serveTestWith({ mounts, static, gracePeriod })` builds the same stack as `serve` on a random port and exposes `HttpServer` for the address (it requires `Readiness`, like `serve`). `packages/http/test/mounts.test.ts` starts one server per composition and drives it with `fetch`.
+
 ## Rate limiting
 
 `rateLimitLayer` (or the `rateLimit` HttpApp middleware) enforces per-route-group budgets with `points` per sliding `windowMillis` and a `blockMillis` lockout:
