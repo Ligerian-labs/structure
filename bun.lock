@@ -179,6 +179,21 @@
         "typescript": "catalog:",
       },
     },
+    "packages/eventsourcing-nisshi": {
+      "name": "@structure-ai/eventsourcing-nisshi",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/sql": "catalog:",
+        "@effect/sql-sqlite-bun": "catalog:",
+        "@structure-ai/domain": "workspace:*",
+        "@structure-ai/eventsourcing": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/eventsourcing-pg": {
       "name": "@structure-ai/eventsourcing-pg",
       "version": "0.0.0",
@@ -599,6 +614,8 @@
     "@structure-ai/domain": ["@structure-ai/domain@workspace:packages/domain"],
 
     "@structure-ai/eventsourcing": ["@structure-ai/eventsourcing@workspace:packages/eventsourcing"],
+
+    "@structure-ai/eventsourcing-nisshi": ["@structure-ai/eventsourcing-nisshi@workspace:packages/eventsourcing-nisshi"],
 
     "@structure-ai/eventsourcing-pg": ["@structure-ai/eventsourcing-pg@workspace:packages/eventsourcing-pg"],
 

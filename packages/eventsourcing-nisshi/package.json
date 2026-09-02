@@ -1,0 +1,37 @@
+{
+  "name": "@structure-ai/eventsourcing-nisshi",
+  "version": "0.0.0",
+  "description": "Nisshi (Kafka-API broker) event store with a SQL sidecar for optimistic concurrency, snapshots, checkpoints, and inbox dedupe.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/eventsourcing-nisshi"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect/sql": "catalog:",
+    "@effect/sql-sqlite-bun": "catalog:",
+    "@structure-ai/domain": "workspace:*",
+    "@structure-ai/eventsourcing": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

@@ -36,7 +36,7 @@ flowchart TD
     config --> observability
     observability --> cqrs & runtime & http & cli & ai
     domain --> cqrs --> eventsourcing
-    eventsourcing --> essqlite[eventsourcing-sqlite] & espg[eventsourcing-pg]
+    eventsourcing --> essqlite[eventsourcing-sqlite] & espg[eventsourcing-pg] & esnisshi[eventsourcing-nisshi]
     eventsourcing --> viewmodel
     migrations --> viewmodel
     runtime --> http & cli

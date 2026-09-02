@@ -20,6 +20,7 @@ Effect-based framework monorepo for agent-focused backend software. Bun workspac
 | `@structure-ai/authorization` | Define the roles × permissions matrix (`Policy.define`), attach a `Principal`, guard effects / the CQRS bus / HTTP routes. |
 | `@structure-ai/eventsourcing` | Event store, aggregate runtime, projections, outbox/inbox (in-memory adapters). |
 | `@structure-ai/eventsourcing-sqlite` / `-pg` | Durable adapters for the same ports. |
+| `@structure-ai/eventsourcing-nisshi` | Same ports over a Nisshi (Kafka-API) broker: single-partition event topic, SQL sidecar for optimistic concurrency/snapshots/checkpoints/inbox; no Outbox (ADR-0015). |
 | `@structure-ai/viewmodel` | Schema-defined read models: typed stores, generated table migrations, event-driven hydration. |
 | `@structure-ai/migrations` | Forward-only SQL migrations (`defineMigration`/`makeSet`/`run`/`status` + CLI group). |
 | `@structure-ai/runtime` | Readiness checks, shutdown coordinator, Bun entrypoint. |
@@ -37,7 +38,7 @@ Every package: `src/index.ts` is the public API, `README.md` documents it, `test
 
 ## Recipes (skills)
 
-Task-specific step-by-step guides live in `.agents/skills/*/SKILL.md` (cross-agent directory; Claude Code gets a local symlink via the `install` skill): define-settings, add-observability, wire-runtime, create-aggregate, create-command, create-event-handler, create-view-model, add-migration, integrate-contexts, wire-sql-adapters, serve-http, create-cli-command, call-llm, add-authentication, override-auth-routes, restrict-access, expose-mcp-tool, read-app-state, write-e2e, install. Follow them when doing the matching task.
+Task-specific step-by-step guides live in `.agents/skills/*/SKILL.md` (cross-agent directory; Claude Code gets a local symlink via the `install` skill): define-settings, add-observability, wire-runtime, create-aggregate, create-command, create-event-handler, create-view-model, add-migration, integrate-contexts, wire-sql-adapters, wire-nisshi-adapter, serve-http, create-cli-command, call-llm, add-authentication, override-auth-routes, restrict-access, expose-mcp-tool, read-app-state, write-e2e, install. Follow them when doing the matching task.
 
 ## Hard rules
 
@@ -45,7 +46,7 @@ Task-specific step-by-step guides live in `.agents/skills/*/SKILL.md` (cross-age
 - ESM only; local imports use the `.js` suffix; `exports` maps point at TypeScript source (`./src/index.ts`) — no build step.
 - Shared dependency versions live in the root `package.json` `workspaces.catalog`; packages reference them as `"catalog:"`. Internal deps are `"workspace:*"`.
 - No `any`, no non-null assertions (Biome errors). Tagged errors (`Data.TaggedError`) with a `classification` field (`transient` | `permanent` | `conflict`).
-- Dependency direction (no cycles): config ← observability ← everything; domain ← cqrs ← eventsourcing ← sql adapters ← viewmodel; cqrs ← authorization (http/mcp never depend on it — apps compose; authorization never depends on auth); auth ← auth SQL adapters; migrations and auth are standalone foundations (their Effect dependency aside); runtime ← http/cli; ai and mcp are leaves.
+- Dependency direction (no cycles): config ← observability ← everything; domain ← cqrs ← eventsourcing ← SQL adapters (sqlite/pg, and nisshi's sidecar) ← viewmodel; cqrs ← authorization (http/mcp never depend on it — apps compose; authorization never depends on auth); auth ← auth SQL adapters; migrations and auth are standalone foundations (their Effect dependency aside); runtime ← http/cli; ai and mcp are leaves.
 - Never log secrets or prompt bodies; secrets are `Redacted` from config to call site.
 - Commands are intent-named; queries never mutate; business rules live in `decide`, not in handlers; cross-aggregate effects go through events (outbox → projection/consumer), never through another context's tables.
 - Tests are `bun test` in `packages/<pkg>/test/`, no network, no real providers; sqlite tests may use `:memory:`; pg tests must skip unless `DATABASE_URL` is set.
