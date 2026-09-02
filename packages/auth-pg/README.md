@@ -34,6 +34,8 @@ const store = makeAuthStore(sql, options);
 
 `makeAuthStore`, `makeApiKeyStore`, and `makeOAuthServerStore` assume the schema exists and never migrate implicitly. Two entry points create it, generated from the same DDL statements so they cannot drift; pick one per deployment and run it only in the designated migration process (see `docs/operations.md`, "Migrations policy").
 
+The `Migration` value carries a `checksum` computed like `defineMigration` with declared `sql` (sha-256 over id, name, and the DDL statements), so the migrator's drift detection covers the auth schema itself.
+
 **In the application's `@structure-ai/migrations` set** (preferred: one set, one lock, one transaction next to the event store, jobs, and view-model migrations):
 
 ```ts

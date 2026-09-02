@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as SqlClient from "@effect/sql/SqlClient";
 import { PgClient } from "@effect/sql-pg";
-import { type Migration, makeSet, run } from "@structure-ai/migrations";
+import { type Migration, makeSet, migrationChecksum, run } from "@structure-ai/migrations";
 import { SQL } from "bun";
 import { Effect, Redacted } from "effect";
 import {
@@ -12,6 +12,7 @@ import {
   migration,
   tableNames,
 } from "../src/index.js";
+import { schemaStatements } from "../src/schema.js";
 import {
   registerApiKeyScenarios,
   registerOAuthServerScenarios,
@@ -58,6 +59,12 @@ describe("migration definition", () => {
     expect(defined.id).toBe(3);
     expect(defined.name).toBe("create_x_schema");
     expect(migration(1).name).toBe("create_auth_schema");
+    // Same recipe as defineMigration with declared sql, so the migrator's
+    // checksum drift detection covers the auth DDL itself.
+    expect(migration(1).checksum).toBe(
+      migrationChecksum(1, "create_auth_schema", schemaStatements()),
+    );
+    expect(migration(1, { tablePrefix: "x_" }).checksum).not.toBe(migration(1).checksum);
   });
 });
 
