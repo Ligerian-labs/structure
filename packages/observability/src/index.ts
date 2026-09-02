@@ -1,5 +1,6 @@
 export * as Correlation from "./Correlation.js";
 export {
+  type JsonLoggerOptions,
   type LogRecord,
   layerJson,
   layerMinimumLevel,
