@@ -36,10 +36,26 @@ export {
   NotFoundProblem,
   problemResponse,
   problemStatus,
+  TooManyRequestsProblem,
   toProblem,
   UnauthorizedProblem,
   withDefaultErrors,
 } from "./errors.js";
 export * as Health from "./health.js";
 export * as Middleware from "./middleware.js";
+export {
+  clientIp,
+  layer as rateLimitLayer,
+  makeInMemoryStore,
+  type RateLimitDecision,
+  type RateLimitGroup,
+  type RateLimitOptions,
+  type RateLimitRule,
+  type RateLimitStore,
+  RateLimitStoreError,
+  rateLimit,
+  storeFromUrl,
+} from "./rateLimit.js";
+export { makeRedisStore, type RedisStoreOptions } from "./rateLimitRedis.js";
+export { makeRedisClient, type RedisClient, RedisError } from "./redis.js";
 export { type ServeOptions, serve, serveTest } from "./serve.js";
