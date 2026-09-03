@@ -30,6 +30,8 @@ export type Permission = PolicyPermission<typeof policy>; // "invoice:read" | "i
 
 // Pure decisions for an explicit principal
 policy.can({ id: "ada", roles: ["clerk"] }, "invoice:approve"); // false
+policy.allowedPermissions({ id: "ada", roles: ["clerk"] });
+// → ["invoice:read", "invoice:create", "user:read"] (definition order)
 policy.decide({ id: "ada", roles: ["clerk"] }, "invoice:delete", { attributes: { ownerId: "ada" } });
 // → { allowed: true, role: "clerk", condition: "owner", reason: 'granted by role "clerk" under condition "owner"' }
 
@@ -139,7 +141,7 @@ program.pipe(Effect.provide(Authorization.layer(policy)));
 | Export | Purpose |
 | --- | --- |
 | `Policy.define` / `make` / `decode`, `PolicyDefinitionSchema` | Typed static definition; validated runtime form; decoding from data. |
-| `Policy` (value): `permissions`, `roles`, `isPermission`, `isRole`, `grantsOf`, `decide`, `can`, `check`, `require`, `requireRole`, `matrix`, `toMarkdown` | Vocabulary, pure decisions, fiber-scoped guards, matrix rendering. |
+| `Policy` (value): `permissions`, `roles`, `isPermission`, `isRole`, `grantsOf`, `decide`, `can`, `allowedPermissions`, `check`, `require`, `requireRole`, `matrix`, `toMarkdown` | Vocabulary, pure decisions and effective-permission projection, fiber-scoped guards, matrix rendering. |
 | `PolicyPermission<P>`, `PolicyRole<P>`, `ResourcePermission<R>`, `Decision`, `CheckOptions`, `PolicyMatrix` | Types. |
 | `Principal` (type + `anonymous`, `isAnonymous`, `hasRole`, `rolesIn`, `current`, `required`, `within`, `without`), `RoleAssignment` | Who acts, and fiber propagation. |
 | `Condition` (`owner`, `sameTenant`, `attributeEquals`, `attributeIn`, `principalAttributeEquals`, `all`, `any`, `not`), `ConditionContext` | Conditional grants. |
