@@ -147,6 +147,8 @@ export interface Policy<Permission extends string = string, Role extends string 
   /** Pure decision for an explicit principal. Never throws for unknown roles or permissions: they deny. */
   decide(principal: Principal, permission: Permission, options?: CheckOptions): Decision;
   can(principal: Principal, permission: Permission, options?: CheckOptions): boolean;
+  /** Every permission currently granted to an explicit principal, in declaration order. */
+  allowedPermissions(principal: Principal, options?: CheckOptions): ReadonlyArray<Permission>;
   /**
    * Checks the fiber's principal: `Unauthenticated` when none (or the
    * anonymous one) is attached and the permission is not granted,
@@ -394,6 +396,12 @@ const build = (definition: PolicyDefinition, conditions: ConditionMap): Policy =
   const can = (principal: Principal, permission: string, options?: CheckOptions): boolean =>
     decide(principal, permission, options).allowed;
 
+  const allowedPermissions = (
+    principal: Principal,
+    options?: CheckOptions,
+  ): ReadonlyArray<string> =>
+    permissions.filter((permission) => can(principal, permission, options));
+
   const check = (
     permission: string,
     options?: CheckOptions,
@@ -500,6 +508,7 @@ const build = (definition: PolicyDefinition, conditions: ConditionMap): Policy =
     grantsOf,
     decide,
     can,
+    allowedPermissions,
     check,
     require,
     requireRole,

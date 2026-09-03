@@ -149,6 +149,22 @@ describe("Policy.define", () => {
     expect(policy.can(member, "invoice:read", { scope: "tenant:other" })).toBe(true);
   });
 
+  test("allowedPermissions projects decisions in declaration order", () => {
+    const member: Principal = {
+      id: "ada",
+      roles: ["viewer", { role: "clerk", scope: "tenant:acme" }],
+    };
+
+    expect(policy.allowedPermissions(member)).toEqual(["invoice:read", "user:read"]);
+    expect(
+      policy.allowedPermissions(member, {
+        scope: "tenant:acme",
+        attributes: { ownerId: "ada" },
+      }),
+    ).toEqual(["invoice:read", "invoice:create", "invoice:delete", "user:read"]);
+    expect(policy.allowedPermissions(user("root", "admin"))).toEqual(policy.permissions);
+  });
+
   test("decide: unknown roles and roleless principals deny with a reason", () => {
     expect(policy.decide(user("ghost"), "invoice:read").reason).toBe("principal holds no role");
     expect(policy.decide(user("ghost", "superuser"), "invoice:read").reason).toBe(
