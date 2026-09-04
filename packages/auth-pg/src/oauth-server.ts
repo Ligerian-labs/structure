@@ -252,12 +252,14 @@ export const makeOAuthServerStore = (sql: SQL, options: AdapterOptions = {}): OA
       }).pipe(Effect.asVoid),
     rotateToken: (tenantId, tokenId, at) =>
       read("oauth-rotate-token", async () => {
-        await sql`
+        const rows = await sql<Array<{ readonly token_id: string }>>`
           UPDATE ${sql(tables.oauthTokens)}
           SET revoked_at = ${at.toISOString()}, rotated_at = ${at.toISOString()}
-          WHERE tenant_id = ${tenantId} AND token_id = ${tokenId}
+          WHERE tenant_id = ${tenantId} AND token_id = ${tokenId} AND revoked_at IS NULL
+          RETURNING token_id
         `;
-      }).pipe(Effect.asVoid),
+        return rows.length > 0;
+      }),
     revokeFamily: (tenantId, familyId, at) =>
       read("oauth-revoke-family", async () => {
         await sql`

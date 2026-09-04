@@ -210,12 +210,17 @@ export interface OAuthServerStore {
     tokenId: string,
     now: Date,
   ) => Effect.Effect<void, AuthStoreError>;
-  /** Marks a refresh token rotated away: revoked at `now` and flagged as such. */
+  /**
+   * Marks a refresh token rotated away (revoked at `now`, flagged as such)
+   * and answers whether it landed. A conditional write: false when the
+   * token was already revoked or rotated, so two presenters of one token
+   * can never both rotate it.
+   */
   readonly rotateToken: (
     tenantId: TenantId,
     tokenId: string,
     now: Date,
-  ) => Effect.Effect<void, AuthStoreError>;
+  ) => Effect.Effect<boolean, AuthStoreError>;
   /** Revokes every live token of a family (access and refresh alike); already revoked ones keep their time. */
   readonly revokeFamily: (
     tenantId: TenantId,
@@ -294,7 +299,9 @@ export const inMemoryOAuthServerStore = (): OAuthServerStore & {
       Effect.sync(() => {
         const key = scoped(tenantId, tokenId);
         const current = tokens.get(key);
-        if (current !== undefined) tokens.set(key, { ...current, revokedAt: now, rotatedAt: now });
+        if (current === undefined || current.revokedAt !== undefined) return false;
+        tokens.set(key, { ...current, revokedAt: now, rotatedAt: now });
+        return true;
       }),
     revokeFamily: (tenantId, familyId, now) =>
       Effect.sync(() => {
@@ -838,26 +845,30 @@ export const makeAuthorizationServer = (
           return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
         }
         const familyId = record.familyId ?? record.tokenId;
+        const reuse = Effect.gen(function* () {
+          // Reuse of a rotated-away refresh token is the one signal the
+          // protocol gives that it leaked: whoever holds the descendants,
+          // thief or victim, loses them all, and the event is audited.
+          yield* options.store.revokeFamily(input.tenantId, familyId, now());
+          yield* audit.record({
+            tenantId: input.tenantId,
+            action: "oauth-refresh-reuse",
+            outcome: "succeeded",
+            ...(record.userId === undefined ? {} : { userId: record.userId }),
+          });
+        });
         if (record.revokedAt !== undefined) {
-          if (record.rotatedAt !== undefined) {
-            // Reuse of a rotated-away refresh token is the one signal the
-            // protocol gives that it leaked: whoever holds the descendants,
-            // thief or victim, loses them all, and the event is audited.
-            yield* options.store.revokeFamily(input.tenantId, familyId, now());
-            yield* audit.record({
-              tenantId: input.tenantId,
-              action: "oauth-refresh-reuse",
-              outcome: "succeeded",
-              ...(record.userId === undefined ? {} : { userId: record.userId }),
-            });
-          }
+          if (record.rotatedAt !== undefined) yield* reuse;
           // Revoked any other way (the client asked, or its family died):
           // refused, but not a theft signal.
           return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
         }
-        // Rotation: the old refresh token dies, a fresh pair joins its family.
-        yield* options.store.rotateToken(input.tenantId, record.tokenId, now());
-        return yield* issueTokens(
+        // Mint first, then rotate. Rotation is a conditional write that
+        // lands on a live token only, so of two concurrent presenters of one
+        // token exactly one rotates it; and because every pair is stored
+        // before anyone rotates, the loser finds the winner's pair, its own
+        // included, when it revokes the family.
+        const issued = yield* issueTokens(
           input.tenantId,
           tenant.baseUrl.toString(),
           client,
@@ -866,6 +877,25 @@ export const makeAuthorizationServer = (
           true,
           familyId,
         );
+        const rotated = yield* options.store.rotateToken(input.tenantId, record.tokenId, now());
+        if (!rotated) {
+          // Another presenter got there first (a concurrent refresh,
+          // legitimate or not, or a revocation in between). The family goes,
+          // this presenter's fresh pair with it; rotated away by the other
+          // one means this presentation is the reuse, and is audited.
+          const current = yield* options.store.findTokenById(input.tenantId, record.tokenId);
+          yield* options.store.revokeFamily(input.tenantId, familyId, now());
+          if (current?.rotatedAt !== undefined) {
+            yield* audit.record({
+              tenantId: input.tenantId,
+              action: "oauth-refresh-reuse",
+              outcome: "succeeded",
+              ...(record.userId === undefined ? {} : { userId: record.userId }),
+            });
+          }
+          return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
+        }
+        return issued;
       }),
     revoke: (input) =>
       Effect.gen(function* () {
