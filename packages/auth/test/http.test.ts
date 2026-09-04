@@ -141,3 +141,47 @@ describe("auth HTTP handler", () => {
     expect(oversized.status).toBe(400);
   });
 });
+
+describe("caller subject", () => {
+  test("the handler passes the app-derived caller subject to the anonymous passkey wall", async () => {
+    const memory = inMemoryAuthStore();
+    const limits: Array<{ readonly action: string; readonly keyHash: string }> = [];
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(config),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: {
+        check: (request) =>
+          Effect.sync(() => limits.push({ action: request.action, keyHash: request.keyHash })).pipe(
+            Effect.asVoid,
+          ),
+      },
+    });
+    const http = await Effect.runPromise(
+      makeAuthHandler(auth, {
+        resolveTenant: () => Effect.succeed("tenant-a"),
+        callerSubject: (incoming) => incoming.headers.get("x-client-ip") ?? undefined,
+      }),
+    );
+    const challenge = (ip: string) =>
+      http.handler(
+        new Request("https://accounts.example.com/auth/passkeys/authenticate/options", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://accounts.example.com",
+            "x-client-ip": ip,
+          },
+          body: "{}",
+        }),
+      );
+    expect((await challenge("203.0.113.7")).status).toBe(200);
+    expect((await challenge("203.0.113.7")).status).toBe(200);
+    expect((await challenge("198.51.100.9")).status).toBe(200);
+    const keys = limits.filter((entry) => entry.action === "passkey-authenticate");
+    expect(keys).toHaveLength(3);
+    expect(keys[0]?.keyHash).toBe(keys[1]?.keyHash);
+    expect(keys[2]?.keyHash).not.toBe(keys[0]?.keyHash);
+    expect(JSON.stringify(keys)).not.toContain("203.0.113.7");
+  });
+});

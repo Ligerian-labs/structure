@@ -28,6 +28,18 @@ export interface RateLimitRequest {
   readonly keyHash: string;
 }
 
+/**
+ * Who is calling an anonymous entry point, as the application identifies
+ * it: the client address behind its trusted proxy, or any per-request
+ * subject it derives. Hashed before it reaches the limiter, like every
+ * other key. Anonymous walls (a discoverable passkey challenge, an external
+ * sign-in start, a password sign-in) key on it so one caller's budget is
+ * never shared with everyone else's.
+ */
+export interface AuthCaller {
+  readonly subject: string;
+}
+
 export interface RateLimiter {
   readonly check: (
     request: RateLimitRequest,
