@@ -2,7 +2,12 @@ import { Metrics } from "@structure-ai/observability";
 import { Context, Duration, Effect, Layer, Metric, ParseResult, Schedule, Schema } from "effect";
 import type { EmailDriver } from "./driver.js";
 import { type MailError, MailValidationError } from "./errors.js";
-import { type EmailAddressInput, EmailMessage, type EmailMessageInput } from "./message.js";
+import {
+  defaultFromAddress,
+  type EmailAddressInput,
+  EmailMessage,
+  type EmailMessageInput,
+} from "./message.js";
 import type { EmailTemplate } from "./templates.js";
 
 export interface RetryOptions {
@@ -104,7 +109,7 @@ export class Mailer extends Context.Tag("@structure-ai/mailer/Mailer")<Mailer, M
 export const makeMailer = (driver: EmailDriver, options?: MailerOptions): MailerService => {
   const metrics = makeMetrics(driver.name);
   const schedule = retrySchedule(options?.retry);
-  const fallbackFrom: EmailAddressInput = options?.defaultFrom ?? { email: "no-reply@localhost" };
+  const fallbackFrom = options?.defaultFrom ?? defaultFromAddress;
 
   const deliver = (message: EmailMessage, messageId: string): Effect.Effect<void, MailError> =>
     driver.send(message).pipe(

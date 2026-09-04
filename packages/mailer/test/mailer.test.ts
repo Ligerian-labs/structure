@@ -4,6 +4,7 @@ import { layerJson, layerSilent, ServiceMeta } from "@structure-ai/observability
 import { Effect, Layer, Metric, Option, Redacted } from "effect";
 import type { EmailDriver } from "../src/driver.js";
 import {
+  defineEmailTemplate,
   driverFromSettings,
   layerFromSettings,
   MailDeliveryFailed,
@@ -29,7 +30,19 @@ const message = (overrides: Record<string, unknown> = {}): EmailMessageInput =>
     ...defined(overrides),
   }) as EmailMessageInput;
 
+const notice = defineEmailTemplate("notice", () => ({ subject: "Notice", text: "Hello" }), {});
+
 describe("mailer service", () => {
+  test("uses a schema-valid sender for template sends by default", async () => {
+    const sent = await run(
+      makeMailer(makeCaptureDriver()).sendTemplate(notice, {
+        data: {},
+        to: [{ email: "ada@example.com" }],
+      }),
+    );
+    expect(sent.from).toEqual({ email: "no-reply@localhost.invalid" });
+  });
+
   test("validates and records messages through the capture driver", async () => {
     const capture = makeCaptureDriver();
     const mailer = makeMailer(capture);
@@ -204,9 +217,36 @@ describe("mailer settings", () => {
     expect(driver.name).toBe("brevo");
   });
 
-  test("layerFromSettings resolves a capture driver by default", async () => {
+  test("layerFromSettings resolves a capture driver with a schema-valid sender by default", async () => {
     const settings = await run(load(mailerSettings, { overrides: {} }));
     const service = await run(Effect.provide(Mailer, layerFromSettings(settings)));
-    await run(service.send(message({ to: [{ email: "cap@example.com" }] })));
+    const sent = await run(
+      service.sendTemplate(notice, { data: {}, to: [{ email: "cap@example.com" }] }),
+    );
+    expect(sent.from).toEqual({ email: "no-reply@localhost.invalid" });
+  });
+
+  test("layerFromSettings parses a display name from MAIL_FROM", async () => {
+    const settings = await run(
+      load(mailerSettings, {
+        overrides: { MAIL_FROM: "Platform <noreply@mail.example.com>" },
+      }),
+    );
+    const service = await run(Effect.provide(Mailer, layerFromSettings(settings)));
+    const sent = await run(
+      service.sendTemplate(notice, { data: {}, to: [{ email: "cap@example.com" }] }),
+    );
+    expect(sent.from).toEqual({ email: "noreply@mail.example.com", name: "Platform" });
+  });
+
+  test.each([
+    "not-an-address",
+    "Platform, Support <noreply@mail.example.com>",
+    "Platform\r\nBcc: attacker@example.com <noreply@mail.example.com>",
+  ])("layerFromSettings rejects invalid MAIL_FROM %p at composition time", async (from) => {
+    const settings = await run(load(mailerSettings, { overrides: { MAIL_FROM: from } }));
+    const error = await run(Effect.flip(Effect.provide(Mailer, layerFromSettings(settings))));
+    expect(error._tag).toBe("MailValidationError");
+    if (error._tag === "MailValidationError") expect(error.field).toBe("MAIL_FROM");
   });
 });

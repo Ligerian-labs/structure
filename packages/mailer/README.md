@@ -67,12 +67,12 @@ Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message
 
 ## Settings
 
-`mailerSettings` (`@structure-ai/config`) selects the driver and its credentials; secrets load `Redacted`. `layerFromSettings(settings)` resolves and validates the combination (SMTP requires `MAIL_SMTP_HOST`, Resend requires `MAIL_RESEND_API_KEY`, Brevo requires `MAIL_BREVO_API_KEY`) before the first send.
+`mailerSettings` (`@structure-ai/config`) selects the driver and its credentials; secrets load `Redacted`. `MAIL_FROM` accepts either `noreply@example.com` or a display form such as `Platform <noreply@example.com>`. `layerFromSettings(settings)` parses and validates the sender before it constructs the service. It also checks the selected driver's required setting: `MAIL_SMTP_HOST` for SMTP, `MAIL_RESEND_API_KEY` for Resend, or `MAIL_BREVO_API_KEY` for Brevo.
 
 | Name | Type | Required | Default | Secret |
 | --- | --- | --- | --- | --- |
 | `MAIL_DRIVER` | `"capture" \| "smtp" \| "resend" \| "brevo"` | no | `capture` | |
-| `MAIL_FROM` | string | no | `no-reply@localhost` | |
+| `MAIL_FROM` | email or `Name <email>` | no | `no-reply@localhost.invalid` | |
 | `MAIL_SMTP_HOST` | string | when driver=smtp | — | |
 | `MAIL_SMTP_PORT` | port | no | `587` | |
 | `MAIL_SMTP_USER` | string | no | — | |
