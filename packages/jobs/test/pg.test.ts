@@ -40,9 +40,7 @@ gated("PostgreSQL scheduler (needs DATABASE_URL)", () => {
 
     const shutdownContext = await Effect.runPromise(
       Layer.buildWithScope(
-        Shutdown.layer({ finalizerTimeout: Duration.seconds(10) }).pipe(
-          Layer.provide(Readiness.layer),
-        ),
+        Shutdown.layer({ finalizerTimeout: Duration.seconds(10) }).pipe(Layer.provide(Readiness.layer)),
         scope,
       ),
     );
