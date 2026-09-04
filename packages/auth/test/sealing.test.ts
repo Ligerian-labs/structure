@@ -95,3 +95,38 @@ describe("second-factor sealing", () => {
     );
   });
 });
+
+describe("recovery-code comparison width", () => {
+  test("a stored digest differing in any single byte, or in length, never matches", async () => {
+    const sealer = makeSecondFactorSealer(secret);
+    const stored = await run(sealer.hashRecoveryCode("abcde-fghij"));
+    const [version, salt, mac] = stored.split(":");
+    const digest = Buffer.from(mac ?? "", "base64url");
+    expect(digest).toHaveLength(32);
+    const variant = (bytes: Buffer): string =>
+      `${version}:${salt}:${Buffer.from(bytes).toString("base64url")}`;
+    expect(await run(sealer.matchRecoveryCode("abcde-fghij", stored, sha256))).toBe(true);
+    for (const index of [0, 1, 2, 15, 16, 29, 30, 31]) {
+      const flipped = Buffer.from(digest);
+      flipped[index] = (flipped[index] ?? 0) ^ 0x01;
+      expect(await run(sealer.matchRecoveryCode("abcde-fghij", variant(flipped), sha256))).toBe(
+        false,
+      );
+    }
+    expect(
+      await run(sealer.matchRecoveryCode("abcde-fghij", variant(digest.subarray(0, 31)), sha256)),
+    ).toBe(false);
+    expect(
+      await run(
+        sealer.matchRecoveryCode(
+          "abcde-fghij",
+          variant(Buffer.concat([digest, Buffer.from([0])])),
+          sha256,
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      await run(sealer.matchRecoveryCode("abcde-fghij", variant(Buffer.alloc(0)), sha256)),
+    ).toBe(false);
+  });
+});

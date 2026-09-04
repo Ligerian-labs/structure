@@ -304,3 +304,73 @@ describe.skipIf(databaseUrl === undefined)(
     });
   },
 );
+
+describe.skipIf(databaseUrl === undefined)(
+  "PostgreSQL recovery-code consumption (needs DATABASE_URL)",
+  () => {
+    test("is a compare-and-delete: a list rewritten under a held row lock is never consumed from", async () => {
+      if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
+      const sql = new SQL(databaseUrl);
+      const options = { tablePrefix: uniquePrefix() };
+      await Effect.runPromise(migrate(sql, options));
+      const store = makeAuthStore(sql, options);
+      const at = new Date("2026-08-20T12:00:00.000Z");
+      const totp = tableNames(options).totp;
+      try {
+        await Effect.runPromise(
+          store.createMagicLinkUser({
+            id: "user-1",
+            tenantId: "tenant-a",
+            email: "ada@example.com",
+            emailVerified: true,
+            createdAt: at,
+            updatedAt: at,
+          }),
+        );
+        await Effect.runPromise(
+          store.putTotpSecret({
+            tenantId: "tenant-a",
+            userId: "user-1",
+            secretBase32: "JBSWY3DPEHPK3PXP",
+            confirmed: false,
+            recoveryCodeHashes: [],
+            failedAttempts: 0,
+            enrolledAt: at,
+          }),
+        );
+        await Effect.runPromise(store.confirmTotp("tenant-a", "user-1", ["hash-x", "hash-y"], at));
+        // Another writer rewrites the list and holds the row lock open...
+        let release: () => void = () => undefined;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const writer = sql.begin(async (tx) => {
+          await tx`
+          UPDATE ${tx(totp)} SET recovery_code_hashes = ${JSON.stringify(["hash-y"])}
+          WHERE tenant_id = 'tenant-a' AND user_id = 'user-1'
+        `;
+          await held;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        // ...while a consumer reads the old list (READ COMMITTED) and queues its
+        // update behind the lock. When the lock goes, the row it compared
+        // against is gone, so the consumption must not land.
+        const consuming = Effect.runPromise(
+          store.consumeRecoveryCode("tenant-a", "user-1", "hash-x"),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        release();
+        await writer;
+        expect(await consuming).toBe(false);
+        expect(
+          (await Effect.runPromise(store.findTotp("tenant-a", "user-1")))?.recoveryCodeHashes,
+        ).toEqual(["hash-y"]);
+      } finally {
+        for (const table of Object.values(tableNames(options)).reverse()) {
+          await sql`DROP TABLE IF EXISTS ${sql(table)} CASCADE`;
+        }
+        await sql.close();
+      }
+    });
+  },
+);
