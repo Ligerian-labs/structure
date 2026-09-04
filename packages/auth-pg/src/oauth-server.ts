@@ -262,12 +262,14 @@ export const makeOAuthServerStore = (sql: SQL, options: AdapterOptions = {}): OA
       }),
     revokeFamily: (tenantId, familyId, at) =>
       read("oauth-revoke-family", async () => {
-        await sql`
+        const rows = await sql<Array<{ readonly token_id: string }>>`
           UPDATE ${sql(tables.oauthTokens)}
           SET revoked_at = ${at.toISOString()}
           WHERE tenant_id = ${tenantId} AND family_id = ${familyId} AND revoked_at IS NULL
+          RETURNING token_id
         `;
-      }).pipe(Effect.asVoid),
+        return rows.length;
+      }),
     putEndSessionHint: (record) =>
       read("oauth-put-hint", async () => {
         await sql`
