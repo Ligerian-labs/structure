@@ -586,6 +586,25 @@ export const registerOAuthServerScenarios = (
       // ...and never on a token revoked some other way.
       expect(await run(store.rotateToken("tenant-a", "token-1", later))).toBe(false);
       expect((await run(remake.findTokenById("tenant-a", "token-1")))?.rotatedAt).toBeUndefined();
+      // ...and only inside its tenant: the same id elsewhere is another token.
+      await run(
+        store.putToken({
+          tenantId: "tenant-b",
+          tokenId: "token-2",
+          kind: "refresh",
+          clientId: "as_client-1",
+          userId: "user-9",
+          scope: ["mcp:tools"],
+          tokenHash: "token-2-b-hash",
+          expiresAt: later,
+          createdAt: at,
+        }),
+      );
+      expect(await run(store.rotateToken("tenant-a", "token-2", later))).toBe(false);
+      const untouched = await run(remake.findTokenById("tenant-b", "token-2"));
+      expect(untouched?.revokedAt).toBeUndefined();
+      expect(untouched?.rotatedAt).toBeUndefined();
+      expect(await run(store.rotateToken("tenant-b", "token-2", later))).toBe(true);
 
       // Token families: the id round-trips, and revoking a family reaches
       // every live member (access and refresh) and nothing outside it.
