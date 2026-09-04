@@ -456,12 +456,29 @@ describe("JWKS rotation", () => {
     // Outstanding token from key A still verifies...
     const claims = await run(server.verifyAccessToken("tenant-a", Redacted.make(oldToken)));
     expect(claims.sub).toBe("user-1");
-    // ...and new tokens are signed by key B.
+    // ...and new tokens are signed by key B, and verify under B (the key
+    // their kid names) while A still stands as previous.
     const newToken = await issue();
     const header = JSON.parse(
       Buffer.from(newToken.split(".")[0] ?? "", "base64url").toString("utf8"),
     ) as { kid?: string };
     expect(header.kid).toBe(keyB.kid);
+    expect((await run(server.verifyAccessToken("tenant-a", Redacted.make(newToken)))).sub).toBe(
+      "user-1",
+    );
+    // A kid the server never held is refused whatever the signature.
+    const [, payload, signature] = newToken.split(".");
+    const foreignKid = Buffer.from(
+      JSON.stringify({ alg: "RS256", typ: "JWT", kid: "unknown-kid" }),
+    ).toString("base64url");
+    expect(
+      await flip(
+        server.verifyAccessToken(
+          "tenant-a",
+          Redacted.make(`${foreignKid}.${payload}.${signature}`),
+        ),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
   });
 });
 
@@ -853,5 +870,202 @@ describe("refresh-token revocation versus rotation", () => {
     expect(
       (await run(server.introspect({ ...call, token: Redacted.make(rotated.accessToken) }))).active,
     ).toBe(false);
+  });
+});
+
+describe("access-token verification: malformed signatures and algorithm confusion", () => {
+  const b64url = (value: string): string => Buffer.from(value, "utf8").toString("base64url");
+
+  const issueOne = async (server: AuthorizationServer): Promise<string> => {
+    const minted = await run(
+      server.registerClient(
+        "tenant-a",
+        {
+          clientType: "public",
+          redirectUris: ["https://agent.example.com/callback"],
+          scopes: ["mcp:tools"],
+        },
+        { kind: "signed-in", userId: "user-1" },
+      ),
+    );
+    const { verifier, challenge } = await pkce();
+    await run(
+      server.grantConsent({
+        tenantId: "tenant-a",
+        userId: "user-1",
+        clientId: minted.record.clientId,
+        scope: ["mcp:tools"],
+      }),
+    );
+    const decision = await run(
+      server.authorize(
+        {
+          tenantId: "tenant-a",
+          clientId: minted.record.clientId,
+          redirectUri: "https://agent.example.com/callback",
+          scope: ["mcp:tools"],
+          codeChallenge: challenge,
+          codeChallengeMethod: "S256",
+        },
+        "user-1",
+      ),
+    );
+    if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+    const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+    const tokens = await run(
+      server.exchangeCode({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        code: Redacted.make(code),
+        codeVerifier: verifier,
+        redirectUri: "https://agent.example.com/callback",
+      }),
+    );
+    return tokens.accessToken;
+  };
+
+  test("a signature segment that is not base64url is refused, never treated as verified", async () => {
+    const { server } = await buildServer({ signedIn: true });
+    const token = await issueOne(server);
+    const [header, payload] = token.split(".");
+    for (const garbage of ["!!!!", "@@@@", "a b c", "éééé", "%%%%"]) {
+      expect(
+        await flip(
+          server.verifyAccessToken("tenant-a", Redacted.make(`${header}.${payload}.${garbage}`)),
+        ),
+      ).toBeInstanceOf(InvalidAuthToken);
+    }
+    expect((await run(server.verifyAccessToken("tenant-a", Redacted.make(token)))).sub).toBe(
+      "user-1",
+    );
+  });
+
+  test("a genuine RSA signature under a header advertising another algorithm is refused", async () => {
+    const { server, keys } = await buildServer({ signedIn: true });
+    const token = await issueOne(server);
+    const [, payload] = token.split(".");
+    for (const alg of ["HS256", "RS512", "PS256", "ES256", "NONE", "rs256"]) {
+      const header = b64url(JSON.stringify({ alg, typ: "JWT", kid: keys.current.kid }));
+      const signature = await crypto.subtle.sign(
+        "RSASSA-PKCS1-v1_5",
+        keys.current.privateKey,
+        new TextEncoder().encode(`${header}.${payload}`),
+      );
+      const confused = `${header}.${payload}.${Buffer.from(signature).toString("base64url")}`;
+      expect(
+        await flip(server.verifyAccessToken("tenant-a", Redacted.make(confused))),
+      ).toBeInstanceOf(InvalidAuthToken);
+    }
+  });
+});
+
+describe("token families across grants", () => {
+  test("every grant is its own family: one user's reuse never touches another user's tokens", async () => {
+    const events: Array<string> = [];
+    const store = inMemoryOAuthServerStore();
+    const key = await run(generateSigningKey());
+    const server = makeAuthorizationServer({
+      store,
+      resolveTenant: (tenantId) =>
+        Effect.succeed({ baseUrl: new URL(`https://${tenantId}.example.com`) }),
+      signingKeys: { current: key },
+      registration: { signedIn: true },
+      primitives: { now: () => clock.value },
+      audit: { record: (event) => Effect.sync(() => void events.push(event.action)) },
+    });
+    const minted = await registerClient(server);
+    const secret = minted.clientSecret ?? Redacted.make("");
+    const call = { tenantId: "tenant-a", clientId: minted.record.clientId, clientSecret: secret };
+    const grant = async (userId: string) => {
+      const { verifier, challenge } = await pkce();
+      await run(
+        server.grantConsent({
+          tenantId: "tenant-a",
+          userId,
+          clientId: minted.record.clientId,
+          scope: ["mcp:tools"],
+        }),
+      );
+      const decision = await run(
+        server.authorize(
+          {
+            tenantId: "tenant-a",
+            clientId: minted.record.clientId,
+            redirectUri: "https://agent.example.com/callback",
+            scope: ["mcp:tools"],
+            codeChallenge: challenge,
+            codeChallengeMethod: "S256",
+          },
+          userId,
+        ),
+      );
+      if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+      const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+      return run(
+        server.exchangeCode({
+          ...call,
+          code: Redacted.make(code),
+          codeVerifier: verifier,
+          redirectUri: "https://agent.example.com/callback",
+        }),
+      );
+    };
+    const introspect = async (token: string) =>
+      (await run(server.introspect({ ...call, token: Redacted.make(token) }))).active;
+
+    const alice = await grant("user-alice");
+    const bob = await grant("user-bob");
+    const aliceAgain = await grant("user-alice");
+    const families = new Set(store.snapshot().tokens.map((token) => token.familyId));
+    expect(families.size).toBe(3);
+    expect([...families].every((familyId) => typeof familyId === "string")).toBe(true);
+
+    // Alice rotates, then her old token is replayed: her family dies, nobody else's.
+    const rotated = await run(
+      server.refresh({ ...call, refreshToken: Redacted.make(alice.refreshToken ?? "") }),
+    );
+    expect(
+      await flip(
+        server.refresh({ ...call, refreshToken: Redacted.make(alice.refreshToken ?? "") }),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(await introspect(rotated.accessToken)).toBe(false);
+    expect(await introspect(rotated.refreshToken ?? "")).toBe(false);
+    expect(await introspect(bob.accessToken)).toBe(true);
+    expect(await introspect(bob.refreshToken ?? "")).toBe(true);
+    expect(await introspect(aliceAgain.accessToken)).toBe(true);
+    expect(await introspect(aliceAgain.refreshToken ?? "")).toBe(true);
+    expect(events).toEqual(["oauth-refresh-reuse"]);
+  });
+});
+
+describe("in-memory token store: family revocation", () => {
+  test("stays inside the tenant and keeps an earlier revocation time", async () => {
+    const store = inMemoryOAuthServerStore();
+    const at = new Date("2026-08-20T12:00:00.000Z");
+    const earlier = new Date("2026-08-20T11:00:00.000Z");
+    const later = new Date("2026-08-20T13:00:00.000Z");
+    const member = (tenantId: string, tokenId: string, revokedAt?: Date) =>
+      run(
+        store.putToken({
+          tenantId,
+          tokenId,
+          kind: "access",
+          clientId: "as_c1",
+          userId: "user-1",
+          scope: ["mcp:tools"],
+          familyId: "family-shared",
+          expiresAt: later,
+          ...(revokedAt === undefined ? {} : { revokedAt }),
+          createdAt: at,
+        }),
+      );
+    await member("tenant-a", "a-live");
+    await member("tenant-a", "a-dead", earlier);
+    await member("tenant-b", "b-live");
+    await run(store.revokeFamily("tenant-a", "family-shared", at));
+    expect((await run(store.findTokenById("tenant-a", "a-live")))?.revokedAt).toEqual(at);
+    expect((await run(store.findTokenById("tenant-a", "a-dead")))?.revokedAt).toEqual(earlier);
+    expect((await run(store.findTokenById("tenant-b", "b-live")))?.revokedAt).toBeUndefined();
   });
 });

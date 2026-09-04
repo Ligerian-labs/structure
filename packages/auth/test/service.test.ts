@@ -12,6 +12,7 @@ import {
   makeAuth,
   RateLimitExceeded,
   type RateLimitRequest,
+  sha256,
   type TenantAuthConfig,
 } from "../src/index.js";
 
@@ -522,5 +523,34 @@ describe("password sign-in wall: a ceiling per caller", () => {
       }),
     );
     expect(session.user.email).toBe("ada@example.com");
+  });
+});
+
+describe("passkey verification wall", () => {
+  test("keys on the caller when one is given, else on the credential id", async () => {
+    const limits: Array<RateLimitRequest> = [];
+    const memory = inMemoryAuthStore();
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: { check: (request) => Effect.sync(() => void limits.push(request)) },
+    });
+    const response = {
+      credentialId: "credential-1",
+      response: { clientDataJSON: "", authenticatorData: "", signature: "" },
+    };
+    // The verification itself fails (no challenge behind this response);
+    // only the wall's key is under test here.
+    await fail(auth.finishPasskeyAuthentication("tenant-a", response, { subject: "203.0.113.7" }));
+    await fail(auth.finishPasskeyAuthentication("tenant-a", response, { subject: "198.51.100.9" }));
+    await fail(auth.finishPasskeyAuthentication("tenant-a", response));
+    const keys = limits
+      .filter((entry) => entry.action === "passkey-authenticate")
+      .map((entry) => entry.keyHash);
+    expect(keys).toHaveLength(3);
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(keys[2]).toBe(await run(sha256("credential-1")));
+    expect(keys[0]).toBe(await run(sha256("203.0.113.7")));
   });
 });
