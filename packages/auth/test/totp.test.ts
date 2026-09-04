@@ -530,3 +530,36 @@ describe("recovery codes under concurrent writes", () => {
     expect(harness.memory.snapshot().totp[0]?.failedAttempts).toBe(1);
   });
 });
+
+describe("legacy enrollments used only with recovery codes", () => {
+  test("a pre-sealing secret is sealed on a recovery-code success as well", async () => {
+    const { harness, session } = await signedInUser("ada@example.com");
+    const secret = generateTotpSecret();
+    await run(
+      harness.memory.store.putTotpSecret({
+        tenantId: "tenant-a",
+        userId: session.user.id,
+        secretBase32: secret,
+        confirmed: true,
+        recoveryCodeHashes: [await run(sha256("abcde-fghij"))],
+        failedAttempts: 0,
+        enrolledAt: harness.now(),
+      }),
+    );
+    const pending = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(
+      (await run(harness.totp.verify("tenant-a", pending.token, "abcde-fghij"))).elevated,
+    ).toBe(true);
+    const sealed = harness.memory.snapshot().totp[0];
+    expect(sealed?.secretBase32).not.toBe(secret);
+    expect(sealed?.secretBase32.startsWith("v1:")).toBe(true);
+    // ...and the sealed secret still verifies the authenticator's code.
+    const another = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    const code = await run(totpCode(secret, harness.now()));
+    expect((await run(harness.totp.verify("tenant-a", another.token, code))).elevated).toBe(true);
+  });
+});

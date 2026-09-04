@@ -298,6 +298,7 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
           isRecoveryCode(code) &&
           (yield* consumeRecoveryCode(tenantId, user.id, enrollment.recoveryCodeHashes, code))
         ) {
+          yield* sealLegacySecret(tenantId, user.id, enrollment.secretBase32);
           yield* options.store.resetTotpFailures(tenantId, user.id);
           yield* elevate(tenantId, sessionToken, user.id);
           return { elevated: true as const };
