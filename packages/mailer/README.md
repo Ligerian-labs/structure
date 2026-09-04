@@ -54,7 +54,7 @@ const previews = renderPreviews([previewEntry(invite)]);
 
 | Driver | Use | Failure classification |
 | --- | --- | --- |
-| `makeSmtpDriver({ host, port, user, password, tls?, allowPlaintext?, … })` | Direct SMTP relay; STARTTLS required by default (a relay that offers none is refused before AUTH with `smtp-tls-required`), `tls.mode: "implicit"` for port 465, AUTH PLAIN/LOGIN. Plaintext only to a loopback relay or with `allowPlaintext` (checked at construction). One connection per message. | 5yz → permanent, 4yz/timeouts/TLS → transient |
+| `makeSmtpDriver({ host, port, user, password, tls?, allowPlaintext?, … })` | Direct SMTP relay; STARTTLS required by default (a relay that offers none is refused before AUTH with `smtp-tls-required`), `tls.mode: "implicit"` for port 465, AUTH PLAIN/LOGIN. Plaintext only to a loopback relay or with `allowPlaintext`; `validateSmtpOptions(options)` reports a refused combination as a `MailValidationError` value for boot-time checks (`driverFromSettings` fails through its error channel), and a driver built from one refuses every send before AUTH. One connection per message. | 5yz → permanent, 4yz/timeouts/TLS → transient |
 | `makeResendDriver({ apiKey, baseUrl? })` | Resend HTTP API over `fetch` (`fetchImpl` injectable for tests). | 4xx → permanent, 429/408/425/5xx/network → transient |
 | `makeBrevoDriver({ apiKey, baseUrl? })` | Brevo transactional API (`POST /v3/smtp/email`, `api-key` header) over `fetch` (`fetchImpl` injectable for tests). Metrics label `brevo`. | 4xx → permanent, 429/408/425/5xx/network → transient |
 | `makeCaptureDriver()` | Tests and dev: records every message, never fails. | — |
