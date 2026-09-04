@@ -71,12 +71,14 @@ Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message
 
 `mailerSettings` (`@structure-ai/config`) selects the driver and its credentials; secrets load `Redacted`. `layerFromSettings(settings)` resolves and validates the combination (SMTP requires `MAIL_SMTP_HOST`, Resend requires `MAIL_RESEND_API_KEY`, Brevo requires `MAIL_BREVO_API_KEY`) before the first send. SMTP requires TLS by default: `MAIL_SMTP_TLS=starttls` upgrades before AUTH and refuses a relay that does not offer it, `implicit` speaks TLS from the first byte (set `MAIL_SMTP_PORT=465`), and `none` is accepted only for a loopback relay or with `MAIL_SMTP_ALLOW_PLAINTEXT=true`, refused at composition otherwise.
 
+`mailerSettings` (`@structure-ai/config`) selects the driver and its credentials; secrets load `Redacted`. `layerFromSettings(settings)` resolves and validates the combination (SMTP requires `MAIL_SMTP_HOST`, Resend requires `MAIL_RESEND_API_KEY`, Brevo requires `MAIL_BREVO_API_KEY`) before the first send. SMTP requires TLS by default: `MAIL_SMTP_TLS=starttls` upgrades before AUTH and refuses a relay that does not offer it, `implicit` speaks TLS from the first byte on port 465 unless `MAIL_SMTP_PORT` says otherwise, and `none` is accepted only for a loopback relay or with `MAIL_SMTP_ALLOW_PLAINTEXT=true`, refused at composition otherwise.
+
 | Name | Type | Required | Default | Secret |
 | --- | --- | --- | --- | --- |
 | `MAIL_DRIVER` | `"capture" \| "smtp" \| "resend" \| "brevo"` | no | `capture` | |
 | `MAIL_FROM` | email or `Name <email>` | no | `no-reply@localhost.invalid` | |
 | `MAIL_SMTP_HOST` | string | when driver=smtp | — | |
-| `MAIL_SMTP_PORT` | port | no | `587` | |
+| `MAIL_SMTP_PORT` | port | no | `587`, or `465` when `MAIL_SMTP_TLS=implicit` | |
 | `MAIL_SMTP_USER` | string | no | — | |
 | `MAIL_SMTP_PASSWORD` | secret | no | — | yes |
 | `MAIL_SMTP_TLS` | `"starttls" \| "implicit" \| "none"` | no | `starttls` | |

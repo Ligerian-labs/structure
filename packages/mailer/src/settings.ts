@@ -34,10 +34,11 @@ export const mailerSettings = Settings.struct({
   smtpHost: Settings.optional(
     Settings.string("MAIL_SMTP_HOST", { description: "SMTP relay host (required for smtp)" }),
   ),
-  smtpPort: Settings.port("MAIL_SMTP_PORT", {
-    description: "SMTP relay port",
-    default: 587,
-  }),
+  smtpPort: Settings.optional(
+    Settings.port("MAIL_SMTP_PORT", {
+      description: "SMTP relay port (default 587, or 465 when MAIL_SMTP_TLS=implicit)",
+    }),
+  ),
   smtpUser: Settings.optional(
     Settings.string("MAIL_SMTP_USER", { description: "SMTP AUTH username" }),
   ),
@@ -46,7 +47,7 @@ export const mailerSettings = Settings.struct({
   ),
   smtpTls: Settings.literal("MAIL_SMTP_TLS", ["starttls", "implicit", "none"], {
     description:
-      "SMTP transport security: starttls (upgrade before AUTH, required unless the relay is loopback), implicit (TLS from the first byte, port 465), none (cleartext; needs MAIL_SMTP_ALLOW_PLAINTEXT for a non-loopback relay)",
+      "SMTP transport security: starttls (upgrade before AUTH, required unless the relay is loopback), implicit (TLS from the first byte, port 465 unless MAIL_SMTP_PORT says otherwise), none (cleartext; needs MAIL_SMTP_ALLOW_PLAINTEXT for a non-loopback relay)",
     default: "starttls",
   }),
   smtpAllowPlaintext: Settings.boolean("MAIL_SMTP_ALLOW_PLAINTEXT", {
@@ -159,7 +160,9 @@ export const driverFromSettings = (
           onSome: (host) => {
             const options = {
               host,
-              port: settings.smtpPort,
+              ...(Option.isSome(settings.smtpPort)
+                ? { port: Option.getOrThrow(settings.smtpPort) }
+                : {}),
               ...(Option.isSome(settings.smtpUser)
                 ? { user: Option.getOrThrow(settings.smtpUser) }
                 : {}),

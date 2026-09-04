@@ -20,7 +20,7 @@ export type SmtpTlsMode = "starttls" | "implicit" | "none";
 
 export interface SmtpOptions {
   readonly host: string;
-  /** Default 587. */
+  /** Default 587, or 465 when `tls.mode` is `implicit`. */
   readonly port?: number;
   readonly user?: string;
   readonly password?: Redacted.Redacted<string>;
