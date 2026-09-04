@@ -48,6 +48,7 @@ gated("PostgreSQL scheduler (needs DATABASE_URL)", () => {
             scheduler
               .runWorker({
                 ...(options?.batchSize === undefined ? {} : { batchSize: options.batchSize }),
+                ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
                 ...(options?.pollMillis === undefined
                   ? {}
                   : { pollInterval: Duration.millis(options.pollMillis) }),

@@ -15,6 +15,7 @@ export interface SchedulerHarness {
   readonly clock: { value: Date };
   readonly startWorker: (options?: {
     readonly batchSize?: number;
+    readonly concurrency?: number;
     readonly pollMillis?: number;
     readonly leaseMillis?: number;
   }) => Promise<Fiber.RuntimeFiber<void, never>>;
@@ -141,6 +142,84 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
       await harness.stopWorker();
       await Effect.runPromise(Fiber.await(workerA));
       await Effect.runPromise(Fiber.await(workerB));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("the concurrency bound caps simultaneously running handlers, whatever the backlog", async () => {
+    const harness = await make();
+    try {
+      let running = 0;
+      let peak = 0;
+      const executed = new Set<string>();
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: (payload) =>
+            Effect.gen(function* () {
+              running += 1;
+              peak = Math.max(peak, running);
+              yield* Effect.sleep("60 millis");
+              running -= 1;
+              executed.add(payload.message);
+            }),
+        }),
+      );
+      // A backlog far larger than the bound: 40 due jobs, batches of 5.
+      for (let index = 0; index < 40; index++) {
+        await run(harness.scheduler.schedule(testJob, { message: `bulk-${index}` }));
+      }
+      const worker = await harness.startWorker({ pollMillis: 5, batchSize: 5 });
+      await waitFor(
+        () => executed.size >= 40,
+        () => undefined,
+        15_000,
+      );
+      expect(executed.size).toBe(40);
+      expect(peak).toBeLessThanOrEqual(5);
+      expect(peak).toBeGreaterThan(1);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("an explicit concurrency lower than the batch size is the ceiling", async () => {
+    const harness = await make();
+    try {
+      let running = 0;
+      let peak = 0;
+      const executed = new Set<string>();
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: (payload) =>
+            Effect.gen(function* () {
+              running += 1;
+              peak = Math.max(peak, running);
+              yield* Effect.sleep("40 millis");
+              running -= 1;
+              executed.add(payload.message);
+            }),
+        }),
+      );
+      for (let index = 0; index < 12; index++) {
+        await run(harness.scheduler.schedule(testJob, { message: `narrow-${index}` }));
+      }
+      const worker = await harness.startWorker({ pollMillis: 5, batchSize: 10, concurrency: 2 });
+      await waitFor(
+        () => executed.size >= 12,
+        () => undefined,
+        15_000,
+      );
+      expect(executed.size).toBe(12);
+      expect(peak).toBeLessThanOrEqual(2);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
     } finally {
       await harness.close();
     }

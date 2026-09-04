@@ -16,9 +16,14 @@ export const jobsSettings = Settings.struct({
     default: Duration.seconds(1),
   }),
   batchSize: Settings.int("JOBS_BATCH_SIZE", {
-    description: "jobs claimed per poll",
+    description: "jobs claimed per poll (never more than the free concurrency)",
     default: 10,
   }),
+  concurrency: Settings.optional(
+    Settings.int("JOBS_CONCURRENCY", {
+      description: "ceiling on jobs executing at once per worker (default: JOBS_BATCH_SIZE)",
+    }),
+  ),
   lease: Settings.duration("JOBS_LEASE", {
     description: "dispatch lease duration before a running job becomes reclaimable",
     default: Duration.seconds(60),
