@@ -67,6 +67,65 @@ describe("S3 storage driver (against a loopback stub)", () => {
     expect(total).toBe(payload.byteLength);
   });
 
+  test("a download slower than the timeout still delivers every byte (the timeout bounds the headers, not the body)", async () => {
+    await make();
+    const storage = makeS3Storage({
+      bucket: "stub-bucket",
+      region: "us-east-1",
+      accessKeyId: "test-access-key",
+      secretAccessKey: Redacted.make("test-secret-key"),
+      endpoint: stub.url,
+      // Headers arrive at once; the eight-chunk body takes ~1 s at 120 ms per chunk.
+      timeoutMillis: 300,
+    });
+    const key = await Effect.runPromise(objectKey("slow/export.bin"));
+    const payload = new Uint8Array(8 * 1_024);
+    for (let index = 0; index < payload.length; index++) payload[index] = index % 251;
+    await Effect.runPromise(
+      storage.put({ key, body: payload, contentType: "application/octet-stream" }),
+    );
+    const got = await Effect.runPromise(storage.get(key));
+    const reader = got.body.getReader();
+    let received = 0;
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      received += next.value?.byteLength ?? 0;
+    }
+    expect(received).toBe(payload.byteLength);
+  });
+
+  test("a body that stops arriving fails the stream after the idle timeout instead of hanging", async () => {
+    await make();
+    const storage = makeS3Storage({
+      bucket: "stub-bucket",
+      region: "us-east-1",
+      accessKeyId: "test-access-key",
+      secretAccessKey: Redacted.make("test-secret-key"),
+      endpoint: stub.url,
+      timeoutMillis: 5_000,
+      bodyIdleTimeoutMillis: 200,
+    });
+    const key = await Effect.runPromise(objectKey("stall/export.bin"));
+    await Effect.runPromise(
+      storage.put({ key, body: new Uint8Array(4_096), contentType: "application/octet-stream" }),
+    );
+    const got = await Effect.runPromise(storage.get(key));
+    const reader = got.body.getReader();
+    const started = Date.now();
+    let failure: unknown;
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+      }
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure).toBeDefined();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
   test("maps a 403 from the provider to a permanent rejection", async () => {
     const storage = makeS3Storage({
       bucket: "stub-bucket",

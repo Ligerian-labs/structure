@@ -50,6 +50,7 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
   const uploads = new Map<string, { key: string; parts: Map<number, Uint8Array> }>();
   const unverified: Array<{ method: string; path: string }> = [];
   const requests: Array<{ method: string; path: string; signed: boolean }> = [];
+  const stalled = new Set<http.ServerResponse>();
 
   const readBody = async (request: http.IncomingMessage): Promise<Uint8Array> => {
     const chunks: Array<Uint8Array> = [];
@@ -254,6 +255,26 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
         response.end();
         return;
       }
+      // `slow/` objects trickle out in eight chunks 120 ms apart (a slow
+      // link); `stall/` objects send one chunk and then hang until the stub
+      // closes, so body-level timeouts can be exercised offline.
+      if (key.startsWith("slow/") || key.startsWith("stall/")) {
+        const chunkSize = Math.max(1, Math.ceil(object.bytes.byteLength / 8));
+        let offset = 0;
+        const tick = (): void => {
+          if (response.destroyed) return;
+          response.write(object.bytes.slice(offset, offset + chunkSize));
+          offset += chunkSize;
+          if (key.startsWith("stall/")) {
+            stalled.add(response);
+            return;
+          }
+          if (offset >= object.bytes.byteLength) response.end();
+          else setTimeout(tick, 120);
+        };
+        tick();
+        return;
+      }
       response.end(object.bytes);
       return;
     }
@@ -279,6 +300,7 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
     unverified,
     close: () =>
       new Promise<void>((resolve) => {
+        for (const response of stalled) response.destroy();
         server.close(() => resolve());
       }),
   };
