@@ -7,10 +7,11 @@ import {
   Duration,
   Effect,
   Exit,
-  type Fiber,
+  Fiber,
   Layer,
   Logger,
   Redacted,
+  Schema as S,
   Scope,
 } from "effect";
 import { migrate, Scheduler, schedulerLayer, tableNames } from "../src/index.js";
@@ -174,6 +175,75 @@ gated("migrate on a table created before the lease fence (needs DATABASE_URL)", 
       );
       expect(rows).toEqual([{ id: "legacy-1", lease_owner: null }]);
       await Effect.runPromise(migrateHere);
+    } finally {
+      await Effect.runPromise(Effect.orDie(sql`DROP TABLE IF EXISTS ${sql(tables.queue)}`));
+      await Effect.runPromise(Effect.orDie(sql`DROP TABLE IF EXISTS ${sql(tables.deadLetters)}`));
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+});
+
+gated("dead-letter atomicity (needs DATABASE_URL)", () => {
+  test("a dead-letter insert that fails rolls the fenced delete back: the queue row survives", async () => {
+    const tablePrefix = `a${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}_`;
+    const tables = tableNames({ tablePrefix });
+    const scope = Effect.runSync(Scope.make());
+    const layers = schedulerLayer({ tablePrefix }).pipe(
+      Layer.provideMerge(PgClient.layer({ url: Redacted.make(databaseUrl as string) })),
+      Layer.merge(
+        Shutdown.layer({ finalizerTimeout: Duration.seconds(2) }).pipe(
+          Layer.provide(Readiness.layer),
+        ),
+      ),
+    );
+    const context = await Effect.runPromise(Layer.buildWithScope(layers, scope));
+    const sql = Context.get(context, SqlClient.SqlClient);
+    const scheduler = Context.get(context, Scheduler);
+    const shutdown = Context.get(context, Shutdown);
+    try {
+      await Effect.runPromise(
+        migrate({ tablePrefix }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      );
+      // Poison the dead-letter table: every insert into it now fails.
+      await Effect.runPromise(
+        sql`ALTER TABLE ${sql(tables.deadLetters)} ADD COLUMN poison TEXT NOT NULL`.pipe(
+          Effect.asVoid,
+        ),
+      );
+      await Effect.runPromise(
+        scheduler.register({
+          name: "test.ping",
+          payloadSchema: S.parseJson(S.Struct({ message: S.String })),
+          handle: () => Effect.fail({ reason: "bad-input", classification: "permanent" }),
+        }),
+      );
+      const jobId = await Effect.runPromise(
+        scheduler.schedule(
+          { name: "test.ping", payloadSchema: S.parseJson(S.Struct({ message: S.String })) },
+          { message: "doomed" },
+        ),
+      );
+      const worker = await Effect.runPromise(
+        Effect.forkDaemon(
+          scheduler
+            .runWorker({ pollInterval: Duration.millis(10), drainTimeout: Duration.millis(300) })
+            .pipe(
+              Effect.provideService(Shutdown, shutdown),
+              Effect.catchAllCause(() => Effect.void),
+            ),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const rows = await Effect.runPromise(
+        sql<{ id: string; status: string }>`SELECT id, status FROM ${sql(tables.queue)}`,
+      );
+      expect(rows.map((row) => row.id)).toEqual([jobId]);
+      const dead = await Effect.runPromise(
+        sql<{ id: string }>`SELECT id FROM ${sql(tables.deadLetters)}`,
+      );
+      expect(dead).toEqual([]);
+      await Effect.runPromise(shutdown.trigger("test-complete"));
+      await Effect.runPromise(Fiber.await(worker));
     } finally {
       await Effect.runPromise(Effect.orDie(sql`DROP TABLE IF EXISTS ${sql(tables.queue)}`));
       await Effect.runPromise(Effect.orDie(sql`DROP TABLE IF EXISTS ${sql(tables.deadLetters)}`));
