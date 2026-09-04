@@ -101,6 +101,6 @@ PostgreSQL timestamps use `TIMESTAMPTZ`; passkey counters use `BIGINT` to hold t
 
 Run the schema migration from one deploy job or designated migrator, not every serving instance. Future schema changes are new forward-only migrations in the application's set; `migration(id)` stays the frozen initial schema and `upgradeMigration(id)` the frozen v2 step.
 
-Applications own pool sizing, connection timeouts, TLS, least-privilege database credentials, backups, and tenant-aware cleanup of expired rows. Close the Bun `SQL` pool during bounded application shutdown.
+Applications own pool sizing, connection timeouts, TLS, least-privilege database credentials, backups, and tenant-aware cleanup of expired rows (revoked token pairs left by refused concurrent refreshes included; they expire with the refresh-token TTL). Close the Bun `SQL` pool during bounded application shutdown.
 
 The package tests run against `DATABASE_URL` when it is present and skip otherwise.
