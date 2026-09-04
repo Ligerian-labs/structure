@@ -4,7 +4,7 @@ import type { EmailDriver } from "./driver.js";
 import { makeBrevoDriver } from "./drivers/brevo.js";
 import { makeCaptureDriver } from "./drivers/capture.js";
 import { makeResendDriver } from "./drivers/resend.js";
-import { makeSmtpDriver } from "./drivers/smtp.js";
+import { makeSmtpDriver, validateSmtpOptions } from "./drivers/smtp.js";
 import { MailValidationError } from "./errors.js";
 import { Mailer, type MailerOptions, makeMailer } from "./mailer.js";
 import {
@@ -44,6 +44,20 @@ export const mailerSettings = Settings.struct({
   smtpPassword: Settings.optional(
     Settings.secret("MAIL_SMTP_PASSWORD", { description: "SMTP AUTH password" }),
   ),
+  smtpTls: Settings.literal("MAIL_SMTP_TLS", ["starttls", "implicit", "none"], {
+    description:
+      "SMTP transport security: starttls (upgrade before AUTH, required unless the relay is loopback), implicit (TLS from the first byte, port 465), none (cleartext; needs MAIL_SMTP_ALLOW_PLAINTEXT for a non-loopback relay)",
+    default: "starttls",
+  }),
+  smtpAllowPlaintext: Settings.boolean("MAIL_SMTP_ALLOW_PLAINTEXT", {
+    description:
+      "accept a cleartext SMTP session to a non-loopback relay (credentials and messages unencrypted)",
+    default: false,
+  }),
+  smtpTlsRejectUnauthorized: Settings.boolean("MAIL_SMTP_TLS_REJECT_UNAUTHORIZED", {
+    description: "verify the relay's TLS certificate chain",
+    default: true,
+  }),
   resendApiKey: Settings.optional(
     Settings.secret("MAIL_RESEND_API_KEY", {
       description: "Resend API key (required for resend)",
@@ -115,19 +129,32 @@ export const driverFromSettings = (
       case "smtp":
         return yield* Option.match(settings.smtpHost, {
           onNone: () => Effect.fail(missing("MAIL_SMTP_HOST")),
-          onSome: (host) =>
-            Effect.succeed(
-              makeSmtpDriver({
-                host,
-                port: settings.smtpPort,
-                ...(Option.isSome(settings.smtpUser)
-                  ? { user: Option.getOrThrow(settings.smtpUser) }
-                  : {}),
-                ...(Option.isSome(settings.smtpPassword)
-                  ? { password: Option.getOrThrow(settings.smtpPassword) }
-                  : {}),
-              }),
-            ),
+          onSome: (host) => {
+            const options = {
+              host,
+              port: settings.smtpPort,
+              ...(Option.isSome(settings.smtpUser)
+                ? { user: Option.getOrThrow(settings.smtpUser) }
+                : {}),
+              ...(Option.isSome(settings.smtpPassword)
+                ? { password: Option.getOrThrow(settings.smtpPassword) }
+                : {}),
+              tls: {
+                mode: settings.smtpTls,
+                rejectUnauthorized: settings.smtpTlsRejectUnauthorized,
+              },
+              allowPlaintext: settings.smtpAllowPlaintext,
+            };
+            const invalid = validateSmtpOptions(options);
+            return invalid === undefined
+              ? Effect.succeed(makeSmtpDriver(options))
+              : Effect.fail(
+                  new MailValidationError({
+                    field: "MAIL_SMTP_TLS",
+                    reason: `"none" would send credentials and messages to ${host} in cleartext; set MAIL_SMTP_ALLOW_PLAINTEXT=true to accept that for a non-loopback relay`,
+                  }),
+                );
+          },
         });
       case "resend":
         return yield* Option.match(settings.resendApiKey, {
