@@ -161,7 +161,14 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
         15_000,
       );
       expect(executed.size).toBe(12);
-      expect(await run(harness.scheduler.depth)).toBe(0);
+      // The last completion writes land just after the last handler returned.
+      let depth = await run(harness.scheduler.depth);
+      const deadline = Date.now() + 5_000;
+      while (depth > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        depth = await run(harness.scheduler.depth);
+      }
+      expect(depth).toBe(0);
       await harness.stopWorker();
       await Effect.runPromise(Fiber.await(workerA));
       await Effect.runPromise(Fiber.await(workerB));
@@ -274,8 +281,9 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
 
       let dead: ReadonlyArray<{ job_name: string; attempts: number }> = [];
       // Advance the fake clock in the wait loop so retry backoffs come due.
+      // Wait for both outcomes: the dead letter, and the flaky job's retry.
       const deadline = Date.now() + 15_000;
-      while (dead.length < 1 && Date.now() < deadline) {
+      while ((dead.length < 1 || attempts < 3) && Date.now() < deadline) {
         harness.clock.value = new Date(harness.clock.value.getTime() + 2_000);
         dead = await harness.deadLetters();
         await new Promise((resolve) => setTimeout(resolve, 30));
@@ -378,13 +386,17 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
   test("graceful drain: shutdown waits for in-flight jobs", async () => {
     const harness = await make();
     try {
+      let started = false;
       let finished = false;
       await run(
         harness.scheduler.register({
           name: "test.ping",
           payloadSchema: pingPayload,
           handle: () =>
-            Effect.sleep("400 millis").pipe(
+            Effect.sync(() => {
+              started = true;
+            }).pipe(
+              Effect.zipRight(Effect.sleep("400 millis")),
               Effect.zipRight(
                 Effect.sync(() => {
                   finished = true;
@@ -395,11 +407,11 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
       );
       const worker = await harness.startWorker({ pollMillis: 10 });
       await run(harness.scheduler.schedule(testJob, { message: "slow" }));
+      // Gate on the handler having started, not on a fixed wait for the claim.
       await waitFor(
-        () => false,
+        () => started,
         () => undefined,
-        100,
-      ); // let the claim land
+      );
       const triggeredAt = Date.now();
       await harness.stopWorker();
       const exit = await Effect.runPromise(Fiber.await(worker));
