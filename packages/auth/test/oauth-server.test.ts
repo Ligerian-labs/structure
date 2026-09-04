@@ -545,3 +545,123 @@ describe("end-session", () => {
     expect(stale).toBeInstanceOf(InvalidAuthToken);
   });
 });
+
+describe("access-token verification", () => {
+  const b64url = (value: string): string => Buffer.from(value, "utf8").toString("base64url");
+  const fromB64url = (value: string): string => Buffer.from(value, "base64url").toString("utf8");
+
+  const issueFor = async (
+    server: AuthorizationServer,
+    userId: string,
+  ): Promise<{ accessToken: string; clientId: string }> => {
+    const minted = await run(
+      server.registerClient(
+        "tenant-a",
+        {
+          clientType: "public",
+          redirectUris: ["https://agent.example.com/callback"],
+          scopes: ["data:read", "data:write"],
+        },
+        { kind: "signed-in", userId },
+      ),
+    );
+    const { verifier, challenge } = await pkce();
+    await run(
+      server.grantConsent({
+        tenantId: "tenant-a",
+        userId,
+        clientId: minted.record.clientId,
+        scope: ["data:read"],
+      }),
+    );
+    const decision = await run(
+      server.authorize(
+        {
+          tenantId: "tenant-a",
+          clientId: minted.record.clientId,
+          redirectUri: "https://agent.example.com/callback",
+          scope: ["data:read"],
+          codeChallenge: challenge,
+          codeChallengeMethod: "S256",
+        },
+        userId,
+      ),
+    );
+    if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+    const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+    const tokens = await run(
+      server.exchangeCode({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        code: Redacted.make(code),
+        codeVerifier: verifier,
+        redirectUri: "https://agent.example.com/callback",
+      }),
+    );
+    return { accessToken: tokens.accessToken, clientId: minted.record.clientId };
+  };
+
+  test("a token whose payload was rewritten under a garbage signature is refused", async () => {
+    const { server } = await buildServer({ signedIn: true });
+    const { accessToken } = await issueFor(server, "user-attacker");
+    const genuine = await run(server.verifyAccessToken("tenant-a", Redacted.make(accessToken)));
+    expect(genuine.sub).toBe("user-attacker");
+    expect(genuine.scope).toBe("data:read");
+
+    const [header, payload] = accessToken.split(".");
+    const claims = JSON.parse(fromB64url(payload ?? "")) as Record<string, unknown>;
+    const forged = `${header}.${b64url(
+      JSON.stringify({ ...claims, sub: "user-victim", scope: "data:read data:write admin" }),
+    )}.${b64url("not-a-signature")}`;
+    expect(await flip(server.verifyAccessToken("tenant-a", Redacted.make(forged)))).toBeInstanceOf(
+      InvalidAuthToken,
+    );
+
+    // The same payload with the signature segment removed or emptied.
+    expect(
+      await flip(server.verifyAccessToken("tenant-a", Redacted.make(`${header}.${payload}`))),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(
+      await flip(server.verifyAccessToken("tenant-a", Redacted.make(`${header}.${payload}.`))),
+    ).toBeInstanceOf(InvalidAuthToken);
+  });
+
+  test("a payload re-signed under a foreign key carrying the server's kid is refused", async () => {
+    const { server, keys } = await buildServer({ signedIn: true });
+    const { accessToken } = await issueFor(server, "user-attacker");
+    const [, payload] = accessToken.split(".");
+    const claims = JSON.parse(fromB64url(payload ?? "")) as Record<string, unknown>;
+    const foreign = await run(generateSigningKey());
+    const forgedHeader = b64url(
+      JSON.stringify({ alg: "RS256", typ: "JWT", kid: keys.current.kid }),
+    );
+    const forgedPayload = b64url(JSON.stringify({ ...claims, sub: "user-victim" }));
+    const signature = await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      foreign.privateKey,
+      new TextEncoder().encode(`${forgedHeader}.${forgedPayload}`),
+    );
+    const forged = `${forgedHeader}.${forgedPayload}.${Buffer.from(signature).toString("base64url")}`;
+    expect(await flip(server.verifyAccessToken("tenant-a", Redacted.make(forged)))).toBeInstanceOf(
+      InvalidAuthToken,
+    );
+  });
+
+  test("a token whose header claims alg none is refused", async () => {
+    const { server, keys } = await buildServer({ signedIn: true });
+    const { accessToken } = await issueFor(server, "user-attacker");
+    const [, payload, signature] = accessToken.split(".");
+    const noneHeader = b64url(JSON.stringify({ alg: "none", typ: "JWT", kid: keys.current.kid }));
+    expect(
+      await flip(server.verifyAccessToken("tenant-a", Redacted.make(`${noneHeader}.${payload}.`))),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(
+      await flip(
+        server.verifyAccessToken(
+          "tenant-a",
+          Redacted.make(`${noneHeader}.${payload}.${signature}`),
+        ),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+  });
+});

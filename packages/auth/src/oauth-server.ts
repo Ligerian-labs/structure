@@ -1,5 +1,5 @@
 import { Effect, Redacted } from "effect";
-import { encodeBase64Url, randomToken, sha256 } from "./crypto.js";
+import { decodeBase64Url, encodeBase64Url, randomToken, sha256 } from "./crypto.js";
 import {
   AuthDependencyError,
   type AuthStoreError,
@@ -66,6 +66,11 @@ export interface OAuthSigningKey {
   readonly privateKey: CryptoKey;
   /** Public JWK exactly as published in the JWKS. */
   readonly publicJwk: Record<string, unknown>;
+  /**
+   * The verifying half. Optional: when absent (a key restored from storage
+   * as private key + JWK) it is imported from `publicJwk` on first use.
+   */
+  readonly publicKey?: CryptoKey;
 }
 
 export interface OAuthSigningKeys {
@@ -95,7 +100,12 @@ export const generateSigningKey = (): Effect.Effect<OAuthSigningKey, AuthDepende
       void dp;
       void dq;
       void qi;
-      return { kid: randomToken(8), privateKey: pair.privateKey, publicJwk };
+      return {
+        kid: randomToken(8),
+        privateKey: pair.privateKey,
+        publicJwk,
+        publicKey: pair.publicKey,
+      };
     },
     catch: (cause) =>
       new AuthDependencyError({ dependency: "rsa", operation: "generate-signing-key", cause }),
@@ -447,25 +457,76 @@ const signJwt = (
     catch: (cause) => new AuthDependencyError({ dependency: "rsa", operation: "sign-jwt", cause }),
   });
 
+const decodeJwtSegment = (part: string | undefined): unknown =>
+  JSON.parse(
+    new TextDecoder().decode(
+      Uint8Array.from(
+        atob(
+          (part ?? "")
+            .replaceAll("-", "+")
+            .replaceAll("_", "/")
+            .padEnd(4 * Math.ceil((part ?? "").length / 4), "="),
+        ),
+        (character) => character.charCodeAt(0),
+      ),
+    ),
+  ) as unknown;
+
+/**
+ * Decodes header and claims WITHOUT verifying the signature. Only for
+ * record lookups by `jti` (revocation, introspection), where the record,
+ * never the claims, is the source of truth. `verifyAccessToken` never
+ * reads a claim before the signature has verified.
+ */
 const decodeJwtParts = (token: string): { readonly header: unknown; readonly claims: unknown } => {
   const parts = token.split(".");
   if (parts.length !== 3) throw new Error("shape");
-  const decode = (part: string | undefined): unknown =>
-    JSON.parse(
-      new TextDecoder().decode(
-        Uint8Array.from(
-          atob(
-            (part ?? "")
-              .replaceAll("-", "+")
-              .replaceAll("_", "/")
-              .padEnd(4 * Math.ceil((part ?? "").length / 4), "="),
-          ),
-          (character) => character.charCodeAt(0),
-        ),
-      ),
-    ) as unknown;
-  return { header: decode(parts[0]), claims: decode(parts[1]) };
+  return { header: decodeJwtSegment(parts[0]), claims: decodeJwtSegment(parts[1]) };
 };
+
+const RS256 = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" } as const;
+
+/** The verifying key of a signing key, imported from its JWK once and cached. */
+const verificationKeys = new WeakMap<OAuthSigningKey, Promise<CryptoKey>>();
+const verificationKey = (key: OAuthSigningKey): Promise<CryptoKey> => {
+  const cached = verificationKeys.get(key);
+  if (cached !== undefined) return cached;
+  const imported =
+    key.publicKey !== undefined
+      ? Promise.resolve(key.publicKey)
+      : crypto.subtle.importKey(
+          "jwk",
+          { ...key.publicJwk, alg: "RS256", key_ops: ["verify"], ext: true },
+          RS256,
+          false,
+          ["verify"],
+        );
+  verificationKeys.set(key, imported);
+  return imported;
+};
+
+/**
+ * Verifies a compact JWS under `key` (RS256 only): true when the signature
+ * segment is a valid signature over `header.payload`, false for anything
+ * else (a malformed segment, an empty signature, a foreign key).
+ */
+const verifyJwsSignature = (
+  key: OAuthSigningKey,
+  signingInput: string,
+  signatureSegment: string,
+): Promise<boolean> =>
+  Promise.resolve()
+    .then(async () => {
+      const signature = decodeBase64Url(signatureSegment);
+      if (signature.length === 0) return false;
+      return crypto.subtle.verify(
+        RS256.name,
+        await verificationKey(key),
+        signature as unknown as ArrayBuffer,
+        new TextEncoder().encode(signingInput),
+      );
+    })
+    .catch(() => false);
 
 export const makeAuthorizationServer = (
   options: AuthorizationServerOptions,
@@ -832,49 +893,57 @@ export const makeAuthorizationServer = (
     }),
     verifyAccessToken: (tenantId, token) =>
       Effect.gen(function* () {
-        let decoded: ReturnType<typeof decodeJwtParts> | undefined;
+        const invalid = () => new InvalidAuthToken({ purpose: "oauth-access-token" });
+        const parts = Redacted.value(token).split(".");
+        if (parts.length !== 3) return yield* invalid();
+        const [headerSegment = "", claimsSegment = "", signatureSegment = ""] = parts;
+        let header: unknown;
         try {
-          decoded = decodeJwtParts(Redacted.value(token));
+          header = decodeJwtSegment(headerSegment);
         } catch {
-          decoded = undefined;
+          return yield* invalid();
         }
-        if (
-          decoded === undefined ||
-          typeof decoded.header !== "object" ||
-          decoded.header === null
-        ) {
-          return yield* new InvalidAuthToken({ purpose: "oauth-access-token" });
-        }
-        const kid = (decoded.header as Record<string, unknown>).kid;
+        if (typeof header !== "object" || header === null) return yield* invalid();
+        const { alg, kid } = header as Record<string, unknown>;
+        // Only the algorithm this server signs with; `none` and every other
+        // value are refused before any key is consulted.
+        if (alg !== "RS256" || typeof kid !== "string") return yield* invalid();
         const key =
           kid === options.signingKeys.current.kid
             ? options.signingKeys.current
             : kid === options.signingKeys.previous?.kid
               ? options.signingKeys.previous
               : undefined;
-        if (key === undefined) {
-          return yield* new InvalidAuthToken({ purpose: "oauth-access-token" });
+        if (key === undefined) return yield* invalid();
+        // Signature first: no claim is read before it verifies under the
+        // key the header names.
+        const signed = yield* Effect.promise(() =>
+          verifyJwsSignature(key, `${headerSegment}.${claimsSegment}`, signatureSegment),
+        );
+        if (!signed) return yield* invalid();
+        let decodedClaims: unknown;
+        try {
+          decodedClaims = decodeJwtSegment(claimsSegment);
+        } catch {
+          return yield* invalid();
+        }
+        if (typeof decodedClaims !== "object" || decodedClaims === null) {
+          return yield* invalid();
         }
         // Rotation keeps outstanding tokens valid: records are consulted
         // (and revocation honored) regardless of which key signed the JWT.
-        const claims = decoded.claims as Record<string, unknown>;
+        const claims = decodedClaims as Record<string, unknown>;
         const tokenId = claims.jti;
         if (typeof tokenId !== "string" || typeof claims.exp !== "number") {
-          return yield* new InvalidAuthToken({ purpose: "oauth-access-token" });
+          return yield* invalid();
         }
-        if (claims.exp * 1_000 <= now().getTime()) {
-          return yield* new InvalidAuthToken({ purpose: "oauth-access-token" });
-        }
-        if (claims.tid !== tenantId) {
-          return yield* new InvalidAuthToken({ purpose: "oauth-access-token" });
-        }
+        if (claims.exp * 1_000 <= now().getTime()) return yield* invalid();
+        if (claims.tid !== tenantId) return yield* invalid();
         const record = yield* Effect.orElseSucceed(
           options.store.findTokenById(tenantId, tokenId),
           () => undefined,
         );
-        if (record === undefined || record.revokedAt !== undefined) {
-          return yield* new InvalidAuthToken({ purpose: "oauth-access-token" });
-        }
+        if (record === undefined || record.revokedAt !== undefined) return yield* invalid();
         return {
           iss: String(claims.iss ?? ""),
           sub: String(claims.sub ?? ""),
