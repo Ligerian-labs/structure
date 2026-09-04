@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Redacted } from "effect";
 import { sha256 } from "../src/crypto.js";
+import { AuthDependencyError, AuthValidationError } from "../src/errors.js";
 import { makeSecondFactorSealer } from "../src/sealing.js";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
@@ -128,5 +129,30 @@ describe("recovery-code comparison width", () => {
     expect(
       await run(sealer.matchRecoveryCode("abcde-fghij", variant(Buffer.alloc(0)), sha256)),
     ).toBe(false);
+  });
+});
+
+describe("malformed sealed values", () => {
+  test("fail on the typed error channel, never by throwing", async () => {
+    const sealer = makeSecondFactorSealer(secret);
+    for (const malformed of [
+      "v1:",
+      "v1::",
+      "v1:AAAA",
+      "v1:AAAA:BBBB:CCCC",
+      "v1:!!!:!!!",
+      "v1:a b:c d",
+    ]) {
+      const error = await run(Effect.flip(sealer.open(malformed)));
+      expect(error).toBeInstanceOf(AuthValidationError);
+      expect(error.classification).toBe("permanent");
+      expect(await run(sealer.matchRecoveryCode("abcde-fghij", malformed, sha256))).toBe(false);
+    }
+    // A well-formed value under the wrong key is a dependency failure, not a validation one.
+    const other = makeSecondFactorSealer(
+      Redacted.make("another-instance-secret-of-thirty-two-chars"),
+    );
+    const sealed = await run(sealer.seal("JBSWY3DPEHPK3PXP"));
+    expect(await run(Effect.flip(other.open(sealed)))).toBeInstanceOf(AuthDependencyError);
   });
 });
