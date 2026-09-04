@@ -60,7 +60,7 @@ await Effect.runPromise(run(migrations).pipe(Effect.provide(PgClient.layer({ url
 
 `migration(id, options?)` returns `{ id, name: "create_<prefix>schema", up }` where `up` is an `Effect<void, SqlError, SqlClient>`, the same shape as a `Migration` from `@structure-ai/migrations`. The package does not depend on `@structure-ai/migrations`; the value is assignable structurally (a type-level test in `test/pg.test.ts` keeps it that way).
 
-**Schema upgrades are their own migrations.** The base statements behind `migration` are frozen, so the checksum an install recorded for it never drifts. Additive columns since then live in `upgradeStatements` / `upgradeMigration(id, options?)` (named `upgrade_<prefix>schema_v2`: `oauth2_tokens.family_id` for refresh-token families, `totp.last_used_step` for one-time TOTP codes). Append it to the set right after the base migration; an existing install applies it as one more pending migration, a fresh install runs both in order.
+**Schema upgrades are their own migrations.** The base statements behind `migration` are frozen, so the checksum an install recorded for it never drifts. Additive columns since then live in `upgradeStatements` / `upgradeMigration(id, options?)` (named `upgrade_<prefix>schema_v2`: `oauth2_tokens.family_id` and `rotated_at` for refresh-token families, `totp.last_used_step` for one-time TOTP codes). Append it to the set right after the base migration; an existing install applies it as one more pending migration, a fresh install runs both in order.
 
 **All-in-one over a Bun `SQL` handle** (apps without a migration set, and tests):
 

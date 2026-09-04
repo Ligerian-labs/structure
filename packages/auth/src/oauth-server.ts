@@ -145,6 +145,13 @@ export interface OAuthTokenRecord {
   readonly familyId?: string;
   readonly expiresAt: Date;
   readonly revokedAt?: Date;
+  /**
+   * Refresh tokens only: when this token was rotated away by a successful
+   * refresh. A later presentation of such a token is the reuse signal; a
+   * token revoked any other way (RFC 7009, family revocation) is merely
+   * refused.
+   */
+  readonly rotatedAt?: Date;
   readonly createdAt: Date;
 }
 
@@ -203,7 +210,13 @@ export interface OAuthServerStore {
     tokenId: string,
     now: Date,
   ) => Effect.Effect<void, AuthStoreError>;
-  /** Revokes every live token of a family (access and refresh alike). */
+  /** Marks a refresh token rotated away: revoked at `now` and flagged as such. */
+  readonly rotateToken: (
+    tenantId: TenantId,
+    tokenId: string,
+    now: Date,
+  ) => Effect.Effect<void, AuthStoreError>;
+  /** Revokes every live token of a family (access and refresh alike); already revoked ones keep their time. */
   readonly revokeFamily: (
     tenantId: TenantId,
     familyId: string,
@@ -277,6 +290,12 @@ export const inMemoryOAuthServerStore = (): OAuthServerStore & {
         const current = tokens.get(key);
         if (current !== undefined) tokens.set(key, { ...current, revokedAt: now });
       }),
+    rotateToken: (tenantId, tokenId, now) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, tokenId);
+        const current = tokens.get(key);
+        if (current !== undefined) tokens.set(key, { ...current, revokedAt: now, rotatedAt: now });
+      }),
     revokeFamily: (tenantId, familyId, now) =>
       Effect.sync(() => {
         for (const [key, token] of tokens) {
@@ -336,7 +355,7 @@ export interface AuthorizationServerOptions {
   readonly codeTtlMillis?: number;
   /** Bounded grace for end-session hints. Default 5 minutes. */
   readonly endSessionHintTtlMillis?: number;
-  /** Receives `oauth-refresh-reuse` when a rotated-away refresh token is presented. */
+  /** Receives `oauth-refresh-reuse` when a rotated-away refresh token is presented again. */
   readonly audit?: AuthAuditSink;
   readonly primitives?: Partial<{
     readonly now: () => Date;
@@ -820,20 +839,24 @@ export const makeAuthorizationServer = (
         }
         const familyId = record.familyId ?? record.tokenId;
         if (record.revokedAt !== undefined) {
-          // Reuse of a rotated-away refresh token is the one signal the
-          // protocol gives that it leaked: whoever holds the descendants,
-          // thief or victim, loses them all, and the event is audited.
-          yield* options.store.revokeFamily(input.tenantId, familyId, now());
-          yield* audit.record({
-            tenantId: input.tenantId,
-            action: "oauth-refresh-reuse",
-            outcome: "succeeded",
-            ...(record.userId === undefined ? {} : { userId: record.userId }),
-          });
+          if (record.rotatedAt !== undefined) {
+            // Reuse of a rotated-away refresh token is the one signal the
+            // protocol gives that it leaked: whoever holds the descendants,
+            // thief or victim, loses them all, and the event is audited.
+            yield* options.store.revokeFamily(input.tenantId, familyId, now());
+            yield* audit.record({
+              tenantId: input.tenantId,
+              action: "oauth-refresh-reuse",
+              outcome: "succeeded",
+              ...(record.userId === undefined ? {} : { userId: record.userId }),
+            });
+          }
+          // Revoked any other way (the client asked, or its family died):
+          // refused, but not a theft signal.
           return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
         }
         // Rotation: the old refresh token dies, a fresh pair joins its family.
-        yield* options.store.revokeToken(input.tenantId, record.tokenId, now());
+        yield* options.store.rotateToken(input.tenantId, record.tokenId, now());
         return yield* issueTokens(
           input.tenantId,
           tenant.baseUrl.toString(),
