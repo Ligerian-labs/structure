@@ -83,9 +83,9 @@ Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message
 | `MAIL_SMTP_ALLOW_PLAINTEXT` | boolean | no | `false` | |
 | `MAIL_SMTP_TLS_REJECT_UNAUTHORIZED` | boolean | no | `true` | |
 | `MAIL_RESEND_API_KEY` | secret | when driver=resend | — | yes |
-| `MAIL_RESEND_BASE_URL` | url | no | — | |
+| `MAIL_RESEND_BASE_URL` | url (https, or http to loopback) | no | provider host | |
 | `MAIL_BREVO_API_KEY` | secret | when driver=brevo | — | yes |
-| `MAIL_BREVO_BASE_URL` | url | no | — | |
+| `MAIL_BREVO_BASE_URL` | url (https, or http to loopback) | no | provider host | |
 
 ## Errors
 

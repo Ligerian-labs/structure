@@ -263,6 +263,42 @@ describe("mailer settings", () => {
     expect(settings.smtpTlsRejectUnauthorized).toBe(true);
   });
 
+  test("provider base URLs must be https unless loopback: a plaintext host is refused at composition", async () => {
+    for (const [driver, key, url] of [
+      ["brevo", "MAIL_BREVO_API_KEY", "MAIL_BREVO_BASE_URL"],
+      ["resend", "MAIL_RESEND_API_KEY", "MAIL_RESEND_BASE_URL"],
+    ] as const) {
+      const plaintext = await run(
+        load(mailerSettings, {
+          overrides: {
+            MAIL_DRIVER: driver,
+            [key]: "secret-key",
+            [url]: "http://attacker.example.net",
+          },
+        }),
+      );
+      const error = await run(Effect.flip(driverFromSettings(plaintext)));
+      expect(error._tag).toBe("MailValidationError");
+      if (error._tag === "MailValidationError") expect(error.field).toBe(url);
+      const secure = await run(
+        load(mailerSettings, {
+          overrides: {
+            MAIL_DRIVER: driver,
+            [key]: "secret-key",
+            [url]: "https://proxy.example.com",
+          },
+        }),
+      );
+      expect((await run(driverFromSettings(secure))).name).toBe(driver);
+      const loopback = await run(
+        load(mailerSettings, {
+          overrides: { MAIL_DRIVER: driver, [key]: "secret-key", [url]: "http://localhost:9999" },
+        }),
+      );
+      expect((await run(driverFromSettings(loopback))).name).toBe(driver);
+    }
+  });
+
 test("layerFromSettings resolves a capture driver with a schema-valid sender by default", async () => {
     const settings = await run(load(mailerSettings, { overrides: {} }));
     const service = await run(Effect.provide(Mailer, layerFromSettings(settings)));

@@ -4,7 +4,7 @@ import type { EmailDriver } from "./driver.js";
 import { makeBrevoDriver } from "./drivers/brevo.js";
 import { makeCaptureDriver } from "./drivers/capture.js";
 import { makeResendDriver } from "./drivers/resend.js";
-import { makeSmtpDriver, validateSmtpOptions } from "./drivers/smtp.js";
+import { isLoopbackHost, makeSmtpDriver, validateSmtpOptions } from "./drivers/smtp.js";
 import { MailValidationError } from "./errors.js";
 import { Mailer, type MailerOptions, makeMailer } from "./mailer.js";
 import {
@@ -64,7 +64,9 @@ export const mailerSettings = Settings.struct({
     }),
   ),
   resendBaseUrl: Settings.optional(
-    Settings.url("MAIL_RESEND_BASE_URL", { description: "Resend API base URL override" }),
+    Settings.url("MAIL_RESEND_BASE_URL", {
+      description: "Resend API base URL override (https, or http to a loopback stub)",
+    }),
   ),
   brevoApiKey: Settings.optional(
     Settings.secret("MAIL_BREVO_API_KEY", {
@@ -72,7 +74,9 @@ export const mailerSettings = Settings.struct({
     }),
   ),
   brevoBaseUrl: Settings.optional(
-    Settings.url("MAIL_BREVO_BASE_URL", { description: "Brevo API base URL override" }),
+    Settings.url("MAIL_BREVO_BASE_URL", {
+      description: "Brevo API base URL override (https, or http to a loopback stub)",
+    }),
   ),
 });
 
@@ -112,6 +116,29 @@ const parseFrom = (value: string): Effect.Effect<EmailAddressInput, MailValidati
   }
 
   return Schema.decodeUnknown(EmailAddress)(candidate).pipe(Effect.mapError(invalidFrom));
+};
+
+/**
+ * A provider base URL carries the API key and every message to whatever it
+ * names: it must be https, except http to a loopback host (a local stub).
+ */
+const providerBaseUrl = (
+  setting: string,
+  value: Option.Option<URL>,
+): Effect.Effect<{ readonly baseUrl?: string }, MailValidationError> => {
+  if (Option.isNone(value)) return Effect.succeed({});
+  const url = value.value;
+  const secure =
+    url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname));
+  return secure
+    ? Effect.succeed({ baseUrl: url.toString().replace(/\/$/u, "") })
+    : Effect.fail(
+        new MailValidationError({
+          field: setting,
+          reason:
+            "must be an https URL (http is accepted for a loopback host only): the API key and every message are sent to it",
+        }),
+      );
 };
 
 /**
@@ -160,26 +187,16 @@ export const driverFromSettings = (
         return yield* Option.match(settings.resendApiKey, {
           onNone: () => Effect.fail(missing("MAIL_RESEND_API_KEY")),
           onSome: (apiKey) =>
-            Effect.succeed(
-              makeResendDriver({
-                apiKey,
-                ...(Option.isSome(settings.resendBaseUrl)
-                  ? { baseUrl: Option.getOrThrow(settings.resendBaseUrl).toString() }
-                  : {}),
-              }),
+            Effect.map(providerBaseUrl("MAIL_RESEND_BASE_URL", settings.resendBaseUrl), (base) =>
+              makeResendDriver({ apiKey, ...base }),
             ),
         });
       case "brevo":
         return yield* Option.match(settings.brevoApiKey, {
           onNone: () => Effect.fail(missing("MAIL_BREVO_API_KEY")),
           onSome: (apiKey) =>
-            Effect.succeed(
-              makeBrevoDriver({
-                apiKey,
-                ...(Option.isSome(settings.brevoBaseUrl)
-                  ? { baseUrl: Option.getOrThrow(settings.brevoBaseUrl).toString() }
-                  : {}),
-              }),
+            Effect.map(providerBaseUrl("MAIL_BREVO_BASE_URL", settings.brevoBaseUrl), (base) =>
+              makeBrevoDriver({ apiKey, ...base }),
             ),
         });
     }
