@@ -136,6 +136,7 @@ export {
   type IdentityProvisionRequest,
   type MakeAuthOptions,
   makeAuth,
+  type PasskeyRegistrationMetadata,
   type RegisterPasswordInput,
 } from "./service.js";
 export {

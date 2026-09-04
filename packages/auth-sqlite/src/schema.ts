@@ -158,12 +158,24 @@ export const migrate = (
             algorithm TEXT NOT NULL CHECK (algorithm IN ('ES256', 'RS256', 'Ed25519')),
             counter INTEGER NOT NULL CHECK (counter >= 0),
             transports TEXT NOT NULL,
+            label TEXT,
+            aaguid TEXT,
             created_at TEXT NOT NULL,
             PRIMARY KEY (tenant_id, credential_id),
             FOREIGN KEY (tenant_id, user_id)
               REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
           )
         `;
+        const passkeyColumns = await tx<{ readonly name: string }[]>`
+          SELECT name FROM pragma_table_info(${tables.passkeys})
+        `;
+        const passkeyColumnNames = new Set(passkeyColumns.map((column) => column.name));
+        if (!passkeyColumnNames.has("label")) {
+          await tx`ALTER TABLE ${tx(tables.passkeys)} ADD COLUMN label TEXT`;
+        }
+        if (!passkeyColumnNames.has("aaguid")) {
+          await tx`ALTER TABLE ${tx(tables.passkeys)} ADD COLUMN aaguid TEXT`;
+        }
         await tx`
           CREATE INDEX IF NOT EXISTS ${tx(`${tables.sessions}_user_idx`)}
           ON ${tx(tables.sessions)} (tenant_id, user_id)

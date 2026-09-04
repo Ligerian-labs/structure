@@ -103,6 +103,10 @@ export interface PasskeyRecord {
   readonly algorithm: PasskeyAlgorithm;
   readonly counter: number;
   readonly transports: ReadonlyArray<string>;
+  /** User-facing name supplied by the credential owner. */
+  readonly label?: string;
+  /** Authenticator Attestation GUID, when the authenticator discloses one. */
+  readonly aaguid?: string;
   readonly createdAt: Date;
 }
 

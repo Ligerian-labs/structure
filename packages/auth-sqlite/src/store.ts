@@ -94,6 +94,8 @@ interface PasskeyRow {
   readonly algorithm: PasskeyAlgorithm;
   readonly counter: number;
   readonly transports: string;
+  readonly label: string | null;
+  readonly aaguid: string | null;
   readonly created_at: DateValue;
 }
 
@@ -206,6 +208,8 @@ const decodePasskey = (row: PasskeyRow): PasskeyRecord => ({
   algorithm: row.algorithm,
   counter: Number(row.counter),
   transports: decodeTransports(row.transports),
+  ...(row.label === null ? {} : { label: row.label }),
+  ...(row.aaguid === null ? {} : { aaguid: row.aaguid }),
   createdAt: date(row.created_at),
 });
 
@@ -495,18 +499,18 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
         await sql`
           INSERT INTO ${sql(tables.passkeys)}
             (tenant_id, user_id, credential_id, public_key, algorithm, counter, transports,
-             created_at)
+             label, aaguid, created_at)
           VALUES
             (${record.tenantId}, ${record.userId}, ${record.credentialId}, ${record.publicKey},
              ${record.algorithm}, ${record.counter}, ${JSON.stringify(record.transports)},
-             ${record.createdAt.toISOString()})
+             ${record.label ?? null}, ${record.aaguid ?? null}, ${record.createdAt.toISOString()})
         `;
       }).pipe(Effect.asVoid),
     findPasskey: (tenantId, credentialId) =>
       read("find-passkey", async () => {
         const rows = await sql<PasskeyRow[]>`
           SELECT tenant_id, user_id, credential_id, public_key, algorithm, counter, transports,
-                 created_at
+                 label, aaguid, created_at
           FROM ${sql(tables.passkeys)}
           WHERE tenant_id = ${tenantId} AND credential_id = ${credentialId}
         `;
@@ -516,12 +520,33 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
       read("list-passkeys", async () => {
         const rows = await sql<PasskeyRow[]>`
           SELECT tenant_id, user_id, credential_id, public_key, algorithm, counter, transports,
-                 created_at
+                 label, aaguid, created_at
           FROM ${sql(tables.passkeys)}
           WHERE tenant_id = ${tenantId} AND user_id = ${userId}
           ORDER BY created_at, credential_id
         `;
         return rows.map(decodePasskey);
+      }),
+    renamePasskey: (tenantId, userId, credentialId, label) =>
+      read("rename-passkey", async () => {
+        const rows = await sql<{ readonly credential_id: string }[]>`
+          UPDATE ${sql(tables.passkeys)}
+          SET label = ${label ?? null}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+            AND credential_id = ${credentialId}
+          RETURNING credential_id
+        `;
+        return rows.length > 0;
+      }),
+    removePasskey: (tenantId, userId, credentialId) =>
+      read("remove-passkey", async () => {
+        const rows = await sql<{ readonly credential_id: string }[]>`
+          DELETE FROM ${sql(tables.passkeys)}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+            AND credential_id = ${credentialId}
+          RETURNING credential_id
+        `;
+        return rows.length > 0;
       }),
     updatePasskeyCounter: (tenantId, credentialId, expectedCounter, counter) =>
       read("update-passkey-counter", async () => {

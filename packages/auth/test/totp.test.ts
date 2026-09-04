@@ -12,6 +12,7 @@ import {
   makeAuth,
   makeTotp,
   RateLimitExceeded,
+  SecondFactorRequired,
   type TenantAuthConfig,
   TOTP_STEP_SECONDS,
   type TotpService,
@@ -187,6 +188,87 @@ describe("totp verification and session elevation", () => {
       ),
     );
     expect(await guard(fresh.token)).toBe("allow");
+  });
+
+  test("pending sessions cannot mutate passwords, passkeys, or OAuth identities", async () => {
+    const { harness, session } = await signedInUser("sensitive@example.com");
+    const { enrollment } = await enroll(harness, session.token);
+    const pending = await run(
+      harness.auth.signInPassword(
+        "tenant-a",
+        "sensitive@example.com",
+        "correct horse battery staple",
+      ),
+    );
+    await run(
+      harness.memory.store.addOAuthIdentity({
+        tenantId: "tenant-a",
+        userId: pending.user.id,
+        provider: "github",
+        subject: "github-user",
+        createdAt: harness.now(),
+      }),
+    );
+    await run(
+      harness.memory.store.addPasskey({
+        tenantId: "tenant-a",
+        userId: pending.user.id,
+        credentialId: "credential-1",
+        publicKey: "public-key",
+        algorithm: "ES256",
+        counter: 0,
+        transports: [],
+        createdAt: harness.now(),
+      }),
+    );
+
+    expect(
+      await fail(harness.auth.beginPasskeyRegistration("tenant-a", pending.token)),
+    ).toBeInstanceOf(SecondFactorRequired);
+    expect(
+      await fail(
+        harness.auth.finishPasskeyRegistration("tenant-a", pending.token, {
+          credentialId: "not-reached",
+          response: { clientDataJSON: "", attestationObject: "" },
+        }),
+      ),
+    ).toBeInstanceOf(SecondFactorRequired);
+    expect(
+      await fail(
+        harness.auth.changePassword(
+          "tenant-a",
+          pending.token,
+          "correct horse battery staple",
+          "changed password value",
+        ),
+      ),
+    ).toBeInstanceOf(SecondFactorRequired);
+    expect(
+      await fail(harness.auth.unlinkOAuthIdentity("tenant-a", pending.token, "github")),
+    ).toBeInstanceOf(SecondFactorRequired);
+    expect(
+      await fail(
+        harness.auth.renamePasskey("tenant-a", pending.token, "credential-1", "Security key"),
+      ),
+    ).toBeInstanceOf(SecondFactorRequired);
+    expect(
+      await fail(harness.auth.removePasskey("tenant-a", pending.token, "credential-1")),
+    ).toBeInstanceOf(SecondFactorRequired);
+    expect(harness.memory.snapshot().oauthIdentities).toHaveLength(1);
+    expect(harness.memory.snapshot().passkeys).toHaveLength(1);
+
+    await run(
+      harness.totp.verify(
+        "tenant-a",
+        pending.token,
+        await run(totpCode(enrollment.secretBase32, harness.now())),
+      ),
+    );
+    await run(harness.auth.beginPasskeyRegistration("tenant-a", pending.token));
+    await run(harness.auth.unlinkOAuthIdentity("tenant-a", pending.token, "github"));
+    await run(harness.auth.removePasskey("tenant-a", pending.token, "credential-1"));
+    expect(harness.memory.snapshot().oauthIdentities).toHaveLength(0);
+    expect(harness.memory.snapshot().passkeys).toHaveLength(0);
   });
 
   test("codes from the previous step verify; older ones do not", async () => {
