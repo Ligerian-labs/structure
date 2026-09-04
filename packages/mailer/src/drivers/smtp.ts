@@ -480,8 +480,10 @@ export const stuffDots = (message: string): string =>
 /**
  * Validates the transport-security combination of a set of options: a
  * cleartext session (`tls.mode: "none"` or `startTls: false`) towards a
- * non-loopback relay needs `allowPlaintext`. Returns the error instead of
- * throwing so settings loaders can surface it as a typed failure.
+ * non-loopback relay needs `allowPlaintext`. Returns the error as a value:
+ * `driverFromSettings` surfaces it through the typed error channel at
+ * composition, and a direct caller checks it the same way at boot. Nothing
+ * here ever throws.
  */
 export const validateSmtpOptions = (options: SmtpOptions): MailValidationError | undefined =>
   tlsModeOf(options) === "none" && !plaintextAllowed(options)
@@ -496,15 +498,15 @@ export const validateSmtpOptions = (options: SmtpOptions): MailValidationError |
  * STARTTLS (required by default: a relay that does not offer it is refused
  * before AUTH, `smtp-tls-required`), implicit TLS on request, AUTH
  * PLAIN/LOGIN, one connection per message. A loopback relay may be spoken
- * to in the clear; any other needs an explicit `allowPlaintext`, checked
- * here at construction so a misconfiguration fails at boot (it throws the
- * `MailValidationError` that {@link validateSmtpOptions} reports).
+ * to in the clear; any other needs an explicit `allowPlaintext`. The
+ * constructor is total: validate the options with
+ * {@link validateSmtpOptions} at boot (as `driverFromSettings` does through
+ * its typed error channel); a driver built from a refused combination never
+ * throws, it refuses every send before AUTH with `smtp-tls-required`.
  * 5yz replies are permanent rejections; 4yz replies, timeouts, and
  * connection/TLS failures are transient (the mailer retries those).
  */
 export const makeSmtpDriver = (options: SmtpOptions): EmailDriver => {
-  const invalid = validateSmtpOptions(options);
-  if (invalid !== undefined) throw invalid;
   return {
     name: "smtp",
     send: (message) =>
