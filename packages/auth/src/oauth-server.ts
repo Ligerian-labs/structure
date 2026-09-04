@@ -221,12 +221,15 @@ export interface OAuthServerStore {
     tokenId: string,
     now: Date,
   ) => Effect.Effect<boolean, AuthStoreError>;
-  /** Revokes every live token of a family (access and refresh alike); already revoked ones keep their time. */
+  /**
+   * Revokes every live token of a family (access and refresh alike) and
+   * answers how many it revoked; already revoked ones keep their time.
+   */
   readonly revokeFamily: (
     tenantId: TenantId,
     familyId: string,
     now: Date,
-  ) => Effect.Effect<void, AuthStoreError>;
+  ) => Effect.Effect<number, AuthStoreError>;
   readonly putEndSessionHint: (record: EndSessionHintRecord) => Effect.Effect<void, AuthStoreError>;
   readonly consumeEndSessionHint: (
     tenantId: TenantId,
@@ -305,6 +308,7 @@ export const inMemoryOAuthServerStore = (): OAuthServerStore & {
       }),
     revokeFamily: (tenantId, familyId, now) =>
       Effect.sync(() => {
+        let revoked = 0;
         for (const [key, token] of tokens) {
           if (
             token.tenantId === tenantId &&
@@ -312,8 +316,10 @@ export const inMemoryOAuthServerStore = (): OAuthServerStore & {
             token.revokedAt === undefined
           ) {
             tokens.set(key, { ...token, revokedAt: now });
+            revoked += 1;
           }
         }
+        return revoked;
       }),
     putEndSessionHint: (record) =>
       Effect.sync(() => {
@@ -848,14 +854,18 @@ export const makeAuthorizationServer = (
         const reuse = Effect.gen(function* () {
           // Reuse of a rotated-away refresh token is the one signal the
           // protocol gives that it leaked: whoever holds the descendants,
-          // thief or victim, loses them all, and the event is audited.
-          yield* options.store.revokeFamily(input.tenantId, familyId, now());
-          yield* audit.record({
-            tenantId: input.tenantId,
-            action: "oauth-refresh-reuse",
-            outcome: "succeeded",
-            ...(record.userId === undefined ? {} : { userId: record.userId }),
-          });
+          // thief or victim, loses them all, and the event is audited, once:
+          // a replay of a token whose family is already dead revokes nothing
+          // and raises nothing more.
+          const revoked = yield* options.store.revokeFamily(input.tenantId, familyId, now());
+          if (revoked > 0) {
+            yield* audit.record({
+              tenantId: input.tenantId,
+              action: "oauth-refresh-reuse",
+              outcome: "succeeded",
+              ...(record.userId === undefined ? {} : { userId: record.userId }),
+            });
+          }
         });
         if (record.revokedAt !== undefined) {
           if (record.rotatedAt !== undefined) yield* reuse;
@@ -884,8 +894,8 @@ export const makeAuthorizationServer = (
           // this presenter's fresh pair with it; rotated away by the other
           // one means this presentation is the reuse, and is audited.
           const current = yield* options.store.findTokenById(input.tenantId, record.tokenId);
-          yield* options.store.revokeFamily(input.tenantId, familyId, now());
-          if (current?.rotatedAt !== undefined) {
+          const revoked = yield* options.store.revokeFamily(input.tenantId, familyId, now());
+          if (current?.rotatedAt !== undefined && revoked > 0) {
             yield* audit.record({
               tenantId: input.tenantId,
               action: "oauth-refresh-reuse",

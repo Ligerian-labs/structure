@@ -609,14 +609,15 @@ export const registerOAuthServerScenarios = (
       await run(member("fam-a-r0", "family-a", "refresh"));
       await run(store.revokeToken("tenant-a", "fam-a-r0", at));
       expect((await run(remake.findTokenById("tenant-a", "fam-a-a2")))?.familyId).toBe("family-a");
-      await run(store.revokeFamily("tenant-a", "family-a", later));
+      expect(await run(store.revokeFamily("tenant-a", "family-a", later))).toBe(3);
+      expect(await run(store.revokeFamily("tenant-a", "family-a", later))).toBe(0);
       for (const tokenId of ["fam-a-r1", "fam-a-a2", "fam-a-r2"]) {
         expect((await run(remake.findTokenById("tenant-a", tokenId)))?.revokedAt).toEqual(later);
       }
       // A member revoked earlier keeps its own time: the forensic record survives.
       expect((await run(remake.findTokenById("tenant-a", "fam-a-r0")))?.revokedAt).toEqual(at);
       expect((await run(remake.findTokenById("tenant-a", "fam-b-r1")))?.revokedAt).toBeUndefined();
-      await run(store.revokeFamily("tenant-b", "family-b", later));
+      expect(await run(store.revokeFamily("tenant-b", "family-b", later))).toBe(0);
       expect((await run(remake.findTokenById("tenant-a", "fam-b-r1")))?.revokedAt).toBeUndefined();
 
       await run(

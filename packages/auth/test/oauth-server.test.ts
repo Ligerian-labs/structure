@@ -1149,3 +1149,85 @@ describe("concurrent refresh of one token", () => {
     expect(real.snapshot().tokens.every((token) => token.revokedAt !== undefined)).toBe(true);
   });
 });
+
+describe("reuse detection is idempotent", () => {
+  test("replaying one dead token fifty times audits the reuse once and revokes nothing more", async () => {
+    const events: Array<string> = [];
+    const store = inMemoryOAuthServerStore();
+    const key = await run(generateSigningKey());
+    const server = makeAuthorizationServer({
+      store,
+      resolveTenant: (tenantId) =>
+        Effect.succeed({ baseUrl: new URL(`https://${tenantId}.example.com`) }),
+      signingKeys: { current: key },
+      registration: { signedIn: true },
+      primitives: { now: () => clock.value },
+      audit: { record: (event) => Effect.sync(() => void events.push(event.action)) },
+    });
+    const minted = await run(
+      server.registerClient(
+        "tenant-a",
+        {
+          clientType: "public",
+          redirectUris: ["https://agent.example.com/callback"],
+          scopes: ["mcp:tools"],
+        },
+        { kind: "signed-in", userId: "user-1" },
+      ),
+    );
+    const { verifier, challenge } = await pkce();
+    await run(
+      server.grantConsent({
+        tenantId: "tenant-a",
+        userId: "user-1",
+        clientId: minted.record.clientId,
+        scope: ["mcp:tools"],
+      }),
+    );
+    const decision = await run(
+      server.authorize(
+        {
+          tenantId: "tenant-a",
+          clientId: minted.record.clientId,
+          redirectUri: "https://agent.example.com/callback",
+          scope: ["mcp:tools"],
+          codeChallenge: challenge,
+          codeChallengeMethod: "S256",
+        },
+        "user-1",
+      ),
+    );
+    if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+    const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+    const first = await run(
+      server.exchangeCode({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        code: Redacted.make(code),
+        codeVerifier: verifier,
+        redirectUri: "https://agent.example.com/callback",
+      }),
+    );
+    const replay = () =>
+      flip(
+        server.refresh({
+          tenantId: "tenant-a",
+          clientId: minted.record.clientId,
+          refreshToken: Redacted.make(first.refreshToken ?? ""),
+        }),
+      );
+    await run(
+      server.refresh({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        refreshToken: Redacted.make(first.refreshToken ?? ""),
+      }),
+    );
+    for (let index = 0; index < 50; index++) {
+      expect(await replay()).toBeInstanceOf(InvalidAuthToken);
+    }
+    expect(events).toEqual(["oauth-refresh-reuse"]);
+    // The store answers how much a family revocation actually did.
+    expect(await run(store.revokeFamily("tenant-a", "no-such-family", clock.value))).toBe(0);
+  });
+});
