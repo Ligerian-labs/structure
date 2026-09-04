@@ -635,7 +635,10 @@ export const makeAuthorizationServer = (
     scope: ReadonlyArray<OAuthServerScope>,
     withRefresh: boolean,
     familyId: string,
-  ): Effect.Effect<IssuedTokens, AuthDependencyError | AuthStoreError> =>
+  ): Effect.Effect<
+    IssuedTokens & { readonly refreshTokenId?: string },
+    AuthDependencyError | AuthStoreError
+  > =>
     Effect.gen(function* () {
       const issuedAt = now();
       const accessTokenId = randomTokenImpl(12);
@@ -663,12 +666,14 @@ export const makeAuthorizationServer = (
         createdAt: issuedAt,
       });
       let refreshToken: string | undefined;
+      let refreshTokenId: string | undefined;
       if (withRefresh) {
         refreshToken = randomTokenImpl(32);
+        refreshTokenId = randomTokenImpl(12);
         const refreshHash = yield* hashToken(refreshToken);
         yield* options.store.putToken({
           tenantId,
-          tokenId: randomTokenImpl(12),
+          tokenId: refreshTokenId,
           kind: "refresh",
           clientId: client.clientId,
           ...(userId === undefined ? {} : { userId }),
@@ -682,11 +687,21 @@ export const makeAuthorizationServer = (
       return {
         accessToken,
         ...(refreshToken === undefined ? {} : { refreshToken }),
+        ...(refreshTokenId === undefined ? {} : { refreshTokenId }),
         tokenType: "Bearer" as const,
         expiresIn: Math.floor(accessTokenTtl / 1_000),
         scope: [...scope],
       };
     });
+
+  /** The public shape of an issued pair: the store-side id stays inside. */
+  const publicTokens = (
+    issued: IssuedTokens & { readonly refreshTokenId?: string },
+  ): IssuedTokens => {
+    const { refreshTokenId, ...tokens } = issued;
+    void refreshTokenId;
+    return tokens;
+  };
 
   return {
     registerClient: (tenantId, input, context) =>
@@ -822,14 +837,16 @@ export const makeAuthorizationServer = (
           return yield* new InvalidCredentials({ reason: "pkce" });
         }
         // Every grant starts a token family of its own.
-        return yield* issueTokens(
-          input.tenantId,
-          tenant.baseUrl.toString(),
-          client,
-          record.userId,
-          record.scope,
-          true,
-          randomTokenImpl(12),
+        return publicTokens(
+          yield* issueTokens(
+            input.tenantId,
+            tenant.baseUrl.toString(),
+            client,
+            record.userId,
+            record.scope,
+            true,
+            randomTokenImpl(12),
+          ),
         );
       }),
     refresh: (input) =>
@@ -905,7 +922,18 @@ export const makeAuthorizationServer = (
           }
           return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
         }
-        return issued;
+        // The rotation landed, but a loser's sweep may already have taken
+        // the fresh pair with the family. Never answer with dead tokens: the
+        // client sees the refusal now and re-authorizes, instead of failing
+        // on its first use of a token that looked good.
+        const fresh =
+          issued.refreshTokenId === undefined
+            ? undefined
+            : yield* options.store.findTokenById(input.tenantId, issued.refreshTokenId);
+        if (fresh === undefined || fresh.revokedAt !== undefined) {
+          return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
+        }
+        return publicTokens(issued);
       }),
     revoke: (input) =>
       Effect.gen(function* () {
