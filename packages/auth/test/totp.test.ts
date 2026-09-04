@@ -22,7 +22,7 @@ import {
   totpCode,
 } from "../src/index.js";
 
-const INSTANCE_SECRET = Redacted.make("instance-secret-for-tests");
+const INSTANCE_SECRET = Redacted.make("instance-secret-for-tests-0123456789abcdef");
 
 const tenantConfig: TenantAuthConfig = {
   baseUrl: new URL("https://accounts.example.com"),
@@ -421,7 +421,7 @@ describe("second factor at rest", () => {
       auth: harness.auth,
       resolveTenant: () => Effect.succeed(tenantConfig),
       rateLimiter: allowAllRateLimiter,
-      secret: Redacted.make("another-instance"),
+      secret: Redacted.make("another-instance-secret-0123456789abcdef"),
       primitives: { now: harness.now },
     });
     const pending = await run(
@@ -561,5 +561,38 @@ describe("legacy enrollments used only with recovery codes", () => {
     );
     const code = await run(totpCode(secret, harness.now()));
     expect((await run(harness.totp.verify("tenant-a", another.token, code))).elevated).toBe(true);
+  });
+});
+
+describe("the sealing secret at construction", () => {
+  test("an empty or short instance secret refuses makeTotp at boot, not at first use", async () => {
+    const memory = inMemoryAuthStore();
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: allowAllRateLimiter,
+    });
+    const build = (secret: string) =>
+      makeTotp({
+        store: memory.store,
+        auth,
+        resolveTenant: () => Effect.succeed(tenantConfig),
+        rateLimiter: allowAllRateLimiter,
+        secret: Redacted.make(secret),
+      });
+    expect(() => build("")).toThrow(AuthValidationError);
+    expect(() => build("short")).toThrow(AuthValidationError);
+    expect(() => build("x".repeat(31))).toThrow(AuthValidationError);
+    expect(build("x".repeat(32))).toBeDefined();
+    // The message names the field, never the value.
+    let message = "";
+    try {
+      build("short");
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("secret");
+    expect(message).not.toContain("short");
   });
 });
