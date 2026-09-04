@@ -68,6 +68,16 @@ const inlineAllowlist = (value: Option.Option<string>): ReadonlyArray<string> =>
 };
 
 /**
+ * The endpoint string handed to the S3 driver for a `STORAGE_S3_ENDPOINT`
+ * value: the URL's origin (scheme, host, port), never its `toString()`,
+ * which always ends with a slash and would sign every request for a
+ * `//bucket/...` path. A path, query or fragment on the configured URL is
+ * not carried over: the driver is path-style and appends `/<bucket>/<key>`
+ * to the origin itself.
+ */
+export const s3Endpoint = (url: URL): string => url.origin;
+
+/**
  * Builds the driver a `storageSettings` value selects, validating the
  * combination (local needs a data dir; s3 needs bucket/region/credentials)
  * — misconfiguration fails with a typed error at composition.
@@ -103,7 +113,7 @@ export const storageFromSettings = (
                     accessKeyId: Option.getOrThrow(settings.s3AccessKeyId),
                     secretAccessKey: Option.getOrThrow(settings.s3SecretAccessKey),
                     ...(Option.isSome(settings.s3Endpoint)
-                      ? { endpoint: Option.getOrThrow(settings.s3Endpoint).toString() }
+                      ? { endpoint: s3Endpoint(Option.getOrThrow(settings.s3Endpoint)) }
                       : {}),
                     policy,
                   }),

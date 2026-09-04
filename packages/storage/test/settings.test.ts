@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { load } from "@structure-ai/config";
 import { Effect, Redacted } from "effect";
 import { makeS3Storage, objectKey, storageFromSettings, storageSettings } from "../src/index.js";
+import { s3Endpoint } from "../src/settings.js";
 import { sha256Hex, signRequest } from "../src/sigv4.js";
 
 const endpoint = process.env.STORAGE_TEST_S3_ENDPOINT;
@@ -9,6 +10,25 @@ const accessKeyId = process.env.STORAGE_TEST_S3_ACCESS_KEY_ID ?? "minioadmin";
 const secretAccessKey = process.env.STORAGE_TEST_S3_SECRET_ACCESS_KEY ?? "minioadmin";
 const region = process.env.STORAGE_TEST_S3_REGION ?? "us-east-1";
 const bucket = process.env.STORAGE_TEST_S3_BUCKET ?? "structure-storage-settings";
+
+describe("storage settings: the endpoint handed to the S3 driver", () => {
+  test.each([
+    ["http://minio:9000", "http://minio:9000"],
+    ["http://minio:9000/", "http://minio:9000"],
+    ["http://minio:9000///", "http://minio:9000"],
+    ["HTTP://MinIO:9000/", "http://minio:9000"],
+    ["https://s3.eu-west-1.amazonaws.com/", "https://s3.eu-west-1.amazonaws.com"],
+    ["http://127.0.0.1:9270/", "http://127.0.0.1:9270"],
+  ])("%s is passed to the driver as %s", (configured, expected) => {
+    expect(s3Endpoint(new URL(configured))).toBe(expected);
+    expect(s3Endpoint(new URL(configured)).endsWith("/")).toBe(false);
+  });
+
+  test("a path, query or fragment on the configured URL is not carried into the endpoint", () => {
+    expect(s3Endpoint(new URL("http://gateway:8080/s3/"))).toBe("http://gateway:8080");
+    expect(s3Endpoint(new URL("http://minio:9000/?x=1#frag"))).toBe("http://minio:9000");
+  });
+});
 
 /**
  * The settings path against a real S3-compatible store (MinIO in CI-less

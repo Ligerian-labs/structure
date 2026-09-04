@@ -68,3 +68,5 @@ Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_t
 | `STORAGE_S3_ACCESS_KEY_ID` | string | driver=s3 | — | |
 | `STORAGE_S3_SECRET_ACCESS_KEY` | secret | driver=s3 | — | yes |
 | `STORAGE_INLINE_CONTENT_TYPES` | string (csv) | no | — | |
+
+`STORAGE_S3_ENDPOINT` names the store's origin (`http://minio:9000`, with or without a trailing slash): the path-style driver appends `/<bucket>/<key>` itself, so only the scheme, host and port of the URL are used and a doubled slash never reaches the signature.
