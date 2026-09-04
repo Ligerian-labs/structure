@@ -450,6 +450,7 @@ export const makeAuthHandler = (
             tenantId,
             yield* requiredString(body, "email"),
             yield* requiredString(body, "password"),
+            caller,
           );
           return jsonResponse(
             200,

@@ -124,10 +124,16 @@ export interface AuthService {
     tenantId: TenantId,
     token: Redacted.Redacted<string>,
   ) => Effect.Effect<AuthUser, AuthServiceError>;
+  /**
+   * Walled on the email and, when given, the caller's subject together, so
+   * one caller's failures never spend another caller's budget for that
+   * email; with a limiter that can `peek`, failures alone are charged.
+   */
   readonly signInPassword: (
     tenantId: TenantId,
     email: string,
     password: string,
+    caller?: AuthCaller,
   ) => Effect.Effect<AuthSession, AuthServiceError>;
   readonly requestPasswordReset: (
     tenantId: TenantId,
@@ -434,6 +440,25 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
       .hashToken(key)
       .pipe(Effect.flatMap((keyHash) => rateLimiter.check({ tenantId, action, keyHash })));
 
+  /**
+   * Consume-on-failure when the limiter can peek: `before` refuses an
+   * exhausted bucket without charging, `onFailure` charges one attempt.
+   * With a limiter that cannot peek, `before` charges on arrival and
+   * `onFailure` is a no-op, exactly the previous behaviour.
+   */
+  const failureWall = (tenantId: TenantId, action: AuthAction, key: string) => {
+    const peek = rateLimiter.peek;
+    return {
+      before:
+        peek === undefined
+          ? limit(tenantId, action, key)
+          : primitives
+              .hashToken(key)
+              .pipe(Effect.flatMap((keyHash) => peek({ tenantId, action, keyHash }))),
+      onFailure: peek === undefined ? Effect.void : limit(tenantId, action, key),
+    };
+  };
+
   const recordAudit = (
     tenantId: TenantId,
     action: Parameters<AuthAuditSink["record"]>[0]["action"],
@@ -601,23 +626,30 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         yield* recordAudit(tenantId, "email-verify", "succeeded", { userId: user.id });
         return user;
       }),
-    signInPassword: (tenantId, inputEmail, password) =>
+    signInPassword: (tenantId, inputEmail, password, caller) =>
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
         const email = yield* normalizeEmail(inputEmail);
-        yield* limit(tenantId, "password-sign-in", email);
+        const wall = failureWall(
+          tenantId,
+          "password-sign-in",
+          caller === undefined ? email : `${email}\u0000${caller.subject}`,
+        );
+        yield* wall.before;
+        const refused = (reason: string) =>
+          wall.onFailure.pipe(Effect.flatMap(() => new InvalidCredentials({ reason })));
         if (password.length === 0 || password.length > (config.password?.maxLength ?? 256)) {
-          return yield* new InvalidCredentials({ reason: "password" });
+          return yield* refused("password");
         }
         const credential = yield* options.store.findPassword(tenantId, email);
         if (credential === undefined) {
           yield* hasher.hash("structure-auth-dummy-password");
-          return yield* new InvalidCredentials({ reason: "password" });
+          return yield* refused("password");
         }
         const matches = yield* hasher.verify(password, credential.passwordHash);
-        if (!matches) return yield* new InvalidCredentials({ reason: "password" });
+        if (!matches) return yield* refused("password");
         const user = yield* options.store.findUserById(tenantId, credential.userId);
-        if (user === undefined) return yield* new InvalidCredentials({ reason: "password-user" });
+        if (user === undefined) return yield* refused("password-user");
         if (!user.emailVerified) return yield* new EmailNotVerified({ userId: user.id });
         const session = yield* createSession(tenantId, user, config);
         yield* recordAudit(tenantId, "password-sign-in", "succeeded", { userId: user.id });
