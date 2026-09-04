@@ -218,6 +218,36 @@ describe("S3 storage driver (against a loopback stub)", () => {
     expect(requests.indexOf("DELETE ?uploadId=u2")).toBe(requests.length - 1);
   });
 
+  test("a stalled XML reply body fails within the request deadline instead of hanging", async () => {
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      if (url.searchParams.get("list-type") === "2") {
+        // Headers arrive; the body never does.
+        return new Response(
+          new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }),
+          {
+            status: 200,
+            headers: { "content-type": "application/xml" },
+          },
+        );
+      }
+      return new Response("", { status: 200 });
+    };
+    const storage = makeS3Storage({
+      bucket: "b",
+      region: "us-east-1",
+      accessKeyId: "k",
+      secretAccessKey: Redacted.make("s"),
+      endpoint: "http://s3.local",
+      timeoutMillis: 300,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const started = Date.now();
+    const error = await Effect.runPromise(Effect.flip(storage.list("")));
+    expect(error._tag).toBe("StorageUnavailable");
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
   test("maps a 403 from the provider to a permanent rejection", async () => {
     const storage = makeS3Storage({
       bucket: "stub-bucket",
