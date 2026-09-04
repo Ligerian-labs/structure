@@ -21,6 +21,18 @@ export interface SchedulerHarness {
   }) => Promise<Fiber.RuntimeFiber<void, never>>;
   readonly stopWorker: () => Promise<void>;
   readonly deadLetters: () => Promise<ReadonlyArray<{ job_name: string; attempts: number }>>;
+  /** Raw queue rows, for lease and status assertions. */
+  readonly queueRows: () => Promise<
+    ReadonlyArray<{
+      id: string;
+      status: string;
+      attempt: number;
+      lease_owner: string | null;
+      lease_expires_at: Date | null;
+    }>
+  >;
+  /** Simulates another worker reclaiming the row: a new owner and a fresh lease. */
+  readonly reclaim: (jobId: string, owner: string, leaseMillis: number) => Promise<void>;
   readonly close: () => Promise<void>;
 }
 
@@ -261,6 +273,56 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
       expect(dead[0]?.attempts).toBe(1);
       // flaky failed once transiently, succeeded on retry; doomed failed once permanently.
       expect(attempts).toBe(3);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("a worker that lost its lease cannot complete, retry or heartbeat the row another worker owns", async () => {
+    const harness = await make();
+    try {
+      let release: () => void = () => undefined;
+      const started = new Promise<void>((resolveStarted) => {
+        const gate = new Promise<void>((resolveGate) => {
+          release = resolveGate;
+        });
+        void harness.scheduler
+          .register({
+            name: "test.ping",
+            payloadSchema: pingPayload,
+            handle: () =>
+              Effect.promise(async () => {
+                resolveStarted();
+                await gate;
+              }),
+          })
+          .pipe(Effect.runPromise);
+      });
+      const worker = await harness.startWorker({ pollMillis: 10, leaseMillis: 300 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "slow" }));
+      await started;
+      // Another worker reclaims the row (as it would after the lease expired).
+      await harness.reclaim(jobId, "worker-b", 60_000);
+      const reclaimed = (await harness.queueRows()).find((row) => row.id === jobId);
+      const leaseAfterReclaim = reclaimed?.lease_expires_at?.getTime();
+      // Long enough for the first worker's heartbeat (lease / 3) to fire several times.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const stillReclaimed = (await harness.queueRows()).find((row) => row.id === jobId);
+      expect(stillReclaimed?.lease_owner).toBe("worker-b");
+      expect(stillReclaimed?.lease_expires_at?.getTime()).toBe(leaseAfterReclaim);
+      // The first worker finishes late: its completion must not touch worker-b's row.
+      release();
+      await waitFor(
+        () => false,
+        () => undefined,
+        200,
+      );
+      const survivor = (await harness.queueRows()).find((row) => row.id === jobId);
+      expect(survivor).toBeDefined();
+      expect(survivor?.status).toBe("running");
+      expect(survivor?.lease_owner).toBe("worker-b");
       await harness.stopWorker();
       await Effect.runPromise(Fiber.await(worker));
     } finally {
