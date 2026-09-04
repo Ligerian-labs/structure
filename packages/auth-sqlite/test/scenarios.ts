@@ -548,6 +548,25 @@ export const registerOAuthServerScenarios = (
       await run(store.revokeToken("tenant-a", "token-1", later));
       const revoked = await run(store.findTokenById("tenant-a", "token-1"));
       expect(revoked?.revokedAt).toEqual(later);
+      // Revocation alone is not rotation; rotation is both.
+      expect(revoked?.rotatedAt).toBeUndefined();
+      await run(
+        store.putToken({
+          tenantId: "tenant-a",
+          tokenId: "token-2",
+          kind: "refresh",
+          clientId: "as_client-1",
+          userId: "user-1",
+          scope: ["mcp:tools"],
+          tokenHash: "token-2-hash",
+          expiresAt: later,
+          createdAt: at,
+        }),
+      );
+      await run(store.rotateToken("tenant-a", "token-2", later));
+      const rotated = await run(remake.findTokenById("tenant-a", "token-2"));
+      expect(rotated?.revokedAt).toEqual(later);
+      expect(rotated?.rotatedAt).toEqual(later);
 
       // Token families: the id round-trips, and revoking a family reaches
       // every live member (access and refresh) and nothing outside it.

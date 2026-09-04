@@ -774,3 +774,84 @@ describe("refresh-token reuse", () => {
     expect(tokens.every((token) => token.revokedAt !== undefined)).toBe(true);
   });
 });
+
+describe("refresh-token revocation versus rotation", () => {
+  test("a refresh token revoked through the revocation endpoint is refused without being a reuse signal", async () => {
+    const events: Array<string> = [];
+    const store = inMemoryOAuthServerStore();
+    const key = await run(generateSigningKey());
+    const server = makeAuthorizationServer({
+      store,
+      resolveTenant: (tenantId) =>
+        Effect.succeed({ baseUrl: new URL(`https://${tenantId}.example.com`) }),
+      signingKeys: { current: key },
+      registration: { signedIn: true },
+      primitives: { now: () => clock.value },
+      audit: { record: (event) => Effect.sync(() => void events.push(event.action)) },
+    });
+    const minted = await registerClient(server);
+    const secret = minted.clientSecret ?? Redacted.make("");
+    const { verifier, challenge } = await pkce();
+    await run(
+      server.grantConsent({
+        tenantId: "tenant-a",
+        userId: "user-1",
+        clientId: minted.record.clientId,
+        scope: ["mcp:tools"],
+      }),
+    );
+    const decision = await run(
+      server.authorize(
+        {
+          tenantId: "tenant-a",
+          clientId: minted.record.clientId,
+          redirectUri: "https://agent.example.com/callback",
+          scope: ["mcp:tools"],
+          codeChallenge: challenge,
+          codeChallengeMethod: "S256",
+        },
+        "user-1",
+      ),
+    );
+    if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+    const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+    const first = await run(
+      server.exchangeCode({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        clientSecret: secret,
+        code: Redacted.make(code),
+        codeVerifier: verifier,
+        redirectUri: "https://agent.example.com/callback",
+      }),
+    );
+    const call = { tenantId: "tenant-a", clientId: minted.record.clientId, clientSecret: secret };
+    const rotated = await run(
+      server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+    );
+    // The client signs out (RFC 7009) and a stale retry presents the same token.
+    await run(server.revoke({ ...call, token: Redacted.make(rotated.refreshToken ?? "") }));
+    expect(
+      await flip(
+        server.refresh({ ...call, refreshToken: Redacted.make(rotated.refreshToken ?? "") }),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    // Nothing else died and no theft was reported: the access token it was
+    // rotated with is still live, and the audit sink saw nothing.
+    const access = await run(
+      server.introspect({ ...call, token: Redacted.make(rotated.accessToken) }),
+    );
+    expect(access.active).toBe(true);
+    expect(events).toEqual([]);
+    // The genuine reuse signal still fires: the token rotated away earlier.
+    expect(
+      await flip(
+        server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(events).toEqual(["oauth-refresh-reuse"]);
+    expect(
+      (await run(server.introspect({ ...call, token: Redacted.make(rotated.accessToken) }))).active,
+    ).toBe(false);
+  });
+});

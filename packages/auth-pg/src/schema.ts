@@ -258,6 +258,7 @@ export const upgradeStatements = (options: AdapterOptions = {}): ReadonlyArray<s
   return [
     // Refresh-token families: reuse of a rotated-away token revokes them all.
     `ALTER TABLE ${ident(t.oauthTokens)} ADD COLUMN IF NOT EXISTS family_id TEXT`,
+    `ALTER TABLE ${ident(t.oauthTokens)} ADD COLUMN IF NOT EXISTS rotated_at TIMESTAMPTZ`,
     `CREATE INDEX IF NOT EXISTS ${ident(`${t.oauthTokens}_family_idx`)}
       ON ${ident(t.oauthTokens)} (tenant_id, family_id)`,
     // One-time TOTP codes: the last accepted time step, so a code cannot elevate twice.

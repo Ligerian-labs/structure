@@ -245,12 +245,16 @@ export const migrate = (
             family_id TEXT,
             expires_at TEXT NOT NULL,
             revoked_at TEXT,
+            rotated_at TEXT,
             created_at TEXT NOT NULL,
             PRIMARY KEY (tenant_id, token_id)
           )
         `;
         // Upgrade path for token tables created before refresh-token families existed.
         await tx`ALTER TABLE ${tx(tables.oauthTokens)} ADD COLUMN family_id TEXT`.catch(
+          () => undefined,
+        );
+        await tx`ALTER TABLE ${tx(tables.oauthTokens)} ADD COLUMN rotated_at TEXT`.catch(
           () => undefined,
         );
         await tx`

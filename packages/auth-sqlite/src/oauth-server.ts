@@ -52,6 +52,7 @@ interface TokenRow {
   readonly family_id: string | null;
   readonly expires_at: DateValue;
   readonly revoked_at: DateValue | null;
+  readonly rotated_at: DateValue | null;
   readonly created_at: DateValue;
 }
 
@@ -104,6 +105,7 @@ const decodeToken = (row: TokenRow): OAuthTokenRecord => ({
   ...(row.family_id === null ? {} : { familyId: row.family_id }),
   expiresAt: date(row.expires_at),
   ...(row.revoked_at === null ? {} : { revokedAt: date(row.revoked_at) }),
+  ...(row.rotated_at === null ? {} : { rotatedAt: date(row.rotated_at) }),
   createdAt: date(row.created_at),
 });
 
@@ -211,20 +213,20 @@ export const makeOAuthServerStore = (sql: SQL, options: AdapterOptions = {}): OA
         await sql`
           INSERT INTO ${sql(tables.oauthTokens)}
             (tenant_id, token_id, kind, client_id, user_id, scope, token_hash, family_id,
-             expires_at, revoked_at, created_at)
+             expires_at, revoked_at, rotated_at, created_at)
           VALUES
             (${record.tenantId}, ${record.tokenId}, ${record.kind}, ${record.clientId},
              ${record.userId ?? null}, ${JSON.stringify(record.scope)},
              ${record.tokenHash ?? null}, ${record.familyId ?? null},
              ${record.expiresAt.toISOString()}, ${record.revokedAt?.toISOString() ?? null},
-             ${record.createdAt.toISOString()})
+             ${record.rotatedAt?.toISOString() ?? null}, ${record.createdAt.toISOString()})
         `;
       }).pipe(Effect.asVoid),
     findTokenByHash: (tenantId, tokenHash) =>
       read("oauth-find-token-by-hash", async () => {
         const rows = await sql<TokenRow[]>`
           SELECT tenant_id, token_id, kind, client_id, user_id, scope, token_hash, family_id,
-                 expires_at, revoked_at, created_at
+                 expires_at, revoked_at, rotated_at, created_at
           FROM ${sql(tables.oauthTokens)}
           WHERE tenant_id = ${tenantId} AND token_hash = ${tokenHash}
         `;
@@ -234,7 +236,7 @@ export const makeOAuthServerStore = (sql: SQL, options: AdapterOptions = {}): OA
       read("oauth-find-token-by-id", async () => {
         const rows = await sql<TokenRow[]>`
           SELECT tenant_id, token_id, kind, client_id, user_id, scope, token_hash, family_id,
-                 expires_at, revoked_at, created_at
+                 expires_at, revoked_at, rotated_at, created_at
           FROM ${sql(tables.oauthTokens)}
           WHERE tenant_id = ${tenantId} AND token_id = ${tokenId}
         `;
@@ -245,6 +247,14 @@ export const makeOAuthServerStore = (sql: SQL, options: AdapterOptions = {}): OA
         await sql`
           UPDATE ${sql(tables.oauthTokens)}
           SET revoked_at = ${at.toISOString()}
+          WHERE tenant_id = ${tenantId} AND token_id = ${tokenId}
+        `;
+      }).pipe(Effect.asVoid),
+    rotateToken: (tenantId, tokenId, at) =>
+      read("oauth-rotate-token", async () => {
+        await sql`
+          UPDATE ${sql(tables.oauthTokens)}
+          SET revoked_at = ${at.toISOString()}, rotated_at = ${at.toISOString()}
           WHERE tenant_id = ${tenantId} AND token_id = ${tokenId}
         `;
       }).pipe(Effect.asVoid),
