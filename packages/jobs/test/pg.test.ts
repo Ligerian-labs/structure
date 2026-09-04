@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import * as SqlClient from "@effect/sql/SqlClient";
 import { PgClient } from "@effect/sql-pg";
 import { Readiness, Shutdown } from "@structure-ai/runtime";
@@ -115,5 +115,69 @@ gated("PostgreSQL scheduler (needs DATABASE_URL)", () => {
       },
     };
     return harness;
+  });
+});
+
+gated("migrate on a table created before the lease fence (needs DATABASE_URL)", () => {
+  test("adds lease_owner to an existing queue table, keeps its rows, and stays idempotent", async () => {
+    const tablePrefix = `l${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}_`;
+    const tables = tableNames({ tablePrefix });
+    const scope = Effect.runSync(Scope.make());
+    const context = await Effect.runPromise(
+      Layer.buildWithScope(PgClient.layer({ url: Redacted.make(databaseUrl as string) }), scope),
+    );
+    const sql = Context.get(context, SqlClient.SqlClient);
+    const migrateHere = migrate({ tablePrefix }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    try {
+      // The queue table exactly as release 0.0.13 created it: no lease_owner.
+      await Effect.runPromise(
+        sql`
+          CREATE TABLE ${sql(tables.queue)} (
+            id TEXT PRIMARY KEY,
+            job_name TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('queued', 'running')),
+            run_at TIMESTAMPTZ NOT NULL,
+            cron_expr TEXT,
+            cron_timezone TEXT,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 5,
+            lease_expires_at TIMESTAMPTZ,
+            last_error TEXT,
+            correlation_id TEXT,
+            causation_id TEXT,
+            created_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL
+          )
+        `.pipe(Effect.asVoid),
+      );
+      await Effect.runPromise(
+        sql`
+          INSERT INTO ${sql(tables.queue)} (id, job_name, payload, status, run_at, created_at, updated_at)
+          VALUES ('legacy-1', 'test.ping', '{}', 'queued', now(), now(), now())
+        `.pipe(Effect.asVoid),
+      );
+      await Effect.runPromise(migrateHere);
+      const columns = await Effect.runPromise(
+        sql<{ column_name: string }>`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_name = ${tables.queue} AND column_name = 'lease_owner'
+        `,
+      );
+      expect(columns).toHaveLength(1);
+      const rows = await Effect.runPromise(
+        sql<{ id: string; lease_owner: string | null }>`
+          SELECT id, lease_owner FROM ${sql(tables.queue)}
+        `,
+      );
+      expect(rows).toEqual([{ id: "legacy-1", lease_owner: null }]);
+      await Effect.runPromise(migrateHere);
+    } finally {
+      await Effect.runPromise(Effect.orDie(sql`DROP TABLE IF EXISTS ${sql(tables.queue)}`));
+      await Effect.runPromise(Effect.orDie(sql`DROP TABLE IF EXISTS ${sql(tables.deadLetters)}`));
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
   });
 });
