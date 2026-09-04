@@ -37,6 +37,14 @@ export interface AuthHandlerOptions {
     origin: string,
     request: Request,
   ) => Effect.Effect<boolean, AuthDependencyError>;
+  /**
+   * The caller's subject for the anonymous walls (`AuthCaller`): typically
+   * the client address as your trusted proxy reports it. Absent, those
+   * walls fall back to the target they name (an email, a credential id) or,
+   * for a discoverable passkey challenge, to no framework wall at all: put
+   * your own per-address wall in front of the routes in that case.
+   */
+  readonly callerSubject?: (request: Request) => string | undefined;
 }
 
 export interface AuthHandler {
@@ -406,6 +414,8 @@ export const makeAuthHandler = (
         }
       }
       const cookie = yield* auth.sessionTokenFromCookie(tenantId, request.headers.get("cookie"));
+      const subject = options.callerSubject?.(request);
+      const caller = subject === undefined ? undefined : { subject };
 
       switch (route.id) {
         case "registerPassword": {
@@ -575,13 +585,14 @@ export const makeAuthHandler = (
         case "passkeyAuthenticateOptions": {
           const body = yield* decodeBody(request, maxBodyBytes);
           const email = yield* stringField(body, "email", true);
-          return jsonResponse(200, yield* auth.beginPasskeyAuthentication(tenantId, email));
+          return jsonResponse(200, yield* auth.beginPasskeyAuthentication(tenantId, email, caller));
         }
         case "passkeyAuthenticateVerify": {
           const body = yield* decodeBody(request, maxBodyBytes);
           const session = yield* auth.finishPasskeyAuthentication(
             tenantId,
             yield* authenticationResponse(body),
+            caller,
           );
           return jsonResponse(
             200,

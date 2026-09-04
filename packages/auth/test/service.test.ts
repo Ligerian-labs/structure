@@ -244,3 +244,71 @@ describe("magic links and sessions", () => {
     );
   });
 });
+
+describe("anonymous passkey walls", () => {
+  /** Counts checks per key; refuses the 21st within the window. */
+  const countingLimiter = () => {
+    const counts = new Map<string, number>();
+    const limiter = {
+      check: (request: RateLimitRequest) =>
+        Effect.suspend(() => {
+          const key = `${request.action}:${request.keyHash}`;
+          const seen = (counts.get(key) ?? 0) + 1;
+          counts.set(key, seen);
+          return seen > 20
+            ? Effect.fail(new RateLimitExceeded({ action: request.action }))
+            : Effect.void;
+        }),
+    };
+    return { limiter, counts };
+  };
+
+  test("discoverable challenges are walled per caller, never on a shared key", async () => {
+    const memory = inMemoryAuthStore();
+    const { limiter, counts } = countingLimiter();
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: limiter,
+    });
+    for (let index = 0; index < 20; index++) {
+      await run(auth.beginPasskeyAuthentication("tenant-a", undefined, { subject: "203.0.113.7" }));
+    }
+    expect(
+      await fail(
+        auth.beginPasskeyAuthentication("tenant-a", undefined, { subject: "203.0.113.7" }),
+      ),
+    ).toBeInstanceOf(RateLimitExceeded);
+    // Another caller is untouched by the first one's budget...
+    const other = await run(
+      auth.beginPasskeyAuthentication("tenant-a", undefined, { subject: "198.51.100.9" }),
+    );
+    expect(other.challenge.length).toBeGreaterThan(0);
+    // ...and a challenge naming an email is charged on the email, as before.
+    await run(
+      auth.beginPasskeyAuthentication("tenant-a", "ada@example.com", { subject: "203.0.113.7" }),
+    );
+    const keys = [...counts.keys()].filter((key) => key.startsWith("passkey-authenticate:"));
+    expect(keys).toHaveLength(3);
+    expect(keys.some((key) => key.includes("discoverable"))).toBe(false);
+    // Nothing in the limiter's keys is a raw subject or email.
+    expect(JSON.stringify(keys)).not.toContain("203.0.113.7");
+    expect(JSON.stringify(keys)).not.toContain("ada@example.com");
+  });
+
+  test("a discoverable challenge without a caller subject charges no shared bucket", async () => {
+    const memory = inMemoryAuthStore();
+    const { limiter, counts } = countingLimiter();
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: limiter,
+    });
+    for (let index = 0; index < 25; index++) {
+      await run(auth.beginPasskeyAuthentication("tenant-a"));
+    }
+    expect([...counts.keys()].filter((key) => key.startsWith("passkey-authenticate:"))).toEqual([]);
+  });
+});

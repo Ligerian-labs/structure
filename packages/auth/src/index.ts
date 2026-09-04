@@ -123,6 +123,7 @@ export {
   type AuthAction,
   type AuthAuditEvent,
   type AuthAuditSink,
+  type AuthCaller,
   allowAllRateLimiter,
   noOpAuthAuditSink,
   type RateLimiter,

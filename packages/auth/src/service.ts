@@ -35,6 +35,7 @@ import {
 import {
   type AuthAction,
   type AuthAuditSink,
+  type AuthCaller,
   noOpAuthAuditSink,
   type RateLimiter,
 } from "./ports.js";
@@ -195,13 +196,21 @@ export interface AuthService {
     sessionToken: Redacted.Redacted<string>,
     response: PasskeyRegistrationResponse,
   ) => Effect.Effect<void, AuthServiceError>;
+  /**
+   * Walled on the email when one is given, else on the caller's subject;
+   * a discoverable challenge with neither charges no bucket at all (a
+   * shared constant key would let one caller exhaust everyone's budget).
+   */
   readonly beginPasskeyAuthentication: (
     tenantId: TenantId,
     email?: string,
+    caller?: AuthCaller,
   ) => Effect.Effect<PasskeyAuthenticationOptions, AuthServiceError>;
+  /** Walled on the caller's subject when given, else on the credential id. */
   readonly finishPasskeyAuthentication: (
     tenantId: TenantId,
     response: PasskeyAuthenticationResponse,
+    caller?: AuthCaller,
   ) => Effect.Effect<AuthSession, AuthServiceError>;
   /** Unlinks an external identity from the signed-in user (owner action). */
   readonly unlinkOAuthIdentity: (
@@ -1045,10 +1054,11 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         });
         yield* recordAudit(tenantId, "passkey-register", "succeeded", { userId: session.user.id });
       }),
-    beginPasskeyAuthentication: (tenantId, inputEmail) =>
+    beginPasskeyAuthentication: (tenantId, inputEmail, caller) =>
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
-        yield* limit(tenantId, "passkey-authenticate", inputEmail ?? "discoverable");
+        const wallKey = inputEmail ?? caller?.subject;
+        if (wallKey !== undefined) yield* limit(tenantId, "passkey-authenticate", wallKey);
         if (config.passkey === undefined) {
           return yield* new AuthValidationError({
             field: "passkey",
@@ -1104,10 +1114,10 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
           provider,
         });
       }),
-    finishPasskeyAuthentication: (tenantId, response) =>
+    finishPasskeyAuthentication: (tenantId, response, caller) =>
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
-        yield* limit(tenantId, "passkey-authenticate", response.credentialId);
+        yield* limit(tenantId, "passkey-authenticate", caller?.subject ?? response.credentialId);
         if (config.passkey === undefined) {
           return yield* new AuthValidationError({
             field: "passkey",
