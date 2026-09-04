@@ -13,6 +13,7 @@ import {
   renderSmtpMessage,
   type SmtpOptions,
   stuffDots,
+  validateSmtpOptions,
 } from "../src/index.js";
 import type { EmailMessage } from "../src/message.js";
 
@@ -424,15 +425,34 @@ describe("smtp driver: transport security", () => {
     }
   });
 
-  test("disabling STARTTLS towards a remote relay is refused at construction unless plaintext is allowed", async () => {
-    expect(() => makeSmtpDriver({ host: "relay.test", startTls: false })).toThrow(
+  test("disabling STARTTLS towards a remote relay is a typed validation failure, and never a throw", async () => {
+    expect(validateSmtpOptions({ host: "relay.test", startTls: false })).toBeInstanceOf(
       MailValidationError,
     );
-    expect(() => makeSmtpDriver({ host: "relay.test", tls: { mode: "none" } })).toThrow(
+    expect(validateSmtpOptions({ host: "relay.test", tls: { mode: "none" } })).toBeInstanceOf(
       MailValidationError,
     );
+    expect(validateSmtpOptions({ host: "relay.test" })).toBeUndefined();
+    expect(validateSmtpOptions({ host: "localhost", startTls: false })).toBeUndefined();
+    // Construction is total: a misconfigured driver is built without throwing
+    // and refuses at the first send, before anything sensitive is written.
     const plain = await startFakeSmtp();
     try {
+      const error = await run(
+        Effect.flip(
+          makeSmtpDriver({
+            host: "relay.test",
+            port: plain.port,
+            user: "mailer",
+            password: Redacted.make("hunter2"),
+            startTls: false,
+            connect: toLoopback,
+          }).send({ ...message, subject: "misconfigured" }),
+        ),
+      );
+      expect(error).toBeInstanceOf(MailRejected);
+      if (error instanceof MailRejected) expect(error.reason).toBe("smtp-tls-required");
+      expect(plain.authPlainTokens).toHaveLength(0);
       await run(
         makeSmtpDriver({
           host: "relay.test",
