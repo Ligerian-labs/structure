@@ -74,10 +74,27 @@ export interface TotpService {
     sessionToken: Redacted.Redacted<string>,
     code: string,
   ) => Effect.Effect<{ readonly elevated: true }, TotpServiceError>;
+  /**
+   * Removes the enrollment on a TOTP code or a recovery code (consumed),
+   * with the same lockout accounting as `verify`: the owner of a lost
+   * authenticator re-establishes a factor with the codes they kept.
+   */
   readonly unenroll: (
     tenantId: TenantId,
     sessionToken: Redacted.Redacted<string>,
     code: string,
+  ) => Effect.Effect<void, TotpServiceError>;
+  /**
+   * Operator break-glass for the lost-authenticator case: removes the
+   * user's enrollment (pending or confirmed) without any code, audited as
+   * `totp-reset` with the operator as `actor`. Expose it only behind the
+   * application's operator surface (a CLI, a superadmin route), never to
+   * the user. A no-op, unaudited, when there is nothing to remove.
+   */
+  readonly resetSecondFactor: (
+    tenantId: TenantId,
+    userId: string,
+    operator: { readonly actor: string },
   ) => Effect.Effect<void, TotpServiceError>;
   /** True while a confirmed enrollment leaves this session 2fa-pending. */
   readonly sessionRequiresElevation: (
@@ -260,14 +277,50 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
           return yield* lockoutError(enrollment.lockedUntil);
         }
         const step = yield* matchTotpCode(enrollment.secretBase32, code, primitives.now());
-        if (
-          step === undefined ||
-          !(yield* options.store.markTotpStepUsed(tenantId, user.id, step))
-        ) {
+        const accepted =
+          step !== undefined
+            ? yield* options.store.markTotpStepUsed(tenantId, user.id, step)
+            : isRecoveryCode(code) &&
+              (yield* options.store.consumeRecoveryCode(
+                tenantId,
+                user.id,
+                yield* primitives.hashToken(code),
+              ));
+        if (!accepted) {
+          const outcome = yield* options.store.recordTotpFailure({
+            tenantId,
+            userId: user.id,
+            threshold,
+            cooldownMillis: cooldown,
+            now: primitives.now(),
+          });
+          if (outcome.locked && outcome.lockedUntil !== undefined) {
+            yield* audit.record({
+              tenantId,
+              action: "totp-locked",
+              outcome: "succeeded",
+              userId: user.id,
+            });
+            return yield* lockoutError(outcome.lockedUntil);
+          }
           return yield* new InvalidCredentials({ reason: "totp" });
         }
         yield* options.store.removeTotp(tenantId, user.id);
         yield* recordAudit(tenantId, "totp-unenroll", user.id);
+      }),
+    resetSecondFactor: (tenantId, userId, operator) =>
+      Effect.gen(function* () {
+        yield* options.resolveTenant(tenantId);
+        const enrollment = yield* anyEnrollment(tenantId, userId);
+        if (enrollment === undefined) return;
+        yield* options.store.removeTotp(tenantId, userId);
+        yield* audit.record({
+          tenantId,
+          action: "totp-reset",
+          outcome: "succeeded",
+          userId,
+          actor: operator.actor,
+        });
       }),
     sessionRequiresElevation: (tenantId, sessionToken) =>
       Effect.gen(function* () {
