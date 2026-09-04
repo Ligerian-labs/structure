@@ -1,7 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { Settings, toLayer } from "@structure-ai/config";
 import { layerSilent } from "@structure-ai/observability";
-import { Context, Deferred, Duration, Effect, Exit, Fiber, Layer, Ref } from "effect";
+import {
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Logger,
+  LogLevel,
+  Ref,
+} from "effect";
 import { Readiness, runToCompletion, Shutdown, type ShutdownOptions } from "../src/index.js";
 
 const runReadiness = <A>(effect: Effect.Effect<A, never, Readiness>): Promise<A> =>
@@ -113,6 +124,41 @@ describe("Shutdown", () => {
       { finalizerTimeout: Duration.millis(30) },
     );
     expect(log).toEqual(["fast-2", "fast-1"]);
+  });
+
+  test("a finalizer beyond the timeout is logged at error level, by name, with its budget", async () => {
+    const records: Array<{ level: string; message: string; annotations: Record<string, unknown> }> =
+      [];
+    const recording = Logger.replace(
+      Logger.defaultLogger,
+      Logger.make(({ logLevel, message, annotations }) => {
+        records.push({
+          level: logLevel.label,
+          message: Array.isArray(message) ? String(message[0]) : String(message),
+          annotations: Object.fromEntries(annotations),
+        });
+      }),
+    );
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const shutdown = yield* Shutdown;
+        yield* shutdown.onShutdown("slow-drain", Effect.sleep(Duration.seconds(10)));
+        yield* shutdown.trigger("timeout-log-test");
+      }).pipe(
+        Effect.provide(
+          Shutdown.layer({ finalizerTimeout: Duration.millis(30) }).pipe(
+            Layer.provide(Readiness.layer),
+          ),
+        ),
+        Effect.provide(recording),
+        Logger.withMinimumLogLevel(LogLevel.Debug),
+      ),
+    );
+    const overrun = records.find((record) => record.message.includes("slow-drain"));
+    expect(overrun).toBeDefined();
+    expect(overrun?.level).toBe(LogLevel.Error.label);
+    expect(overrun?.annotations.finalizer).toBe("slow-drain");
+    expect(overrun?.annotations.finalizerTimeoutMillis).toBe(30);
   });
 
   test("a failing finalizer is skipped and the rest still run", async () => {

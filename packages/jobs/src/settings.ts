@@ -28,6 +28,12 @@ export const jobsSettings = Settings.struct({
     description: "dispatch lease duration before a running job becomes reclaimable",
     default: Duration.seconds(60),
   }),
+  drainTimeout: Settings.optional(
+    Settings.duration("JOBS_DRAIN_TIMEOUT", {
+      description:
+        "how long the shutdown drain waits for in-flight jobs before returning them to the queue (keep below the coordinator's finalizer timeout; default: until the coordinator cuts)",
+    }),
+  ),
   tablePrefix: Settings.string("JOBS_TABLE_PREFIX", {
     description: "jobs table name prefix",
     default: "jobs_",

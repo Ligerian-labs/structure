@@ -18,7 +18,13 @@ export interface SchedulerHarness {
     readonly concurrency?: number;
     readonly pollMillis?: number;
     readonly leaseMillis?: number;
+    readonly drainTimeoutMillis?: number;
   }) => Promise<Fiber.RuntimeFiber<void, never>>;
+  /** Log records emitted through the harness logger (message + annotations). */
+  readonly logRecords: () => ReadonlyArray<{
+    message: string;
+    annotations: Record<string, unknown>;
+  }>;
   readonly stopWorker: () => Promise<void>;
   readonly deadLetters: () => Promise<ReadonlyArray<{ job_name: string; attempts: number }>>;
   /** Raw queue rows, for lease and status assertions. */
@@ -396,6 +402,62 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
       expect(exit._tag === "Success" ? true : exit._tag).toBe(true);
       expect(finished).toBe(true);
       expect(drainMillis).toBeGreaterThanOrEqual(300);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("a drain that outlives its budget returns the in-flight job to the queue and names it", async () => {
+    const harness = await make();
+    try {
+      let finished = false;
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: () =>
+            Effect.sleep("3 seconds").pipe(
+              Effect.zipRight(
+                Effect.sync(() => {
+                  finished = true;
+                }),
+              ),
+            ),
+        }),
+      );
+      const worker = await harness.startWorker({ pollMillis: 10, drainTimeoutMillis: 300 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "long" }));
+      await waitFor(
+        () => false,
+        () => undefined,
+        150,
+      ); // let the claim land
+      const triggeredAt = Date.now();
+      await harness.stopWorker();
+      const drainMillis = Date.now() - triggeredAt;
+      // The drain gave up at its budget, well before the handler's 3 s.
+      expect(drainMillis).toBeLessThan(2_000);
+      expect(finished).toBe(false);
+      // The job is back in the queue, claimable at once, with its lease released.
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(row?.status).toBe("queued");
+      expect(row?.lease_owner).toBeNull();
+      expect(row?.lease_expires_at).toBeNull();
+      // And the abandonment is loud: a record naming the job.
+      const abandoned = harness
+        .logRecords()
+        .find((record) => record.message === "jobs worker abandoned drain");
+      expect(abandoned).toBeDefined();
+      expect(String(abandoned?.annotations.jobIds ?? "")).toContain(jobId);
+      await Effect.runPromise(Fiber.await(worker));
+      // The late handler completion must not touch the requeued row.
+      await waitFor(
+        () => finished,
+        () => undefined,
+        5_000,
+      );
+      const after = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(after?.status).toBe("queued");
     } finally {
       await harness.close();
     }
