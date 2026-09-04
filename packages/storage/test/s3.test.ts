@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Redacted } from "effect";
+import { Cause, Effect, Exit, Option, Redacted } from "effect";
 import {
   makeS3Storage,
   ObjectNotFound,
@@ -276,6 +276,38 @@ describe("S3 storage driver (against a loopback stub)", () => {
     await reader.read();
     await reader.cancel("client went away");
     expect(upstreamCancelled).toBe(true);
+  });
+
+  test("an unexpected throw inside a streamed put surfaces as a typed StorageUnavailable, never a defect", async () => {
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      if (url.searchParams.has("uploads")) {
+        return new Response(
+          "<InitiateMultipartUploadResult><UploadId>u3</UploadId></InitiateMultipartUploadResult>",
+          { status: 200 },
+        );
+      }
+      if (url.searchParams.has("partNumber")) throw new Error("socket hang up");
+      return new Response("", { status: 200 });
+    };
+    const key = await Effect.runPromise(objectKey("files/thrown.bin"));
+    const exit = await Effect.runPromiseExit(
+      s3WithFetch(fetchImpl, 4).put({
+        key,
+        body: streamOf(new Uint8Array(12)),
+        contentType: "application/octet-stream",
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const failure = Cause.failureOption(exit.cause);
+      expect(Option.isSome(failure)).toBe(true);
+      if (Option.isSome(failure)) {
+        expect(failure.value._tag).toBe("StorageUnavailable");
+        if (failure.value._tag === "StorageUnavailable")
+          expect(failure.value.reason).toBe("s3-stream");
+      }
+    }
   });
 
   test("maps a 403 from the provider to a permanent rejection", async () => {
