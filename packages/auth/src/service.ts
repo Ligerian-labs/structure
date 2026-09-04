@@ -103,6 +103,12 @@ export interface RegisterPasswordInput {
   readonly displayName?: string;
 }
 
+export interface BeginOAuthOptions {
+  readonly returnTo?: string;
+  /** Absolute application path compiled from the handler's OAuth callback route. */
+  readonly callbackPath?: string;
+}
+
 /** An unknown external identity asking to become an account. */
 export interface IdentityProvisionRequest {
   readonly tenantId: TenantId;
@@ -174,8 +180,14 @@ export interface AuthService {
   readonly beginOAuth: (
     tenantId: TenantId,
     provider: import("./model.js").OAuthProviderId,
-    returnTo?: string,
+    options?: string | BeginOAuthOptions,
   ) => Effect.Effect<{ readonly authorizationUrl: string }, AuthServiceError>;
+  /** Returns the exact callback URI to register with an OAuth provider. */
+  readonly authorizationServerRedirectUri: (
+    tenantId: TenantId,
+    provider: import("./model.js").OAuthProviderId,
+    callbackPath?: string,
+  ) => Effect.Effect<string, AuthServiceError>;
   readonly completeOAuth: (input: {
     readonly tenantId: TenantId;
     readonly provider: import("./model.js").OAuthProviderId;
@@ -483,9 +495,9 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         expiresAt,
       });
       const paths: Record<OneTimeTokenPurpose, string> = {
-        "email-verification": "/auth/verify-email",
-        "magic-link": "/auth/magic-link",
-        "password-reset": "/auth/reset-password",
+        "email-verification": config.links?.emailVerification ?? "/auth/verify-email",
+        "magic-link": config.links?.magicLink ?? "/auth/magic-link",
+        "password-reset": config.links?.passwordReset ?? "/auth/reset-password",
       };
       const url = new URL(paths[purpose], config.baseUrl);
       url.searchParams.set("token", raw);
@@ -527,6 +539,30 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
       const user = yield* options.store.findUserById(tenantId, record.userId);
       if (user === undefined) return yield* new InvalidCredentials({ reason: "session-user" });
       return { token, user, expiresAt: record.expiresAt };
+    });
+
+  const authorizationServerRedirectUri = (
+    config: TenantAuthConfig,
+    provider: import("./model.js").OAuthProviderId,
+    callbackPath?: string,
+  ): Effect.Effect<string, AuthValidationError> =>
+    Effect.try({
+      try: () => {
+        const path = callbackPath ?? `/auth/oauth/${encodeURIComponent(provider)}/callback`;
+        if (!path.startsWith("/") || path.startsWith("//")) {
+          throw new Error("callback path must be absolute");
+        }
+        const redirect = new URL(path, config.baseUrl);
+        if (redirect.origin !== config.baseUrl.origin) {
+          throw new Error("callback must use the tenant origin");
+        }
+        return redirect.toString();
+      },
+      catch: () =>
+        new AuthValidationError({
+          field: "oauth.callbackPath",
+          reason: "must be an absolute path on the tenant base URL origin",
+        }),
     });
 
   return {
@@ -730,14 +766,14 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
           config.session?.cookieDomain === undefined
             ? ""
             : `; Domain=${config.session.cookieDomain}`;
+        const secure = config.baseUrl.protocol === "https:" ? "; Secure" : "";
         if (session === undefined) {
-          return `${name}=; Path=${path}; HttpOnly; SameSite=${sameSite}; Secure; Max-Age=0${domain}`;
+          return `${name}=; Path=${path}; HttpOnly; SameSite=${sameSite}${secure}; Max-Age=0${domain}`;
         }
         const maxAge = Math.max(
           0,
           Math.floor((session.expiresAt.getTime() - primitives.now().getTime()) / 1_000),
         );
-        const secure = config.baseUrl.protocol === "https:" ? "; Secure" : "";
         return `${name}=${tokenValue(session.token)}; Path=${path}; HttpOnly; SameSite=${sameSite}${secure}; Max-Age=${maxAge}${domain}`;
       }),
     sessionTokenFromCookie: (tenantId, cookieHeader) =>
@@ -754,7 +790,13 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         }
         return undefined;
       }),
-    beginOAuth: (tenantId, providerId, returnTo) =>
+    authorizationServerRedirectUri: (tenantId, providerId, callbackPath) =>
+      configFor(tenantId).pipe(
+        Effect.flatMap((config) =>
+          authorizationServerRedirectUri(config, providerId, callbackPath),
+        ),
+      ),
+    beginOAuth: (tenantId, providerId, input) =>
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
         yield* limit(tenantId, "oauth-start", providerId);
@@ -775,15 +817,18 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
             reason: "must match the requested provider and contain a client ID and redacted secret",
           });
         }
-        const safeReturnTo = yield* validateReturnTo(config, returnTo);
+        const beginOptions: BeginOAuthOptions =
+          typeof input === "string" ? { returnTo: input } : (input ?? {});
+        const safeReturnTo = yield* validateReturnTo(config, beginOptions.returnTo);
         const state = primitives.randomToken(32);
         const verifier = primitives.randomToken(48);
         const challenge = yield* pkceChallenge(verifier);
         const stateHash = yield* primitives.hashToken(state);
-        const redirectUri = new URL(
-          `/auth/oauth/${encodeURIComponent(provider.id)}/callback`,
-          config.baseUrl,
-        ).toString();
+        const redirectUri = yield* authorizationServerRedirectUri(
+          config,
+          provider.id,
+          beginOptions.callbackPath,
+        );
         yield* options.store.putOAuthState({
           tenantId,
           provider: provider.id,

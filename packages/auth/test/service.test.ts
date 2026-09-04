@@ -56,6 +56,47 @@ const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
 const fail = <A, E>(effect: Effect.Effect<A, E>) => run(Effect.flip(effect));
 
 describe("password authentication", () => {
+  test("uses tenant application pages for every emailed token", async () => {
+    const memory = inMemoryAuthStore();
+    const emails: Array<AuthEmail> = [];
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () =>
+        Effect.succeed({
+          ...tenantConfig,
+          links: {
+            emailVerification: "/account/verify",
+            magicLink: "https://app.example.com/sign-in/link",
+            passwordReset: "/account/reset",
+          },
+        }),
+      emailSender: { send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid) },
+      rateLimiter: allowAllRateLimiter,
+    });
+
+    await run(
+      auth.registerPassword({
+        tenantId: "tenant-a",
+        email: "links@example.com",
+        password: "correct horse battery staple",
+      }),
+    );
+    const verification = emails[0];
+    if (verification === undefined) throw new Error("verification email was not captured");
+    await run(auth.verifyEmail("tenant-a", verification.token));
+    await run(auth.requestMagicLink("tenant-a", "links@example.com"));
+    await run(auth.requestPasswordReset("tenant-a", "links@example.com"));
+
+    expect(emails.map((email) => new URL(email.url).origin + new URL(email.url).pathname)).toEqual([
+      "https://accounts.example.com/account/verify",
+      "https://app.example.com/sign-in/link",
+      "https://accounts.example.com/account/reset",
+    ]);
+    for (const email of emails) {
+      expect(new URL(email.url).searchParams.get("token")).toBe(Redacted.value(email.token));
+    }
+  });
+
   test("keeps invalid-password failures independent of account existence", async () => {
     const { auth } = harness();
     await run(
@@ -202,6 +243,24 @@ describe("magic links and sessions", () => {
       InvalidAuthToken,
     );
     expect(memory.snapshot().users).toHaveLength(0);
+  });
+
+  test("clears localhost session cookies without Secure", async () => {
+    const memory = inMemoryAuthStore();
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () =>
+        Effect.succeed({
+          ...tenantConfig,
+          baseUrl: new URL("http://localhost:3000"),
+        }),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: allowAllRateLimiter,
+    });
+
+    const cleared = await run(auth.sessionCookie("tenant-a", undefined));
+    expect(cleared).toContain("Max-Age=0");
+    expect(cleared).not.toContain("Secure");
   });
 
   test("passes only hashed limiter keys and secret-free audit events to application ports", async () => {

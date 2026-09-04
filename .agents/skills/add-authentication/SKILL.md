@@ -16,14 +16,23 @@ import { allowAllRateLimiter, inMemoryAuthStore, makeAuth } from "@structure-ai/
 
 const auth = makeAuth({
   store: store,                          // AuthStore port (see step 3)
-  resolveTenant: (tenantId) => Effect.succeed({ baseUrl, passkey: { rpId, rpName, origins }, oauth: { google: { clientId, clientSecret } } }),
+  resolveTenant: (tenantId) => Effect.succeed({
+    baseUrl,
+    links: {
+      emailVerification: "/verify-email",
+      magicLink: "/sign-in/link",
+      passwordReset: "/reset-password",
+    },
+    passkey: { rpId, rpName, origins },
+    oauth: { google: { clientId, clientSecret } },
+  }),
   emailSender: { send: (message) => sendWithApplicationMailer(message) },
   rateLimiter: applicationRateLimiter,   // NOT allowAllRateLimiter in production
   audit: applicationAuditSink,
 });
 ```
 
-2. **Expose the routes**: `makeAuthHandler(auth, { resolveTenant })` returns `Effect<AuthHandler, InvalidAuthRoutes>` — run it with `Effect.runPromise` or compose it in your startup `Effect.gen`. Defaults to `/auth`, tenant resolved from trusted host/routing data (never a JSON body field), origins checked on mutations, `Cache-Control: no-store`. Token pages POST the token so link scanners don't consume credentials. Remap individual paths with `routes` (stable route ids) — see the `override-auth-routes` skill.
+2. **Expose the routes**: `makeAuthHandler(auth, { resolveTenant })` returns `Effect<AuthHandler, InvalidAuthRoutes>` — run it with `Effect.runPromise` or compose it in your startup `Effect.gen`. Defaults to `/auth`, tenant resolved from trusted host/routing data (never a JSON body field), origins checked on mutations, `Cache-Control: no-store`. Set `oauthCallbackRedirect` when browser callbacks should return 303 instead of JSON. Register the URI returned by `authorizationServerRedirectUri(tenantId, provider)` with each provider. Token pages configured through `TenantAuthConfig.links` POST the token so link scanners don't consume credentials. Remap individual paths with `routes` (stable route ids) — see the `override-auth-routes` skill.
 3. **Pick the store**:
    - `inMemoryAuthStore()` — tests and local dev only.
    - `@structure-ai/auth-sqlite` / `auth-pg` — durable: schema first, in the designated migration process only (`auth-pg`: `migration(id[, { tablePrefix }])` in the app's `@structure-ai/migrations` set, or `migrate(sql[, options])` over Bun `SQL`; `auth-sqlite`: `migrate(sql[, options])`), then `makeAuthStore(sql[, options])` — stores never migrate.
