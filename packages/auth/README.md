@@ -60,14 +60,14 @@ Every wall keys on a SHA-256 digest of its subject. Walls in front of a *target*
 
 | Action | Key |
 | --- | --- |
-| `password-sign-in` | the email, joined with the caller's subject when one is given |
+| `password-sign-in` | two buckets when a caller is given: the email joined with the caller's subject (a stranger cannot spend an account's budget from elsewhere) AND the caller's subject alone (a ceiling on spraying many emails from one place); the email alone otherwise |
 | `passkey-authenticate` (challenge) | the email when given, else the caller's subject; with neither, **no wall** |
 | `passkey-authenticate` (verify) | the caller's subject when given, else the credential id |
 | `oauth-start` | the caller's subject; without one, **no wall** |
 
 The service methods take the caller as a trailing optional argument (`signInPassword(tenantId, email, password, caller?)`, `beginOAuth(tenantId, provider, returnTo?, caller?)`, `beginPasskeyAuthentication(tenantId, email?, caller?)`, `finishPasskeyAuthentication(tenantId, response, caller?)`); `makeAuthHandler` derives it through `callerSubject`. Without a caller subject the two anonymous walls do not apply at all (a shared constant key would let one caller exhaust everyone's budget): put your own per-address wall in front of those routes in that case.
 
-**Consume on failure.** A `RateLimiter` may implement `peek` beside `check`. When it does, the password sign-in wall peeks before verifying and charges (`check`) only a failed verification, so naming a victim's email costs the attacker their own budget and never the victim's sign-in. Without `peek` the wall charges on arrival, as before.
+**Consume on failure.** A `RateLimiter` may implement `peek` beside `check`. When it does, the password sign-in wall peeks before verifying and charges (`check`) only a rejected sign-in (a wrong password, an unknown account, an unverified email alike), so naming a victim's email costs the caller their own budget and never the victim's sign-in. Without `peek` the wall charges on arrival, as before. The framework's caller bucket is a ceiling per caller subject; a per-address wall in front of the route (`@structure-ai/http`'s rate limiter) remains the place to bound raw request volume.
 
 ## Capabilities
 

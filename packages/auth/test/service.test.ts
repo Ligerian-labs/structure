@@ -374,10 +374,11 @@ describe("password sign-in wall", () => {
       }),
     );
     expect(session.user.email).toBe("ada@example.com");
-    // Only failures were charged: one bucket, five charges, nothing for the success.
+    // Only failures were charged: the email+caller bucket and the caller's own
+    // bucket, five charges each, nothing for the success.
     const signInKeys = [...counts.entries()].filter(([key]) => key.startsWith("password-sign-in:"));
-    expect(signInKeys).toHaveLength(1);
-    expect(signInKeys[0]?.[1]).toBe(5);
+    expect(signInKeys).toHaveLength(2);
+    expect(signInKeys.every(([, count]) => count === 5)).toBe(true);
     expect(JSON.stringify(signInKeys)).not.toContain("ada@example.com");
     expect(JSON.stringify(signInKeys)).not.toContain("203.0.113.7");
   });
@@ -463,5 +464,63 @@ describe("password sign-in wall: rejected sign-ins are charged", () => {
     const charged = [...counts.values()];
     expect(charged.length).toBeGreaterThan(0);
     expect(charged.every((count) => count === 5)).toBe(true);
+  });
+});
+
+describe("password sign-in wall: a ceiling per caller", () => {
+  test("spraying many emails from one caller exhausts that caller's own budget", async () => {
+    const counts = new Map<string, number>();
+    const keyOf = (request: RateLimitRequest) => `${request.action}:${request.keyHash}`;
+    const memory = inMemoryAuthStore();
+    const emails: Array<AuthEmail> = [];
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      emailSender: { send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid) },
+      passwordHasher: argon2id({ memoryCostKiB: 19_456, timeCost: 2 }),
+      rateLimiter: {
+        peek: (request) =>
+          (counts.get(keyOf(request)) ?? 0) >= 5
+            ? Effect.fail(new RateLimitExceeded({ action: request.action }))
+            : Effect.void,
+        check: (request) =>
+          Effect.suspend(() => {
+            const seen = (counts.get(keyOf(request)) ?? 0) + 1;
+            counts.set(keyOf(request), seen);
+            return seen > 5
+              ? Effect.fail(new RateLimitExceeded({ action: request.action }))
+              : Effect.void;
+          }),
+      },
+    });
+    await run(
+      auth.registerPassword({
+        tenantId: "tenant-a",
+        email: "ada@example.com",
+        password: "correct horse battery staple",
+      }),
+    );
+    const verification = emails.find((mail) => mail.kind === "email-verification");
+    await run(auth.verifyEmail("tenant-a", verification?.token ?? Redacted.make("")));
+    counts.clear();
+
+    const sprayer = { subject: "203.0.113.7" };
+    const outcomes: Array<string> = [];
+    for (let index = 0; index < 20; index++) {
+      const error = await fail(
+        auth.signInPassword("tenant-a", `victim-${index}@example.com`, "guess", sprayer),
+      );
+      outcomes.push(error._tag);
+    }
+    // Five distinct emails cost five failures; the sixth email is refused by the caller's ceiling.
+    expect(outcomes.slice(0, 5).every((tag) => tag === "InvalidCredentials")).toBe(true);
+    expect(outcomes.slice(5).every((tag) => tag === "RateLimitExceeded")).toBe(true);
+    // Ada, from her own address, is untouched by the sprayer's budget.
+    const session = await run(
+      auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple", {
+        subject: "198.51.100.9",
+      }),
+    );
+    expect(session.user.email).toBe("ada@example.com");
   });
 });
