@@ -647,6 +647,25 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
     }
   });
 
+  test("a concurrency or batch size of zero is floored to one, never a silent stall", async () => {
+    const harness = await make();
+    try {
+      const calls: Array<string> = [];
+      await run(harness.scheduler.register(recorderJob((payload) => calls.push(payload.message))));
+      const worker = await harness.startWorker({ pollMillis: 10, batchSize: 0, concurrency: 0 });
+      await run(harness.scheduler.schedule(testJob, { message: "floored" }));
+      await waitFor(
+        () => calls.length > 0,
+        () => undefined,
+      );
+      expect(calls).toEqual(["floored"]);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
   test("cancel removes a pending job before it fires", async () => {
     const harness = await make();
     try {
