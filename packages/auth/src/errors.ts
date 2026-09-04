@@ -130,5 +130,6 @@ export type AuthError =
   | InvalidAuthToken
   | InvalidAuthRoutes
   | InvalidCredentials
+  | SecondFactorRequired
   | RateLimitExceeded
   | UnsupportedPasskey;

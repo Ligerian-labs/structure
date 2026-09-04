@@ -14,6 +14,8 @@ export type AuthAction =
   | "oauth-start"
   | "oauth-complete"
   | "passkey-register"
+  | "passkey-rename"
+  | "passkey-remove"
   | "passkey-authenticate"
   | "apikey-verify"
   | "totp-enroll"

@@ -88,7 +88,7 @@ The service methods take the caller as a trailing optional argument (`signInPass
 | Password | Registration, mandatory email verification, sign-in/out, change, forgotten-password reset, and all-session revocation. Bun `password` performs Argon2id off the main thread (defaults: 64 MiB, 3 iterations). |
 | Magic link | Enumeration-safe request response, expiring single-use token, verified account provisioning, opaque session creation. |
 | Sessions | 256-bit opaque bearer token returned as `Redacted`; only SHA-256 digests enter storage. Expiry, individual revocation, all-user revocation, and secure cookie helpers. |
-| Passkey | Registration/authentication ceremonies; strict challenge, type, origin, RP ID hash, user-presence/user-verification, signature, and counter validation. Supports ES256, RS256, and Ed25519. |
+| Passkey | Registration/authentication ceremonies; strict challenge, type, origin, RP ID hash, user-presence/user-verification, signature, and counter validation. Supports ES256, RS256, and Ed25519, owner labels, AAGUID metadata, rename, and removal. |
 | OAuth | Authorization code + S256 PKCE + single-use state. Built-in Google, GitHub, X, and LinkedIn definitions; injected bounded HTTP client and provider resolver. |
 | Multi-tenancy | Tenant ID scopes users, emails, identities, tokens, sessions, challenges, passkeys, and provider configuration. |
 | Extension policy | Custom `AuthStore`, `EmailSender`, `RateLimiter`, `AuthAuditSink`, `AccountLinkPolicy`, `OAuthHttpClient`, `OAuthProviderResolver`, password hasher, clock/random/token primitives, and HTTP origin policy. |
@@ -115,7 +115,11 @@ const program = Effect.gen(function* () {
 
   const registration = yield* auth.beginPasskeyRegistration("acme", session.token);
   // navigator.credentials.create({ publicKey: registration }) in the browser
-  yield* auth.finishPasskeyRegistration("acme", session.token, browserResponse);
+  yield* auth.finishPasskeyRegistration("acme", session.token, browserResponse, {
+    label: "Work laptop",
+  });
+  yield* auth.renamePasskey("acme", session.token, browserResponse.credentialId, "Security key");
+  yield* auth.removePasskey("acme", session.token, browserResponse.credentialId);
 
   const oauth = yield* auth.beginOAuth("acme", "github", { returnTo: "/settings" });
   // Redirect to oauth.authorizationUrl. The callback submits state + code.
@@ -153,6 +157,8 @@ By default, a successful OAuth callback returns the existing JSON body. Set `oau
 | `passkeyRegisterVerify` | POST | `/auth/passkeys/register/verify` |
 | `passkeyAuthenticateOptions` | POST | `/auth/passkeys/authenticate/options` |
 | `passkeyAuthenticateVerify` | POST | `/auth/passkeys/authenticate/verify` |
+
+`passkeyRegisterVerify` accepts an optional top-level `label`. The service stores it with the credential and records the AAGUID from attested authenticator data when it is nonzero.
 
 ### Route overrides
 
@@ -270,6 +276,7 @@ Semantics:
 - **At rest** (`secret`, at least 32 characters, checked when `makeTotp` is built so a misconfiguration fails at boot): the TOTP secret is stored encrypted (AES-256-GCM) and recovery codes as salted keyed hashes (HMAC-SHA-256, a fresh salt per code), both under keys derived from `secret` with HKDF-SHA-256 and a purpose label, so a database read (a backup, a replica, an export) yields no second factor and no precomputed table transfers between users or instances. Stored values carry a `v1:` prefix; enrollments written before sealing existed keep verifying and are sealed on their next successful verification. Rotating `secret` invalidates every enrollment sealed under the old one: rotate it as an announced re-enrollment, not silently.
 - **Lockout**: failed attempts count per principal; at the threshold the second factor locks for the cooldown (`RateLimitExceeded` with `Retry-After`), audited as `totp-locked`. A locked factor never bypasses — verification keeps failing until the cooldown passes or the enrollment is removed through the owner flow or the operator reset.
 - **Session elevation**: `SessionRecord.elevatedAt` is absent while a confirmed enrollment keeps a session `2fa-pending`; `totp.verify` sets it.
+- **Sensitive account changes**: when `secondFactor` is configured, a pending session gets `SecondFactorRequired` from password changes, passkey registration/rename/removal, and OAuth unlinking. The built-in HTTP handler returns 401 for that error.
 - **Storage**: through the existing `AuthStore` contract (`putTotpSecret`, `confirmTotp`, `markTotpStepUsed`, `replaceTotpSecret`, `recordTotpFailure`, `consumeRecoveryCode`, `elevateSession`, ...) — in-memory here, durable in `auth-sqlite` / `auth-pg` (same scenarios). The store only ever sees sealed material.
 
 ## Generic external OIDC login (gated JIT provisioning)
@@ -378,7 +385,7 @@ Storage: `OAuthServerStore` port (clients, single-use codes, consents, tokens wi
 - `createPasswordUser` and `createOAuthUser` atomically enforce tenant-scoped user/email/identity uniqueness.
 - `consumeOneTimeToken`, `consumeOAuthState`, and `consumePasskeyChallenge` atomically remove a value before returning it, including when expired.
 - `replacePasswordAndRevokeSessions` changes the hash and removes all sessions in one transaction.
-- `addOAuthIdentity` and `addPasskey` enforce tenant-scoped credential uniqueness.
+- `addOAuthIdentity` and `addPasskey` enforce tenant-scoped credential uniqueness. `renamePasskey` and `removePasskey` also require the owning user id and report whether the credential existed. Passing `undefined` to `renamePasskey` clears the label.
 - counters may only be updated after successful signature verification.
 - `markTotpStepUsed` claims a TOTP time step atomically (false when that step or a later one was already accepted); `consumeRecoveryCode` removes exactly the presented entry by compare-and-delete; `replaceTotpSecret` rewrites only the stored secret.
 - `OAuthServerStore.revokeFamily` revokes every live token carrying a family id.
@@ -414,7 +421,7 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 
 | Export group | Purpose |
 | --- | --- |
-| `makeAuth`, `AuthService`, `MakeAuthOptions` | Main Effect workflow service. |
+| `makeAuth`, `AuthService`, `MakeAuthOptions`, `PasskeyRegistrationMetadata` | Main Effect workflow service, including optional passkey labels at registration. |
 | `makeAuthHandler`, `AuthHandlerOptions`, `AuthRouteId`, `AuthRouteViolation` | Web-standard transport adapter with configurable route paths. |
 | `AuthStore`, `inMemoryAuthStore` | Persistence port and development/test adapter. |
 | `argon2id`, `PasswordHasher` | Bun Argon2id implementation and replacement port. |

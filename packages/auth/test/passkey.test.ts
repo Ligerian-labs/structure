@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
+  type AuthAuditEvent,
   type AuthEmail,
   allowAllRateLimiter,
   decodeBase64Url,
@@ -100,6 +101,7 @@ const makeCredential = async (
   challenge: string,
   format: "none" | "packed",
   trailingAuthData: Uint8Array = new Uint8Array(),
+  aaguid: Uint8Array = new Uint8Array(16),
 ): Promise<{
   registration: PasskeyRegistrationResponse;
   privateKey: CryptoKey;
@@ -127,7 +129,7 @@ const makeCredential = async (
     rpHash,
     Uint8Array.of(0x45),
     counterBytes(0),
-    new Uint8Array(16),
+    aaguid,
     Uint8Array.of(0, credential.length),
     credential,
     cose,
@@ -304,6 +306,63 @@ describe("passkeys", () => {
     expect(
       await Effect.runPromise(Effect.flip(auth.finishPasskeyAuthentication("tenant-a", response))),
     ).toBeInstanceOf(InvalidAuthToken);
+  });
+
+  test("stores display metadata and lets the owner rename and remove a passkey", async () => {
+    const memory = inMemoryAuthStore();
+    const emails: Array<AuthEmail> = [];
+    const audit: Array<AuthAuditEvent> = [];
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(config),
+      emailSender: { send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid) },
+      rateLimiter: allowAllRateLimiter,
+      audit: { record: (event) => Effect.sync(() => audit.push(event)).pipe(Effect.asVoid) },
+    });
+    await Effect.runPromise(auth.requestMagicLink("tenant-a", "passkey@example.com"));
+    const magicLink = emails[0];
+    if (magicLink === undefined) throw new Error("magic-link email was not captured");
+    const session = await Effect.runPromise(auth.consumeMagicLink("tenant-a", magicLink.token));
+    const options = await Effect.runPromise(
+      auth.beginPasskeyRegistration("tenant-a", session.token),
+    );
+    const aaguid = Uint8Array.from([
+      0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+      0xff,
+    ]);
+    const credential = await makeCredential(options.challenge, "none", new Uint8Array(), aaguid);
+
+    await Effect.runPromise(
+      auth.finishPasskeyRegistration("tenant-a", session.token, credential.registration, {
+        label: "Work laptop",
+      }),
+    );
+    expect(memory.snapshot().passkeys[0]).toEqual(
+      expect.objectContaining({
+        label: "Work laptop",
+        aaguid: "00112233-4455-6677-8899-aabbccddeeff",
+      }),
+    );
+
+    expect(
+      await Effect.runPromise(
+        auth.renamePasskey("tenant-a", session.token, credential.credentialId, "Security key"),
+      ),
+    ).toBe(true);
+    expect(memory.snapshot().passkeys[0]?.label).toBe("Security key");
+    expect(
+      await Effect.runPromise(
+        auth.removePasskey("tenant-a", session.token, credential.credentialId),
+      ),
+    ).toBe(true);
+    expect(memory.snapshot().passkeys).toHaveLength(0);
+    expect(
+      await Effect.runPromise(
+        auth.removePasskey("tenant-a", session.token, credential.credentialId),
+      ),
+    ).toBe(false);
+    expect(audit.map((event) => event.action)).toContain("passkey-rename");
+    expect(audit.map((event) => event.action)).toContain("passkey-remove");
   });
 
   test("accepts packed self-attestation and rejects an untrusted origin", async () => {

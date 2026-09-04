@@ -10,6 +10,7 @@ import {
   InvalidAuthToken,
   InvalidCredentials,
   RateLimitExceeded,
+  SecondFactorRequired,
   UnsupportedPasskey,
 } from "./errors.js";
 import type { OAuthProviderId, TenantId } from "./model.js";
@@ -202,7 +203,11 @@ const errorResponse = (error: AuthServiceError): Response => {
         : { "retry-after": String(error.retryAfterSeconds) },
     );
   }
-  if (error instanceof InvalidCredentials || error instanceof InvalidAuthToken) {
+  if (
+    error instanceof InvalidCredentials ||
+    error instanceof InvalidAuthToken ||
+    error instanceof SecondFactorRequired
+  ) {
     return jsonResponse(401, { error: error._tag, message: error.message });
   }
   return jsonResponse(503, { error: "AuthUnavailable", message: "Authentication is unavailable" });
@@ -657,10 +662,12 @@ export const makeAuthHandler = (
         case "passkeyRegisterVerify": {
           if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
           const body = yield* decodeBody(request, maxBodyBytes);
+          const label = yield* stringField(body, "label", true);
           yield* auth.finishPasskeyRegistration(
             tenantId,
             cookie,
             yield* registrationResponse(body),
+            label === undefined ? {} : { label },
           );
           return jsonResponse(200, { registered: true });
         }
