@@ -45,11 +45,29 @@ const { handler } = await Effect.runPromise(
   makeAuthHandler(auth, {
     // Resolve tenant from trusted host/routing data, never a JSON body field.
     resolveTenant: (request) => resolveTenantFromHost(request),
+    // The caller's subject for the anonymous walls: the client address as
+    // your trusted proxy reports it (never a header the client can set).
+    callerSubject: (request) => clientAddressBehindProxy(request),
   }),
 );
 ```
 
 `allowAllRateLimiter` is exported for tests and local prototypes. Production composition must provide a durable/shared limiter appropriate to its topology.
+
+### Rate-limit walls: what they key on
+
+Every wall keys on a SHA-256 digest of its subject. Walls in front of a *target* key on that target (an email, a token, a session, a credential id). Walls in front of an *anonymous* entry point key on the **caller** (`AuthCaller`, `{ subject }`: the client address behind the trusted proxy, or any per-request subject the app derives), never on a constant shared by everyone:
+
+| Action | Key |
+| --- | --- |
+| `password-sign-in` | the email, joined with the caller's subject when one is given |
+| `passkey-authenticate` (challenge) | the email when given, else the caller's subject; with neither, **no wall** |
+| `passkey-authenticate` (verify) | the caller's subject when given, else the credential id |
+| `oauth-start` | the caller's subject; without one, **no wall** |
+
+The service methods take the caller as a trailing optional argument (`signInPassword(tenantId, email, password, caller?)`, `beginOAuth(tenantId, provider, returnTo?, caller?)`, `beginPasskeyAuthentication(tenantId, email?, caller?)`, `finishPasskeyAuthentication(tenantId, response, caller?)`); `makeAuthHandler` derives it through `callerSubject`. Without a caller subject the two anonymous walls do not apply at all (a shared constant key would let one caller exhaust everyone's budget): put your own per-address wall in front of those routes in that case.
+
+**Consume on failure.** A `RateLimiter` may implement `peek` beside `check`. When it does, the password sign-in wall peeks before verifying and charges (`check`) only a failed verification, so naming a victim's email costs the attacker their own budget and never the victim's sign-in. Without `peek` the wall charges on arrival, as before.
 
 ## Capabilities
 
@@ -207,6 +225,7 @@ const totp = makeTotp({
   auth,
   resolveTenant,
   rateLimiter,
+  secret: instanceSecret,       // Redacted; seals the second factor at rest (see below)
   lockoutThreshold: 5,          // failed attempts before lockout
   lockoutCooldownMillis: 15 * 60_000,
   audit: auditSink,
@@ -220,16 +239,22 @@ const { recoveryCodes } = yield* totp.confirmEnrollment("tenant-a", sessionToken
 yield* totp.verify("tenant-a", sessionToken, code);               // { elevated: true }
 const pending = yield* totp.sessionRequiresElevation("tenant-a", sessionToken);
 // Guard sensitive routes on that flag (or a @structure-ai/authorization
-// condition reading it); yield* totp.unenroll("tenant-a", sessionToken, code);
+// condition reading it). Unenroll with a TOTP code or a recovery code:
+yield* totp.unenroll("tenant-a", sessionToken, codeOrRecoveryCode);
+// Operator break-glass (lost authenticator AND lost recovery codes), audited:
+yield* totp.resetSecondFactor("tenant-a", userId, { actor: "ops@example.com" });
 ```
 
 Semantics:
 
 - **Secrets**: 20 random bytes, base32; codes are 6 digits, step 30s, accepted within ±1 step with constant-time comparison (fixed candidate order — timing never discloses which step matched).
-- **Recovery codes**: 10 single-use `xxxxx-xxxxx` codes, returned once as `Redacted`, stored only as SHA-256 hashes.
-- **Lockout**: failed attempts count per principal; at the threshold the second factor locks for the cooldown (`RateLimitExceeded` with `Retry-After`), audited as `totp-locked`. A locked factor never bypasses — verification keeps failing until the cooldown passes or the app's owner flow removes the enrollment.
+- **One-time codes** (RFC 6238 §5.2): the time step of an accepted code is remembered (`TotpRecord.lastUsedStep`, claimed atomically through `markTotpStepUsed`), so the same code never elevates twice — not on another session, not on `unenroll`, and the code that confirmed the enrollment is spent too. A replay counts as a failed attempt.
+- **Recovery codes**: 10 single-use `xxxxx-xxxxx` codes, returned once as `Redacted`; each elevates a session or unenrolls the factor exactly once (consumed by compare-and-delete). A recovery code is what lets the owner of a lost authenticator turn the factor off and re-enroll.
+- **Operator reset**: `resetSecondFactor(tenantId, userId, { actor })` removes an enrollment without any code, for the member who lost both the authenticator and the codes. It is audited as `totp-reset` with the operator as `actor`; expose it only behind the application's operator surface (a CLI, a superadmin route), never to the user.
+- **At rest**: the TOTP secret is stored encrypted (AES-256-GCM) and recovery codes as salted keyed hashes (HMAC-SHA-256, a fresh salt per code), both under keys derived from `secret` with HKDF-SHA-256 and a purpose label, so a database read (a backup, a replica, an export) yields no second factor and no precomputed table transfers between users or instances. Stored values carry a `v1:` prefix; enrollments written before sealing existed keep verifying and are sealed on their next successful verification. Rotating `secret` invalidates every enrollment sealed under the old one: rotate it as an announced re-enrollment, not silently.
+- **Lockout**: failed attempts count per principal; at the threshold the second factor locks for the cooldown (`RateLimitExceeded` with `Retry-After`), audited as `totp-locked`. A locked factor never bypasses — verification keeps failing until the cooldown passes or the enrollment is removed through the owner flow or the operator reset.
 - **Session elevation**: `SessionRecord.elevatedAt` is absent while a confirmed enrollment keeps a session `2fa-pending`; `totp.verify` sets it.
-- **Storage**: through the existing `AuthStore` contract (`putTotpSecret`, `confirmTotp`, `recordTotpFailure`, `consumeRecoveryCode`, `elevateSession`, ...) — in-memory here, durable in `auth-sqlite` / `auth-pg` (same scenarios).
+- **Storage**: through the existing `AuthStore` contract (`putTotpSecret`, `confirmTotp`, `markTotpStepUsed`, `replaceTotpSecret`, `recordTotpFailure`, `consumeRecoveryCode`, `elevateSession`, ...) — in-memory here, durable in `auth-sqlite` / `auth-pg` (same scenarios). The store only ever sees sealed material.
 
 ## Generic external OIDC login (gated JIT provisioning)
 
@@ -312,18 +337,23 @@ yield* as.refresh({ ... });     // rotation: the old refresh token dies on use
 yield* as.revoke({ ... });      // RFC 7009: idempotent, unknown tokens still succeed
 yield* as.introspect({ ... });  // active + scope/client/user/expiry
 as.jwks();                      // current + previous public keys
+
+// Resource side: signature first, then claims, then the record.
+const claims = yield* as.verifyAccessToken("tenant-a", bearer); // InvalidAuthToken on any doubt
 ```
 
 Hardening, carried from the template's incident history:
 
 - **`authorize` validates params before anything else**; unknown client or unregistered `redirect_uri` fails closed — never a redirect.
 - **Registration gates are options**, never code removal; both default closed.
+- **Signature before claims**: `verifyAccessToken` selects the key by the header's `kid`, refuses any `alg` but `RS256` (`none` included), verifies the RSASSA-PKCS1-v1_5 signature over the header and payload, and only then reads the claims and consults the token record. A rewritten payload, a missing or garbage signature, or a payload re-signed under a foreign key is `InvalidAuthToken`. (`OAuthSigningKey.publicKey` is optional: a key restored from storage as private key + JWK gets its verifying half imported from `publicJwk` on first use.)
 - **Scope-restricted tokens**: `verifyAccessToken` returns `{ sub, aud, scope, tid }`; compose it into a `@structure-ai/authorization` machine principal (scope-conditioned role) — unlisted routes fail closed for machine principals.
+- **Refresh-token families**: the tokens of one grant share a `familyId` set at code exchange and carried through every rotation. Presenting a rotated-away refresh token (the one signal the protocol gives that it leaked) revokes the whole family, access and refresh tokens alike, whoever holds the descendants, and is reported to the optional `audit` sink as `oauth-refresh-reuse`. Records minted before families existed root a family under their own id when next refreshed.
 - **JWKS rotation invalidates nothing**: the previous key keeps verifying (and revocation is still honored) until it is dropped.
 - **No route ever hands a caller a provider grant** — this server only ever issues *its own* tokens.
 - **End-session** acts only for its caller: single-use hints with a bounded grace (default 5 minutes), consumed atomically.
 
-Storage: `OAuthServerStore` port (clients, single-use codes, consents, tokens, end-session hints) with an in-memory adapter here and `makeOAuthServerStore` in `auth-sqlite` / `auth-pg`.
+Storage: `OAuthServerStore` port (clients, single-use codes, consents, tokens with `revokeFamily`, end-session hints) with an in-memory adapter here and `makeOAuthServerStore` in `auth-sqlite` / `auth-pg`.
 
 ## Persistence contract
 
@@ -334,6 +364,8 @@ Storage: `OAuthServerStore` port (clients, single-use codes, consents, tokens, e
 - `replacePasswordAndRevokeSessions` changes the hash and removes all sessions in one transaction.
 - `addOAuthIdentity` and `addPasskey` enforce tenant-scoped credential uniqueness.
 - counters may only be updated after successful signature verification.
+- `markTotpStepUsed` claims a TOTP time step atomically (false when that step or a later one was already accepted); `consumeRecoveryCode` removes exactly the presented entry by compare-and-delete; `replaceTotpSecret` rewrites only the stored secret.
+- `OAuthServerStore.revokeFamily` revokes every live token carrying a family id.
 
 A durable adapter must preserve those semantics and may fail with `AuthStoreError`; it must never store raw one-time/session tokens or OAuth client secrets. `@structure-ai/auth-sqlite` and `@structure-ai/auth-pg` provide Bun-native implementations with explicit schema migration functions. `inMemoryAuthStore` is deterministic enough for local development and tests, but is neither durable nor a cross-instance rate limiter.
 
@@ -355,7 +387,8 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 
 - `baseUrl` must use HTTPS except `http://localhost`/`127.0.0.1` for development.
 - OAuth secrets, access tokens, codes, session tokens, and email tokens are `Redacted` and excluded from audit events and errors.
-- Rate-limiter keys are SHA-256 digests; email addresses and tokens are not sent to the limiter.
+- Rate-limiter keys are SHA-256 digests; email addresses, caller subjects, and tokens are not sent to the limiter. Anonymous walls key on the caller the app names (`callerSubject`), never on a shared constant.
+- Second-factor material is sealed at rest under the instance secret; access tokens are verified by signature before any claim is trusted; refresh-token reuse revokes the family.
 - `AuthAuditSink` receives successful security state transitions with stable action/user/provider fields only and must absorb its own delivery failures. Record rejected requests at the owning edge if required by application policy.
 - Provider calls default to a 10-second timeout and reject non-success, malformed, or responses larger than 1 MiB. No retries occur inside auth.
 - OAuth endpoints and provider response contracts can change. Keep provider conformance tests and review upstream changes before deployment.
@@ -372,10 +405,10 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 | `OAuthProvider*`, `builtInOAuthProvider`, `fetchOAuthHttpClient` | Provider definitions, tenant resolver, exchange/profile engine, HTTP port. |
 | `discoverOidc`, `validateIdToken`, `oidcSettings`, `oidcProvisioningPolicy` | Generic OIDC: discovery + JWKS-validated ID tokens, JIT-gated provisioning settings. |
 | `verifyPasskeyRegistration`, `verifyPasskeyAuthentication` | Strict WebAuthn/COSE verification used by the service. |
-| `RateLimiter`, `AuthAuditSink`, `AccountLinkPolicy`, `EmailSender` | Application policy and side-effect ports. |
+| `RateLimiter` (`check` + optional `peek`), `AuthCaller`, `AuthAuditSink`, `AccountLinkPolicy`, `EmailSender` | Application policy and side-effect ports. |
 | `makeApiKeys`, `ApiKeyStore`, `inMemoryApiKeyStore`, `ApiKeyPeppers` | Machine credentials: mint/verify/revoke with pepper-versioned HMAC hashes, scopes, pinning. |
-| `makeTotp`, `verifyTotpCode`, `totpCode`, `generateTotpSecret`, `generateRecoveryCodes` | TOTP second factor: enrollment, verification with lockout, recovery codes, session elevation. |
-| `makeAuthorizationServer`, `OAuthServerStore`, `generateSigningKey` | OAuth 2.1 provider: clients, code+PKCE, refresh rotation, revocation, introspection, JWKS, end-session hints. |
+| `makeTotp`, `matchTotpCode`, `verifyTotpCode`, `totpCode`, `generateTotpSecret`, `generateRecoveryCodes` | TOTP second factor: enrollment, one-time verification with lockout, recovery codes, session elevation, operator reset, sealing at rest. |
+| `makeAuthorizationServer`, `OAuthServerStore`, `generateSigningKey` | OAuth 2.1 provider: clients, code+PKCE, refresh rotation with family revocation on reuse, revocation, introspection, JWKS, signature-verified access tokens, end-session hints. |
 | `Auth*Error`, `InvalidAuthRoutes`, `RateLimitExceeded`, `UnsupportedPasskey` | Classified safe failures. |
 
 See `test/` for executable password, magic-link, OAuth, passkey, rate-limit/audit, and HTTP examples.

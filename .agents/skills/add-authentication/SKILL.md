@@ -34,7 +34,8 @@ const auth = makeAuth({
 
 ## Rules
 
-- Production must provide a durable/shared rate limiter; `allowAllRateLimiter` is for tests and prototypes only.
+- Production must provide a durable/shared rate limiter; `allowAllRateLimiter` is for tests and prototypes only. Give `makeAuthHandler` a `callerSubject` (the client address behind your trusted proxy): the anonymous walls (discoverable passkey challenges, external sign-in starts, the password sign-in's caller half) key on it, and without it the first two do not apply. A limiter that also implements `peek` gets consume-on-failure on the password wall.
+- `makeTotp` requires `secret` (`Redacted`, the instance secret): the TOTP secret and the recovery codes are sealed at rest under keys derived from it. Expose `resetSecondFactor` only on an operator surface (a CLI command, a superadmin route), audited with the operator as `actor`.
 - HTTP walls in front of the auth routes use `@structure-ai/http`'s `rateLimitLayer`: key the login group with `keys` (ip via `clientIp(request, { trustProxy })` + email digest) and `consumeWhen: (response) => response.status === 401`, so a successful login costs nothing and ten POSTs naming a victim's address cannot lock that account (see the http README, "Rate limiting"). `trustProxy` is a setting, `true` only behind a proxy you operate.
 - Raw one-time/session tokens and OAuth client secrets never enter storage, logs, audit events, or errors — they are `Redacted` at the boundary.
 - Enumeration-safe responses: password-reset and magic-link requests give no account-existence signal.
