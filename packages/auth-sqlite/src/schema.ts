@@ -237,15 +237,24 @@ export const migrate = (
             user_id TEXT,
             scope TEXT NOT NULL,
             token_hash TEXT,
+            family_id TEXT,
             expires_at TEXT NOT NULL,
             revoked_at TEXT,
             created_at TEXT NOT NULL,
             PRIMARY KEY (tenant_id, token_id)
           )
         `;
+        // Upgrade path for token tables created before refresh-token families existed.
+        await tx`ALTER TABLE ${tx(tables.oauthTokens)} ADD COLUMN family_id TEXT`.catch(
+          () => undefined,
+        );
         await tx`
           CREATE INDEX IF NOT EXISTS ${tx(`${tables.oauthTokens}_hash_idx`)}
           ON ${tx(tables.oauthTokens)} (tenant_id, token_hash)
+        `;
+        await tx`
+          CREATE INDEX IF NOT EXISTS ${tx(`${tables.oauthTokens}_family_idx`)}
+          ON ${tx(tables.oauthTokens)} (tenant_id, family_id)
         `;
         await tx`
           CREATE TABLE IF NOT EXISTS ${tx(tables.oauthEndSessionHints)} (

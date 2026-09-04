@@ -248,6 +248,22 @@ export const schemaStatements = (options: AdapterOptions = {}): ReadonlyArray<st
 };
 
 /**
+ * Additive columns since the base schema, as idempotent DDL: the second
+ * step of the auth schema (v2). Kept apart from `schemaStatements` so the
+ * base migration's checksum, recorded by installs that ran it, never
+ * changes; a migrations set appends `upgradeMigration` after `migration`.
+ */
+export const upgradeStatements = (options: AdapterOptions = {}): ReadonlyArray<string> => {
+  const t = tableNames(options);
+  return [
+    // Refresh-token families: reuse of a rotated-away token revokes them all.
+    `ALTER TABLE ${ident(t.oauthTokens)} ADD COLUMN IF NOT EXISTS family_id TEXT`,
+    `CREATE INDEX IF NOT EXISTS ${ident(`${t.oauthTokens}_family_idx`)}
+      ON ${ident(t.oauthTokens)} (tenant_id, family_id)`,
+  ];
+};
+
+/**
  * Structurally identical to `@structure-ai/migrations`' `Migration`, so the
  * value drops into `makeSet([...])` without this package depending on the
  * migrations package (auth is a standalone foundation).
@@ -272,29 +288,50 @@ export interface AuthMigration {
  * transaction. The DDL is idempotent, so re-running `up` outside the
  * migrator's bookkeeping is a no-op.
  */
-export const migration = (id: number, options: AdapterOptions = {}): AuthMigration => {
-  const name = `create_${options.tablePrefix ?? DEFAULT_PREFIX}schema`;
-  const statements = schemaStatements(options);
-  return {
+const migrationOf = (
+  id: number,
+  name: string,
+  statements: ReadonlyArray<string>,
+): AuthMigration => ({
+  id,
+  name,
+  up: Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql.withTransaction(
+      Effect.forEach(statements, (statement) => sql.unsafe(statement), { discard: true }),
+    );
+  }),
+  checksum: createHash("sha256")
+    .update(JSON.stringify([id, name, [...statements]]))
+    .digest("hex"),
+});
+
+export const migration = (id: number, options: AdapterOptions = {}): AuthMigration =>
+  migrationOf(
     id,
-    name,
-    up: Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql.withTransaction(
-        Effect.forEach(statements, (statement) => sql.unsafe(statement), { discard: true }),
-      );
-    }),
-    checksum: createHash("sha256")
-      .update(JSON.stringify([id, name, [...statements]]))
-      .digest("hex"),
-  };
-};
+    `create_${options.tablePrefix ?? DEFAULT_PREFIX}schema`,
+    schemaStatements(options),
+  );
+
+/**
+ * The v2 upgrade (`upgradeStatements`) as its own forward migration, named
+ * `upgrade_<prefix>schema_v2`; add it to the set right after `migration`.
+ * Existing installs apply it as one more pending migration; fresh installs
+ * run both in order.
+ */
+export const upgradeMigration = (id: number, options: AdapterOptions = {}): AuthMigration =>
+  migrationOf(
+    id,
+    `upgrade_${options.tablePrefix ?? DEFAULT_PREFIX}schema_v2`,
+    upgradeStatements(options),
+  );
 
 /**
  * Creates the complete auth schema in one transaction over a Bun `SQL`
  * handle — the all-in-one path for apps without a `@structure-ai/migrations`
- * set (and for tests). Same DDL as `migration`. Run from the designated
- * migrator; the stores never migrate implicitly.
+ * set (and for tests). Same DDL as `migration` followed by
+ * `upgradeMigration`. Run from the designated migrator; the stores never
+ * migrate implicitly.
  */
 export const migrate = (
   sql: SQL,
@@ -303,7 +340,7 @@ export const migrate = (
   Effect.tryPromise({
     try: async () => {
       await sql.begin(async (tx) => {
-        for (const statement of schemaStatements(options)) {
+        for (const statement of [...schemaStatements(options), ...upgradeStatements(options)]) {
           await tx.unsafe(statement);
         }
       });

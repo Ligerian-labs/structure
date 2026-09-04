@@ -11,8 +11,9 @@ import {
   migrate,
   migration,
   tableNames,
+  upgradeMigration,
 } from "../src/index.js";
-import { schemaStatements } from "../src/schema.js";
+import { schemaStatements, upgradeStatements } from "../src/schema.js";
 import {
   registerApiKeyScenarios,
   registerOAuthServerScenarios,
@@ -65,6 +66,13 @@ describe("migration definition", () => {
       migrationChecksum(1, "create_auth_schema", schemaStatements()),
     );
     expect(migration(1, { tablePrefix: "x_" }).checksum).not.toBe(migration(1).checksum);
+    // The base schema's statements are frozen: the v2 columns live in their
+    // own migration so a recorded base checksum never drifts.
+    expect(schemaStatements().join("\n")).not.toContain("family_id");
+    expect(upgradeMigration(2).name).toBe("upgrade_auth_schema_v2");
+    expect(upgradeMigration(2).checksum).toBe(
+      migrationChecksum(2, "upgrade_auth_schema_v2", upgradeStatements()),
+    );
   });
 });
 
@@ -127,7 +135,7 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
     if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
     const options = { tablePrefix: uniquePrefix() };
     const bookkeeping = `${options.tablePrefix}migrations`;
-    const set = makeSet([migration(1, options)]);
+    const set = makeSet([migration(1, options), upgradeMigration(2, options)]);
     const sql = new SQL(databaseUrl);
     const dropTables = Effect.gen(function* () {
       const client = yield* SqlClient.SqlClient;
@@ -139,11 +147,15 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
     try {
       const program = Effect.gen(function* () {
         const applied = yield* run(set, { table: bookkeeping });
-        expect(applied).toEqual([[1, `create_${options.tablePrefix}schema`]]);
+        expect(applied).toEqual([
+          [1, `create_${options.tablePrefix}schema`],
+          [2, `upgrade_${options.tablePrefix}schema_v2`],
+        ]);
         const again = yield* run(set, { table: bookkeeping });
         expect(again).toHaveLength(0);
         // Re-running the DDL itself (outside the migrator's bookkeeping) is a no-op too.
         yield* migration(1, options).up;
+        yield* upgradeMigration(2, options).up;
       }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })));
       await Effect.runPromise(program);
 
@@ -178,6 +190,7 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
       await Effect.runPromise(migrate(sql, bunOptions));
       await Effect.runPromise(
         migration(1, clientOptions).up.pipe(
+          Effect.andThen(upgradeMigration(2, clientOptions).up),
           Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })),
         ),
       );
