@@ -516,6 +516,29 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
     }
   });
 
+  test("an abandoned drain never requeues a row another worker reclaimed meanwhile", async () => {
+    const harness = await make();
+    try {
+      const gate = gatedHandler(harness, () => Effect.void);
+      const worker = await harness.startWorker({ pollMillis: 10, drainTimeoutMillis: 200 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "reclaimed" }));
+      await gate.started;
+      await harness.reclaim(jobId, "worker-b", 60_000);
+      await harness.stopWorker();
+      const abandoned = harness
+        .logRecords()
+        .find((record) => record.message === "jobs worker abandoned drain");
+      expect(abandoned).toBeDefined();
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(row?.status).toBe("running");
+      expect(row?.lease_owner).toBe("worker-b");
+      gate.release();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
   test("cancel removes a pending job before it fires", async () => {
     const harness = await make();
     try {
