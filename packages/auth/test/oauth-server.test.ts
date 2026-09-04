@@ -1069,6 +1069,38 @@ describe("in-memory token store: family revocation", () => {
     expect((await run(store.findTokenById("tenant-a", "a-dead")))?.revokedAt).toEqual(earlier);
     expect((await run(store.findTokenById("tenant-b", "b-live")))?.revokedAt).toBeUndefined();
   });
+
+  test("rotation lands once, on a live token only, and never on a revoked one", async () => {
+    const store = inMemoryOAuthServerStore();
+    const at = new Date("2026-08-20T12:00:00.000Z");
+    const later = new Date("2026-08-20T13:00:00.000Z");
+    const refresh = (tokenId: string) =>
+      run(
+        store.putToken({
+          tenantId: "tenant-a",
+          tokenId,
+          kind: "refresh",
+          clientId: "as_c1",
+          userId: "user-1",
+          scope: ["mcp:tools"],
+          tokenHash: `${tokenId}-hash`,
+          familyId: "family-1",
+          expiresAt: later,
+          createdAt: at,
+        }),
+      );
+    await refresh("r-live");
+    await refresh("r-revoked");
+    expect(await run(store.rotateToken("tenant-a", "r-live", at))).toBe(true);
+    expect(await run(store.rotateToken("tenant-a", "r-live", later))).toBe(false);
+    expect((await run(store.findTokenById("tenant-a", "r-live")))?.rotatedAt).toEqual(at);
+    await run(store.revokeToken("tenant-a", "r-revoked", at));
+    expect(await run(store.rotateToken("tenant-a", "r-revoked", later))).toBe(false);
+    const revoked = await run(store.findTokenById("tenant-a", "r-revoked"));
+    expect(revoked?.rotatedAt).toBeUndefined();
+    expect(revoked?.revokedAt).toEqual(at);
+    expect(await run(store.rotateToken("tenant-b", "r-live", later))).toBe(false);
+  });
 });
 
 describe("concurrent refresh of one token", () => {
@@ -1327,5 +1359,79 @@ describe("the winner of a concurrent refresh", () => {
     expect(swept).toBe(true);
     // Nothing usable was handed out, and nothing is live.
     expect(real.snapshot().tokens.every((token) => token.revokedAt !== undefined)).toBe(true);
+  });
+});
+
+describe("refresh under a revocation that lands mid-flight", () => {
+  test("a rotation lost to a plain revocation is refused without a reuse alarm, and leaves nothing live", async () => {
+    const events: Array<string> = [];
+    const real = inMemoryOAuthServerStore();
+    // The client's own sign-out (RFC 7009) commits between our read and our rotation.
+    let interposed = false;
+    const store: OAuthServerStore = {
+      ...real,
+      rotateToken: (tenantId, tokenId, now) =>
+        Effect.gen(function* () {
+          if (!interposed) {
+            interposed = true;
+            yield* real.revokeToken(tenantId, tokenId, now);
+          }
+          return yield* real.rotateToken(tenantId, tokenId, now);
+        }),
+    };
+    const { server, first, call } = await grantOn(store, events);
+    expect(
+      await flip(
+        server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(interposed).toBe(true);
+    expect(events).toEqual([]);
+    expect(real.snapshot().tokens.every((token) => token.revokedAt !== undefined)).toBe(true);
+    expect(real.snapshot().tokens.every((token) => token.rotatedAt === undefined)).toBe(true);
+  });
+
+  test("a lost race whose family sweep revoked nothing raises no alarm either", async () => {
+    const events: Array<string> = [];
+    const real = inMemoryOAuthServerStore();
+    const store: OAuthServerStore = {
+      ...real,
+      // Someone else rotates it first, every time; and the family is already empty of live tokens.
+      rotateToken: (tenantId, tokenId, now) =>
+        real.rotateToken(tenantId, tokenId, now).pipe(Effect.map(() => false)),
+      revokeFamily: () => Effect.succeed(0),
+    };
+    const { server, first, call } = await grantOn(store, events);
+    for (let index = 0; index < 20; index++) {
+      expect(
+        await flip(
+          server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+        ),
+      ).toBeInstanceOf(InvalidAuthToken);
+    }
+    expect(events).toEqual([]);
+  });
+});
+
+describe("refresh mints before it rotates", () => {
+  test("both records of the fresh pair are stored before the old token is rotated", async () => {
+    const events: Array<string> = [];
+    const real = inMemoryOAuthServerStore();
+    const log: Array<string> = [];
+    const store: OAuthServerStore = {
+      ...real,
+      putToken: (record) =>
+        real
+          .putToken(record)
+          .pipe(Effect.tap(() => Effect.sync(() => void log.push(`put:${record.kind}`)))),
+      rotateToken: (tenantId, tokenId, now) =>
+        real
+          .rotateToken(tenantId, tokenId, now)
+          .pipe(Effect.tap(() => Effect.sync(() => void log.push("rotate")))),
+    };
+    const { server, first, call } = await grantOn(store, events);
+    log.length = 0;
+    await run(server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }));
+    expect(log).toEqual(["put:access", "put:refresh", "rotate"]);
   });
 });
