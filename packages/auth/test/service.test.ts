@@ -479,18 +479,16 @@ describe("password sign-in wall: a ceiling per caller", () => {
       resolveTenant: () => Effect.succeed(tenantConfig),
       emailSender: { send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid) },
       passwordHasher: argon2id({ memoryCostKiB: 19_456, timeCost: 2 }),
+      // A limiter whose `check` only meters: the refusal can come from a
+      // genuine peek of the caller's bucket and from nothing else.
       rateLimiter: {
         peek: (request) =>
           (counts.get(keyOf(request)) ?? 0) >= 5
             ? Effect.fail(new RateLimitExceeded({ action: request.action }))
             : Effect.void,
         check: (request) =>
-          Effect.suspend(() => {
-            const seen = (counts.get(keyOf(request)) ?? 0) + 1;
-            counts.set(keyOf(request), seen);
-            return seen > 5
-              ? Effect.fail(new RateLimitExceeded({ action: request.action }))
-              : Effect.void;
+          Effect.sync(() => {
+            counts.set(keyOf(request), (counts.get(keyOf(request)) ?? 0) + 1);
           }),
       },
     });
