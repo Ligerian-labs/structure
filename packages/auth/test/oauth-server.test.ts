@@ -1435,3 +1435,47 @@ describe("refresh mints before it rotates", () => {
     expect(log).toEqual(["put:access", "put:refresh", "rotate"]);
   });
 });
+
+describe("the fresh pair vanishing before the re-read", () => {
+  test("refuses and leaves nothing live rather than orphaning the pair", async () => {
+    const events: Array<string> = [];
+    const real = inMemoryOAuthServerStore();
+    // A cleanup deletes the just-minted refresh record in the window before
+    // the re-read: the store answers "absent" once.
+    let vanished = false;
+    const store: OAuthServerStore = {
+      ...real,
+      findTokenById: (tenantId, tokenId) =>
+        Effect.gen(function* () {
+          const found = yield* real.findTokenById(tenantId, tokenId);
+          if (found?.kind === "refresh" && found.revokedAt === undefined && !vanished) {
+            vanished = true;
+            return undefined;
+          }
+          return found;
+        }),
+    };
+    const { server, first, call } = await grantOn(store, events);
+    expect(
+      await flip(
+        server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(vanished).toBe(true);
+    expect(events).toEqual([]);
+    expect(real.snapshot().tokens.every((token) => token.revokedAt !== undefined)).toBe(true);
+  });
+});
+
+describe("issued token shape", () => {
+  test("neither exchange nor refresh exposes anything beyond the public pair", async () => {
+    const { server, first, call } = await grantOn(inMemoryOAuthServerStore(), []);
+    const publicKeys = ["accessToken", "expiresIn", "refreshToken", "scope", "tokenType"];
+    expect(Object.keys(first).sort()).toEqual(publicKeys);
+    const rotated = await run(
+      server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+    );
+    expect(Object.keys(rotated).sort()).toEqual(publicKeys);
+    expect(JSON.stringify(rotated)).not.toContain("refreshTokenId");
+  });
+});
