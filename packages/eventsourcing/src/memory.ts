@@ -1,7 +1,17 @@
 import { ConcurrencyConflict } from "@structure-ai/domain";
-import { Effect, Either, Layer, Option, Ref, Stream } from "effect";
+import { Context, Effect, Either, Layer, Option, Ref, Stream, SynchronizedRef } from "effect";
 import { CheckpointStore } from "./CheckpointStore.js";
 import { type AppendResult, EventStore, type StoredEvent } from "./EventStore.js";
+import {
+  type HistoryImportBatch,
+  HistoryImporter,
+  type HistoryImportResult,
+  historyImportConflict,
+  historyImportResumeToken,
+  historyImportTarget,
+  prepareHistoryImportBatch,
+  validateHistoryImportContinuation,
+} from "./HistoryImport.js";
 import { Inbox, Outbox, type OutboxEntry } from "./Outbox.js";
 import { type Snapshot, SnapshotStore } from "./SnapshotStore.js";
 
@@ -19,7 +29,25 @@ const conflictIdentity = (streamName: string): { entity: string; id: string } =>
 interface EventStoreState {
   readonly streams: ReadonlyMap<string, ReadonlyArray<StoredEvent>>;
   readonly all: ReadonlyArray<StoredEvent>;
+  readonly imports: ReadonlyMap<string, HistoryImportSession>;
+  readonly importBatches: ReadonlyMap<string, HistoryImportBatchRecord>;
 }
+
+interface HistoryImportSession {
+  readonly resumeToken: string;
+  readonly lastPosition: bigint;
+  readonly complete: boolean;
+}
+
+interface HistoryImportBatchRecord {
+  readonly checksum: string;
+  readonly previousToken: string | undefined;
+  readonly complete: boolean;
+  readonly result: HistoryImportResult;
+}
+
+const importBatchKey = (batch: HistoryImportBatch): string =>
+  `${batch.importId.length}:${batch.importId}${batch.batchId}`;
 
 /**
  * In-memory `EventStore`. Appends run inside a single atomic `Ref.modify`,
@@ -28,11 +56,15 @@ interface EventStoreState {
  * wins and the loser gets a `ConcurrencyConflict`. Reads see a consistent
  * snapshot taken when the stream is subscribed.
  */
-export const InMemoryEventStore: Layer.Layer<EventStore> = Layer.effect(
-  EventStore,
+export const InMemoryEventStore: Layer.Layer<EventStore | HistoryImporter> = Layer.effectContext(
   Effect.gen(function* () {
-    const ref = yield* Ref.make<EventStoreState>({ streams: new Map(), all: [] });
-    return EventStore.of({
+    const ref = yield* SynchronizedRef.make<EventStoreState>({
+      streams: new Map(),
+      all: [],
+      imports: new Map(),
+      importBatches: new Map(),
+    });
+    const eventStore = EventStore.of({
       append: (streamName, expectedVersion, events) =>
         Ref.modify(
           ref,
@@ -73,7 +105,7 @@ export const InMemoryEventStore: Layer.Layer<EventStore> = Layer.effect(
                 firstVersion: actualVersion + 1,
                 lastVersion: actualVersion + events.length,
               }),
-              { streams, all: [...state.all, ...stored] },
+              { ...state, streams, all: [...state.all, ...stored] },
             ];
           },
         ).pipe(Effect.flatten),
@@ -99,6 +131,107 @@ export const InMemoryEventStore: Layer.Layer<EventStore> = Layer.effect(
           }),
         ),
     });
+    const historyImporter = HistoryImporter.of({
+      importBatch: (batch, decoder) =>
+        Effect.gen(function* () {
+          yield* prepareHistoryImportBatch(batch, decoder);
+          const lastEvent = batch.events.at(-1);
+          if (lastEvent === undefined) return yield* Effect.die("validated batch has no events");
+          const token = yield* historyImportResumeToken(batch, lastEvent.position);
+          return yield* SynchronizedRef.modifyEffect(ref, (state) =>
+            Effect.gen(function* () {
+              const key = importBatchKey(batch);
+              const recorded = state.importBatches.get(key);
+              const complete = batch.complete ?? false;
+              if (recorded !== undefined) {
+                if (
+                  recorded.checksum !== batch.checksum ||
+                  recorded.previousToken !== batch.resumeToken ||
+                  recorded.complete !== complete
+                ) {
+                  return yield* historyImportConflict(
+                    "divergent-batch",
+                    `batch ${batch.batchId} was already committed with different content or state`,
+                  );
+                }
+                return [{ ...recorded.result, status: "unchanged" }, state] as const;
+              }
+
+              const session = state.imports.get(batch.importId);
+              if (session === undefined) {
+                if (state.all.length > 0) {
+                  return yield* historyImportConflict(
+                    "target-not-empty",
+                    "a new import requires an empty event store",
+                  );
+                }
+                if (batch.resumeToken !== undefined) {
+                  return yield* historyImportConflict(
+                    "resume-token-mismatch",
+                    "the first batch must not include a resume token",
+                  );
+                }
+              } else {
+                if (session.complete) {
+                  return yield* historyImportConflict(
+                    "import-complete",
+                    `import ${batch.importId} is already complete`,
+                  );
+                }
+                if (batch.resumeToken !== session.resumeToken) {
+                  return yield* historyImportConflict(
+                    "resume-token-mismatch",
+                    `batch ${batch.batchId} does not resume the latest committed batch`,
+                  );
+                }
+                if (state.all.at(-1)?.position !== session.lastPosition) {
+                  return yield* historyImportConflict(
+                    "target-not-empty",
+                    "the target changed after the latest import batch",
+                  );
+                }
+              }
+
+              yield* validateHistoryImportContinuation(
+                batch.events,
+                historyImportTarget(state.all),
+              );
+              const streams = new Map(state.streams);
+              for (const event of batch.events) {
+                streams.set(event.streamName, [...(streams.get(event.streamName) ?? []), event]);
+              }
+              const result: HistoryImportResult = {
+                status: "imported",
+                importedCount: batch.events.length,
+                lastPosition: lastEvent.position,
+                resumeToken: token,
+                complete,
+              };
+              const imports = new Map(state.imports).set(batch.importId, {
+                resumeToken: token,
+                lastPosition: lastEvent.position,
+                complete,
+              });
+              const importBatches = new Map(state.importBatches).set(key, {
+                checksum: batch.checksum,
+                previousToken: batch.resumeToken,
+                complete,
+                result,
+              });
+              return [
+                result,
+                {
+                  streams,
+                  all: [...state.all, ...batch.events],
+                  imports,
+                  importBatches,
+                },
+              ] as const;
+            }),
+          );
+        }),
+    });
+    return Context.make(EventStore, eventStore).pipe(Context.add(HistoryImporter, historyImporter));
   }),
 );
 
@@ -194,7 +327,7 @@ export const InMemoryInbox: Layer.Layer<Inbox> = Layer.effect(
 
 /** Every in-memory adapter merged: a full test/development environment. */
 export const InMemoryAll: Layer.Layer<
-  EventStore | SnapshotStore | CheckpointStore | Outbox | Inbox
+  EventStore | HistoryImporter | SnapshotStore | CheckpointStore | Outbox | Inbox
 > = Layer.mergeAll(
   InMemoryEventStore,
   InMemorySnapshotStore,

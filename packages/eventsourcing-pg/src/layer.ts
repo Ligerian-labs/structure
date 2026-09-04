@@ -5,6 +5,7 @@ import type { IdempotencyStore } from "@structure-ai/cqrs";
 import type {
   CheckpointStore,
   EventStore,
+  HistoryImporter,
   Inbox,
   Outbox,
   SnapshotStore,
@@ -17,9 +18,10 @@ import { inboxLayer, outboxLayer } from "./Outbox.js";
 import { snapshotStoreLayer } from "./SnapshotStore.js";
 import { type AdapterOptions, migrate } from "./schema.js";
 
-/** The five eventsourcing ports plus the cqrs idempotency store. */
+/** Eventsourcing ports, frozen-history importer, and the cqrs idempotency store. */
 export type StoreServices =
   | EventStore
+  | HistoryImporter
   | SnapshotStore
   | CheckpointStore
   | Outbox

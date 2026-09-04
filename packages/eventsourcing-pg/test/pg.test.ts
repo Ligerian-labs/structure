@@ -2,7 +2,7 @@ import { describe } from "bun:test";
 import * as SqlClient from "@effect/sql/SqlClient";
 import { Effect } from "effect";
 import { layer, tableNames } from "../src/index.js";
-import { registerScenarios, type Scenario } from "./scenarios.js";
+import { registerHistoryImportScenarios, registerScenarios, type Scenario } from "./scenarios.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -31,4 +31,5 @@ const runTest = (scenario: Scenario): Promise<void> => {
 
 describe.skipIf(databaseUrl === undefined)("pg adapters (needs DATABASE_URL)", () => {
   registerScenarios(runTest);
+  registerHistoryImportScenarios(runTest);
 });

@@ -13,7 +13,8 @@ export const define = <Tag extends string, Fields extends Schema.Struct.Fields>(
 /**
  * Metadata carried alongside every persisted or published event. Identity
  * and ordering come from the aggregate; correlation ties the event to the
- * workflow that produced it.
+ * workflow that produced it. `actor` records the authenticated principal
+ * when the caller supplies one; consumers must not treat it as authorization proof.
  */
 export class EventMetadata extends Schema.Class<EventMetadata>("EventMetadata")({
   eventId: Schema.String,
@@ -23,6 +24,7 @@ export class EventMetadata extends Schema.Class<EventMetadata>("EventMetadata")(
   aggregateVersion: Schema.Number,
   correlationId: Schema.optional(Schema.String),
   causationId: Schema.optional(Schema.String),
+  actor: Schema.optional(Schema.String),
 }) {}
 
 /** An event together with its envelope metadata. */

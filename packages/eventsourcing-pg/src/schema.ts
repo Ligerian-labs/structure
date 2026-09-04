@@ -12,6 +12,8 @@ export interface AdapterOptions extends IdempotencyStoreOptions {
 /** Resolved table names for one `tablePrefix`. */
 export interface TableNames {
   readonly events: string;
+  readonly historyImports: string;
+  readonly historyImportBatches: string;
   readonly snapshots: string;
   readonly checkpoints: string;
   readonly outbox: string;
@@ -24,6 +26,8 @@ export const tableNames = (options?: AdapterOptions): TableNames => {
   const prefix = options?.tablePrefix ?? "";
   return {
     events: `${prefix}events`,
+    historyImports: `${prefix}history_imports`,
+    historyImportBatches: `${prefix}history_import_batches`,
     snapshots: `${prefix}snapshots`,
     checkpoints: `${prefix}checkpoints`,
     outbox: `${prefix}outbox`,
@@ -58,6 +62,27 @@ export const migrate = (
         payload JSONB NOT NULL,
         metadata JSONB NOT NULL,
         UNIQUE (stream_name, version)
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.historyImports)} (
+        import_id TEXT PRIMARY KEY,
+        resume_token TEXT NOT NULL,
+        last_position BIGINT NOT NULL,
+        complete BOOLEAN NOT NULL DEFAULT FALSE
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.historyImportBatches)} (
+        import_id TEXT NOT NULL,
+        batch_id TEXT NOT NULL,
+        previous_token TEXT,
+        checksum TEXT NOT NULL,
+        complete BOOLEAN NOT NULL,
+        imported_count INTEGER NOT NULL,
+        last_position BIGINT NOT NULL,
+        result_token TEXT NOT NULL,
+        PRIMARY KEY (import_id, batch_id)
       )
     `;
     yield* sql`

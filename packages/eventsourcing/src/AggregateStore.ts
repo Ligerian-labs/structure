@@ -7,11 +7,13 @@ import { SnapshotStore } from "./SnapshotStore.js";
 /**
  * Caller-supplied correlation for a command: `correlationId` ties the
  * resulting events to the workflow that caused them, `causationId` to the
- * direct trigger (usually the id of the message being handled).
+ * direct trigger (usually the id of the message being handled), and `actor`
+ * records the authenticated principal without granting authority.
  */
 export interface CommandMetadata {
   readonly correlationId?: string;
   readonly causationId?: string;
+  readonly actor?: string;
 }
 
 /** State and stream version after loading or executing. */
@@ -45,7 +47,7 @@ export interface AggregateStoreService<S, C, E, Err> {
    * writer surfaces as `ConcurrencyConflict` and nothing is written.
    * Each event is stamped with `EventMetadata` (fresh eventId, occurredAt
    * from the Effect clock, aggregate identity/version, and the caller's
-   * correlation/causation ids).
+   * correlation/causation ids and optional actor).
    */
   readonly execute: (
     id: string,
@@ -147,6 +149,7 @@ export const make = <S, C, E extends { readonly _tag: string }, Err>(
                   ...(metadata?.causationId !== undefined
                     ? { causationId: metadata.causationId }
                     : {}),
+                  ...(metadata?.actor !== undefined ? { actor: metadata.actor } : {}),
                 }),
               ),
             };
