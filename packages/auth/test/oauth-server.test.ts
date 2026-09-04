@@ -1231,3 +1231,101 @@ describe("reuse detection is idempotent", () => {
     expect(await run(store.revokeFamily("tenant-a", "no-such-family", clock.value))).toBe(0);
   });
 });
+
+/** One grant on a server over `store`, with the usual public client; returns the first pair and a call context. */
+const grantOn = async (
+  store: OAuthServerStore,
+  events: Array<string>,
+): Promise<{
+  server: AuthorizationServer;
+  first: { accessToken: string; refreshToken?: string };
+  call: { tenantId: string; clientId: string };
+}> => {
+  const key = await run(generateSigningKey());
+  const server = makeAuthorizationServer({
+    store,
+    resolveTenant: (tenantId) =>
+      Effect.succeed({ baseUrl: new URL(`https://${tenantId}.example.com`) }),
+    signingKeys: { current: key },
+    registration: { signedIn: true },
+    primitives: { now: () => clock.value },
+    audit: { record: (event) => Effect.sync(() => void events.push(event.action)) },
+  });
+  const minted = await run(
+    server.registerClient(
+      "tenant-a",
+      {
+        clientType: "public",
+        redirectUris: ["https://agent.example.com/callback"],
+        scopes: ["mcp:tools"],
+      },
+      { kind: "signed-in", userId: "user-1" },
+    ),
+  );
+  const { verifier, challenge } = await pkce();
+  await run(
+    server.grantConsent({
+      tenantId: "tenant-a",
+      userId: "user-1",
+      clientId: minted.record.clientId,
+      scope: ["mcp:tools"],
+    }),
+  );
+  const decision = await run(
+    server.authorize(
+      {
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        redirectUri: "https://agent.example.com/callback",
+        scope: ["mcp:tools"],
+        codeChallenge: challenge,
+        codeChallengeMethod: "S256",
+      },
+      "user-1",
+    ),
+  );
+  if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+  const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+  const first = await run(
+    server.exchangeCode({
+      tenantId: "tenant-a",
+      clientId: minted.record.clientId,
+      code: Redacted.make(code),
+      codeVerifier: verifier,
+      redirectUri: "https://agent.example.com/callback",
+    }),
+  );
+  return { server, first, call: { tenantId: "tenant-a", clientId: minted.record.clientId } };
+};
+
+describe("the winner of a concurrent refresh", () => {
+  test("is refused too when the loser's sweep already killed its fresh pair", async () => {
+    const events: Array<string> = [];
+    const real = inMemoryOAuthServerStore();
+    // Our rotation lands, but the other presenter's family revocation runs
+    // before we answer: the pair we just minted is already dead.
+    let swept = false;
+    const store: OAuthServerStore = {
+      ...real,
+      rotateToken: (tenantId, tokenId, now) =>
+        Effect.gen(function* () {
+          const landed = yield* real.rotateToken(tenantId, tokenId, now);
+          if (landed && !swept) {
+            swept = true;
+            const record = yield* real.findTokenById(tenantId, tokenId);
+            yield* real.revokeFamily(tenantId, record?.familyId ?? tokenId, now);
+          }
+          return landed;
+        }),
+    };
+    const { server, first, call } = await grantOn(store, events);
+    expect(
+      await flip(
+        server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(swept).toBe(true);
+    // Nothing usable was handed out, and nothing is live.
+    expect(real.snapshot().tokens.every((token) => token.revokedAt !== undefined)).toBe(true);
+  });
+});
