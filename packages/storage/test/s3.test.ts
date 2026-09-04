@@ -248,6 +248,36 @@ describe("S3 storage driver (against a loopback stub)", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
+  test("cancelling a guarded download cancels the upstream S3 body", async () => {
+    let upstreamCancelled = false;
+    const fetchImpl = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(new Uint8Array(1_024));
+          },
+          cancel() {
+            upstreamCancelled = true;
+          },
+        }),
+        { status: 200, headers: { "content-length": "1048576" } },
+      );
+    const storage = makeS3Storage({
+      bucket: "b",
+      region: "us-east-1",
+      accessKeyId: "k",
+      secretAccessKey: Redacted.make("s"),
+      endpoint: "http://s3.local",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const key = await Effect.runPromise(objectKey("files/cancelled.bin"));
+    const got = await Effect.runPromise(storage.get(key));
+    const reader = got.body.getReader();
+    await reader.read();
+    await reader.cancel("client went away");
+    expect(upstreamCancelled).toBe(true);
+  });
+
   test("maps a 403 from the provider to a permanent rejection", async () => {
     const storage = makeS3Storage({
       bucket: "stub-bucket",
