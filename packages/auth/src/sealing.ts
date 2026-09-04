@@ -58,12 +58,34 @@ const randomBytes = (length: number): Uint8Array => {
 
 const buffer = (value: Uint8Array): ArrayBuffer => value as unknown as ArrayBuffer;
 
-const parse = (stored: string): { readonly first: Uint8Array; readonly second: Uint8Array } => {
+/**
+ * Splits a stored `v1:<a>:<b>` value into its two byte segments. A value of
+ * another shape, or with segments that are not base64url, is a typed
+ * validation failure on the Effect channel, never an exception.
+ */
+const parse = (
+  stored: string,
+): Effect.Effect<
+  { readonly first: Uint8Array; readonly second: Uint8Array },
+  AuthValidationError
+> => {
+  const malformed = () =>
+    new AuthValidationError({ field: "sealed-value", reason: "is malformed" });
   const [version, first, second, ...rest] = stored.split(":");
-  if (version !== VERSION || first === undefined || second === undefined || rest.length > 0) {
-    throw new Error("malformed sealed value");
+  if (
+    version !== VERSION ||
+    first === undefined ||
+    second === undefined ||
+    first.length === 0 ||
+    second.length === 0 ||
+    rest.length > 0
+  ) {
+    return Effect.fail(malformed());
   }
-  return { first: decodeBase64Url(first), second: decodeBase64Url(second) };
+  return Effect.try({
+    try: () => ({ first: decodeBase64Url(first), second: decodeBase64Url(second) }),
+    catch: malformed,
+  });
 };
 
 const saltedCode = (salt: Uint8Array, code: string): Uint8Array => {
@@ -148,11 +170,10 @@ export const makeSecondFactorSealer = (secret: Redacted.Redacted<string>): Secon
       ),
     open: (stored) =>
       isSealed(stored)
-        ? keys().pipe(
-            Effect.flatMap(({ aes }) =>
+        ? Effect.all([keys(), parse(stored)]).pipe(
+            Effect.flatMap(([{ aes }, { first: iv, second: ciphertext }]) =>
               Effect.tryPromise({
                 try: async () => {
-                  const { first: iv, second: ciphertext } = parse(stored);
                   const plaintext = await crypto.subtle.decrypt(
                     { name: "AES-GCM", iv: buffer(iv) },
                     aes,
@@ -180,11 +201,10 @@ export const makeSecondFactorSealer = (secret: Redacted.Redacted<string>): Secon
       ),
     matchRecoveryCode: (code, stored, legacyHash) =>
       isSealed(stored)
-        ? keys().pipe(
-            Effect.flatMap(({ mac }) =>
+        ? Effect.all([keys(), parse(stored)]).pipe(
+            Effect.flatMap(([{ mac }, { first: salt, second: expected }]) =>
               Effect.tryPromise({
                 try: async () => {
-                  const { first: salt, second: expected } = parse(stored);
                   const digest = await crypto.subtle.sign(
                     "HMAC",
                     mac,
@@ -192,11 +212,11 @@ export const makeSecondFactorSealer = (secret: Redacted.Redacted<string>): Secon
                   );
                   return constantTimeEqual(new Uint8Array(digest), expected);
                 },
-                // A malformed entry matches nothing; it is not a dependency failure.
-                catch: () =>
-                  new AuthValidationError({ field: "recovery-code", reason: "malformed" }),
-              }).pipe(Effect.catchTag("AuthValidationError", () => Effect.succeed(false))),
+                catch: failure("match-recovery-code"),
+              }),
             ),
+            // A malformed entry matches nothing; it is not a failure of the call.
+            Effect.catchTag("AuthValidationError", () => Effect.succeed(false)),
           )
         : Effect.map(legacyHash(code), (digest) =>
             constantTimeEqual(encoder.encode(digest), encoder.encode(stored)),
