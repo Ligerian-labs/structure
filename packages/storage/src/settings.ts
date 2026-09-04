@@ -69,13 +69,28 @@ const inlineAllowlist = (value: Option.Option<string>): ReadonlyArray<string> =>
 
 /**
  * The endpoint string handed to the S3 driver for a `STORAGE_S3_ENDPOINT`
- * value: the URL's origin (scheme, host, port), never its `toString()`,
- * which always ends with a slash and would sign every request for a
- * `//bucket/...` path. A path, query or fragment on the configured URL is
- * not carried over: the driver is path-style and appends `/<bucket>/<key>`
- * to the origin itself.
+ * value: the URL as configured with its trailing slashes stripped, never
+ * its bare `toString()`, which ends with a slash for an origin and would
+ * sign every request for a `//bucket/...` path. Nothing else is touched: a
+ * path prefix (`https://gateway/s3`) is kept and the driver appends
+ * `/<bucket>/<key>` to it; a value the driver cannot reach fails later
+ * through its typed error channel, as it did before.
  */
-export const s3Endpoint = (url: URL): string => url.origin;
+export const s3Endpoint = (url: URL): string => url.href.replace(/\/+$/u, "");
+
+/**
+ * Why a `STORAGE_S3_ENDPOINT` value cannot be an endpoint at all, or
+ * `undefined` when it can: a query or fragment can never be part of a
+ * path-style endpoint (the bucket and key appended after it would be
+ * swallowed into the query or fragment), so they are refused at
+ * composition rather than signing requests for the wrong path.
+ */
+export const invalidS3Endpoint = (url: URL): string | undefined =>
+  url.search !== ""
+    ? "must not carry a query string"
+    : url.hash !== ""
+      ? "must not carry a fragment"
+      : undefined;
 
 /**
  * Builds the driver a `storageSettings` value selects, validating the
@@ -93,7 +108,15 @@ export const storageFromSettings = (
           onNone: () => Effect.fail(missing("STORAGE_DATA_DIR")),
           onSome: (dataDir) => Effect.succeed(makeLocalStorage({ rootDir: dataDir, policy })),
         });
-      case "s3":
+      case "s3": {
+        const endpointProblem = Option.isSome(settings.s3Endpoint)
+          ? invalidS3Endpoint(settings.s3Endpoint.value)
+          : undefined;
+        if (endpointProblem !== undefined) {
+          return yield* Effect.fail(
+            new StorageValidationError({ field: "STORAGE_S3_ENDPOINT", reason: endpointProblem }),
+          );
+        }
         return yield* Option.match(settings.s3Bucket, {
           onNone: () => Effect.fail(missing("STORAGE_S3_BUCKET")),
           onSome: (bucket) =>
@@ -119,5 +142,6 @@ export const storageFromSettings = (
                   }),
                 ),
         });
+      }
     }
   });

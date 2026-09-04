@@ -23,12 +23,12 @@ export interface S3StorageOptions {
   readonly accessKeyId: string;
   readonly secretAccessKey: Redacted.Redacted<string>;
   /**
-   * Path-style endpoint base: scheme, host and port, no trailing slash. The
-   * driver appends `/<bucket>/<key>` itself, and strips any trailing slash
-   * at construction so `http://minio:9000/` signs the same `/bucket/key`
-   * path as `http://minio:9000` (a doubled slash is rejected by every
-   * S3-compatible store as `SignatureDoesNotMatch`). Default:
-   * `https://s3.<region>.amazonaws.com`.
+   * Path-style endpoint base the driver appends `/<bucket>/<key>` to.
+   * Trailing slashes are stripped at construction, so `http://minio:9000/`
+   * signs the same `/bucket/key` path as `http://minio:9000` (a doubled
+   * slash is rejected by every S3-compatible store as
+   * `SignatureDoesNotMatch`); a path prefix is kept as given. A query or
+   * fragment is not supported. Default: `https://s3.<region>.amazonaws.com`.
    */
   readonly endpoint?: string;
   /** Optional key prefix inside the bucket (multi-tenant namespacing). */
