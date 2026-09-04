@@ -510,7 +510,13 @@ export const makeInMemoryStore = (
           // is the window counting down to the oldest hit leaving, never 0.
           const retryAfterMillis =
             rule.blockMillis > 0 ? rule.blockMillis : Math.max(1, untilOldestLeaves);
-          return denied(rule, retryAfterMillis, resetOf(hits, blockedFromNow, rule, timestamp));
+          // The documented invariant: when denied, retryAfterMillis <= resetMillis
+          // (matters only for a rule with no points, where no hit is recorded).
+          return denied(
+            rule,
+            retryAfterMillis,
+            Math.max(retryAfterMillis, resetOf(hits, blockedFromNow, rule, timestamp)),
+          );
         }
         hits.push(timestamp);
         remember(key, { hits, blockedUntil: 0 });

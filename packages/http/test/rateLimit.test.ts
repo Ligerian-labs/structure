@@ -144,6 +144,16 @@ describe("in-memory rate limit store", () => {
     expect(store.size()).toBe(1);
   });
 
+  test("a denied decision never reports a reset shorter than its retry-after, even with no points", async () => {
+    const store = makeInMemoryStore({ now: () => 7_000_000 });
+    const denied = await Effect.runPromise(
+      store.consume("none", { points: 0, windowMillis: 60_000, blockMillis: 0 }),
+    );
+    expect(denied.allowed).toBe(false);
+    expect(denied.retryAfterMillis).toBe(60_000);
+    expect(denied.resetMillis).toBeGreaterThanOrEqual(denied.retryAfterMillis);
+  });
+
   test("peek reports the budget without consuming it", async () => {
     let now = 1_000;
     const store = makeInMemoryStore({ now: () => now });
