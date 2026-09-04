@@ -67,4 +67,5 @@ Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_t
 | `STORAGE_S3_ENDPOINT` | url | no | AWS | |
 | `STORAGE_S3_ACCESS_KEY_ID` | string | driver=s3 | — | |
 | `STORAGE_S3_SECRET_ACCESS_KEY` | secret | driver=s3 | — | yes |
+| `STORAGE_S3_TIMEOUT` | duration | no | 30 seconds | |
 | `STORAGE_INLINE_CONTENT_TYPES` | string (csv) | no | — | |

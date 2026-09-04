@@ -31,7 +31,18 @@ export interface S3StorageOptions {
   readonly policy?: DispositionPolicy;
   /** Injectable transport for tests. Defaults to global `fetch`. */
   readonly fetchImpl?: typeof fetch;
+  /**
+   * Deadline for one request up to its response headers (the upload of a
+   * fixed body or one multipart part included). Default 30 s. A streamed
+   * download body is never bounded by this: see `bodyIdleTimeoutMillis`.
+   */
   readonly timeoutMillis?: number;
+  /**
+   * Idle timeout between two chunks of a downloaded body: the stream fails
+   * when no byte arrives for this long, however long the whole transfer
+   * takes. Default: `timeoutMillis`.
+   */
+  readonly bodyIdleTimeoutMillis?: number;
   readonly now?: () => Date;
 }
 
@@ -58,6 +69,7 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
   const policy = options.policy ?? dispositionPolicy();
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeout = options.timeoutMillis ?? 30_000;
+  const bodyIdleTimeout = options.bodyIdleTimeoutMillis ?? timeout;
 
   const credentials = {
     accessKeyId: options.accessKeyId,
@@ -88,11 +100,68 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
       ...(input.body === undefined ? {} : { body: input.body }),
       ...(options.now === undefined ? {} : { now: options.now() }),
     });
-    return await fetchImpl(signed.url, {
-      method: signed.method,
-      headers: signed.headers,
-      ...(signed.body === undefined ? {} : { body: signed.body }),
-      signal: AbortSignal.timeout(timeout),
+    // The deadline covers the request and the response headers only: it is
+    // disarmed once `fetch` resolves, so a body streamed to a slow consumer
+    // is never cut by a wall-clock timer (the idle guard below bounds it).
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new DOMException("s3 request timed out", "TimeoutError")),
+      timeout,
+    );
+    try {
+      return await fetchImpl(signed.url, {
+        method: signed.method,
+        headers: signed.headers,
+        ...(signed.body === undefined ? {} : { body: signed.body }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /** Reads a small text body (XML replies) within the request deadline. */
+  const readText = (response: Response, operation: string): Promise<string> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        void response.body?.cancel().catch(() => undefined);
+        reject(new StorageUnavailable({ driver: "s3", operation, reason: "s3-body" }));
+      }, timeout);
+    });
+    return Promise.race([response.text(), deadline]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+  };
+
+  /**
+   * Wraps a downloaded body so that a pause longer than `bodyIdleTimeout`
+   * between two chunks fails the stream (and cancels the source) instead of
+   * hanging the consumer forever; a transfer that keeps flowing is never cut.
+   */
+  const guardBody = (body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> => {
+    const reader = body.getReader();
+    return new ReadableStream<Uint8Array>({
+      pull: async (controller) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const idle = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`s3 download body idle for ${bodyIdleTimeout} ms`)),
+            bodyIdleTimeout,
+          );
+        });
+        try {
+          const next = await Promise.race([reader.read(), idle]);
+          if (next.done) controller.close();
+          else controller.enqueue(next.value);
+        } catch (cause) {
+          await reader.cancel(cause).catch(() => undefined);
+          controller.error(cause);
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      },
+      cancel: (reason) => reader.cancel(reason),
     });
   };
 
@@ -242,7 +311,7 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
         if (initiate.status !== 200) {
           throw failure("put-multipart-initiate", initiate.status, keyToString(input.key));
         }
-        const initiateBody = await initiate.text();
+        const initiateBody = await readText(initiate, "put-multipart-initiate");
         const uploadId = /<UploadId>([^<]+)<\/UploadId>/u.exec(initiateBody)?.[1];
         if (uploadId === undefined) {
           throw new StorageUnavailable({
@@ -335,7 +404,7 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
           return yield* failure("get", response.status, keyToString(key));
         const size = Number(response.headers.get("content-length") ?? "0");
         const meta = fromHeaders(key, response.headers, size);
-        const body = response.body ?? new ReadableStream<Uint8Array>();
+        const body = guardBody(response.body ?? new ReadableStream<Uint8Array>());
         return retrieved(meta, body, policy);
       }),
     head: (key) =>
@@ -369,7 +438,7 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
         });
         if (response.status !== 200) return yield* failure("list", response.status);
         const xml = yield* Effect.tryPromise({
-          try: () => response.text(),
+          try: () => readText(response, "list"),
           catch: () =>
             new StorageUnavailable({ driver: "s3", operation: "list", reason: "s3-body" }),
         });
