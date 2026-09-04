@@ -51,9 +51,10 @@ export interface SessionRecord {
 export interface TotpRecord {
   readonly tenantId: TenantId;
   readonly userId: UserId;
+  /** The secret as the service stores it: sealed (`v1:…`) by `makeTotp`, never the plaintext. */
   readonly secretBase32: string;
   readonly confirmed: boolean;
-  /** SHA-256 hashes of the single-use recovery codes (never the codes). */
+  /** Salted keyed hashes of the single-use recovery codes (never the codes). */
   readonly recoveryCodeHashes: ReadonlyArray<string>;
   readonly failedAttempts: number;
   readonly lockedUntil?: Date;

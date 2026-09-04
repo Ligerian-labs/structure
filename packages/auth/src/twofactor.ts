@@ -15,6 +15,7 @@ import {
   noOpAuthAuditSink,
   type RateLimiter,
 } from "./ports.js";
+import { makeSecondFactorSealer } from "./sealing.js";
 import type { AuthPrimitives, AuthService, AuthServiceError } from "./service.js";
 import type { AuthStore } from "./store.js";
 import { generateRecoveryCodes, generateTotpSecret, matchTotpCode, totpQrPayload } from "./totp.js";
@@ -29,6 +30,16 @@ export interface TotpServiceOptions {
     tenantId: TenantId,
   ) => Effect.Effect<TenantAuthConfig, AuthDependencyError | AuthValidationError>;
   readonly rateLimiter: RateLimiter;
+  /**
+   * The instance secret the second factor is sealed under at rest: the
+   * TOTP secret is encrypted (AES-256-GCM) and recovery codes are hashed
+   * with a per-code salt (HMAC-SHA-256), both under keys derived from it
+   * (HKDF-SHA-256 with a purpose label), so a database read alone yields no
+   * second factor. Enrollments stored before sealing existed keep verifying
+   * and are sealed on their next successful verification. Rotating the
+   * secret invalidates every enrollment sealed under the old one.
+   */
+  readonly secret: Redacted.Redacted<string>;
   readonly audit?: AuthAuditSink;
   /** Failed attempts before lockout. Default 5. */
   readonly lockoutThreshold?: number;
@@ -119,6 +130,26 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
   const threshold = options.lockoutThreshold ?? DEFAULT_LOCKOUT_THRESHOLD;
   const cooldown = options.lockoutCooldownMillis ?? DEFAULT_LOCKOUT_COOLDOWN;
   const audit = options.audit ?? noOpAuthAuditSink;
+  const sealer = makeSecondFactorSealer(options.secret);
+
+  /** The stored entry behind `code`, if any; every entry is compared. */
+  const recoveryEntryFor = (hashes: ReadonlyArray<string>, code: string) =>
+    Effect.map(
+      Effect.all(
+        hashes.map((stored) => sealer.matchRecoveryCode(code, stored, primitives.hashToken)),
+      ),
+      (matches) => hashes.find((_, index) => matches[index] === true),
+    );
+
+  /** Seals a plaintext (pre-sealing) secret in place; a no-op once sealed. */
+  const sealLegacySecret = (tenantId: TenantId, userId: string, stored: string) =>
+    sealer.isSealed(stored)
+      ? Effect.void
+      : sealer
+          .seal(stored)
+          .pipe(
+            Effect.flatMap((sealed) => options.store.replaceTotpSecret(tenantId, userId, sealed)),
+          );
 
   const limit = (tenantId: TenantId, action: AuthAction, key: string) =>
     primitives
@@ -171,7 +202,7 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
         yield* options.store.putTotpSecret({
           tenantId,
           userId: user.id,
-          secretBase32,
+          secretBase32: yield* sealer.seal(secretBase32),
           confirmed: false,
           recoveryCodeHashes: [],
           failedAttempts: 0,
@@ -195,11 +226,12 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
         if (pending === undefined || pending.confirmed) {
           return yield* new InvalidAuthToken({ purpose: "totp-enrollment" });
         }
-        const step = yield* matchTotpCode(pending.secretBase32, code, primitives.now());
+        const secretBase32 = yield* sealer.open(pending.secretBase32);
+        const step = yield* matchTotpCode(secretBase32, code, primitives.now());
         if (step === undefined) return yield* new InvalidCredentials({ reason: "totp" });
         const recoveryCodes = generateRecoveryCodes();
         const hashes = yield* Effect.all(
-          recoveryCodes.map((codeText) => primitives.hashToken(codeText)),
+          recoveryCodes.map((codeText) => sealer.hashRecoveryCode(codeText)),
         );
         yield* options.store.confirmTotp(tenantId, user.id, hashes, primitives.now());
         // The confirming code is spent too: it must not elevate a session next.
@@ -223,20 +255,24 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
           // Locked second factors never bypass: they wait out the cooldown.
           return yield* lockoutError(enrollment.lockedUntil);
         }
-        const step = yield* matchTotpCode(enrollment.secretBase32, code, primitives.now());
+        const secretBase32 = yield* sealer.open(enrollment.secretBase32);
+        const step = yield* matchTotpCode(secretBase32, code, primitives.now());
         // A valid code is accepted once: the step is claimed atomically, and
         // a second presentation (any session, any purpose) is a plain failure.
         if (
           step !== undefined &&
           (yield* options.store.markTotpStepUsed(tenantId, user.id, step))
         ) {
+          yield* sealLegacySecret(tenantId, user.id, enrollment.secretBase32);
           yield* options.store.resetTotpFailures(tenantId, user.id);
           yield* elevate(tenantId, sessionToken, user.id);
           return { elevated: true as const };
         }
         if (isRecoveryCode(code)) {
-          const codeHash = yield* primitives.hashToken(code);
-          const consumed = yield* options.store.consumeRecoveryCode(tenantId, user.id, codeHash);
+          const entry = yield* recoveryEntryFor(enrollment.recoveryCodeHashes, code);
+          const consumed =
+            entry !== undefined &&
+            (yield* options.store.consumeRecoveryCode(tenantId, user.id, entry));
           if (consumed) {
             yield* options.store.resetTotpFailures(tenantId, user.id);
             yield* elevate(tenantId, sessionToken, user.id);
@@ -276,16 +312,16 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
         ) {
           return yield* lockoutError(enrollment.lockedUntil);
         }
-        const step = yield* matchTotpCode(enrollment.secretBase32, code, primitives.now());
+        const secretBase32 = yield* sealer.open(enrollment.secretBase32);
+        const step = yield* matchTotpCode(secretBase32, code, primitives.now());
+        const entry = isRecoveryCode(code)
+          ? yield* recoveryEntryFor(enrollment.recoveryCodeHashes, code)
+          : undefined;
         const accepted =
           step !== undefined
             ? yield* options.store.markTotpStepUsed(tenantId, user.id, step)
-            : isRecoveryCode(code) &&
-              (yield* options.store.consumeRecoveryCode(
-                tenantId,
-                user.id,
-                yield* primitives.hashToken(code),
-              ));
+            : entry !== undefined &&
+              (yield* options.store.consumeRecoveryCode(tenantId, user.id, entry));
         if (!accepted) {
           const outcome = yield* options.store.recordTotpFailure({
             tenantId,

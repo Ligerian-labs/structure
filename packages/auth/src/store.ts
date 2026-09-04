@@ -111,6 +111,12 @@ export interface AuthStore {
     now: Date,
   ) => StoreEffect<TotpRecord | undefined>;
   readonly removeTotp: (tenantId: TenantId, userId: UserId) => StoreEffect<void>;
+  /** Rewrites only the stored secret (its sealed form); every other field stays. */
+  readonly replaceTotpSecret: (
+    tenantId: TenantId,
+    userId: UserId,
+    secretBase32: string,
+  ) => StoreEffect<void>;
   /** Counts one failure; locks (and reports) once the threshold is reached. */
   readonly recordTotpFailure: (input: {
     readonly tenantId: TenantId;
@@ -130,7 +136,11 @@ export interface AuthStore {
     userId: UserId,
     step: number,
   ) => StoreEffect<boolean>;
-  /** Single-use: removes the hash when present, reports whether it matched. */
+  /**
+   * Single-use, compare-and-delete: removes exactly this stored entry and
+   * answers true, or false when it is absent or the entry list changed
+   * underneath (a concurrent consumer won).
+   */
   readonly consumeRecoveryCode: (
     tenantId: TenantId,
     userId: UserId,
@@ -433,6 +443,12 @@ export const inMemoryAuthStore = (): InMemoryAuthStore => {
     removeTotp: (tenantId, userId) =>
       Effect.sync(() => {
         state.totp.delete(scoped(tenantId, userId));
+      }),
+    replaceTotpSecret: (tenantId, userId, secretBase32) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, userId);
+        const current = state.totp.get(key);
+        if (current !== undefined) state.totp.set(key, { ...current, secretBase32 });
       }),
     recordTotpFailure: ({ tenantId, userId, threshold, cooldownMillis, now }) =>
       Effect.sync(() => {
