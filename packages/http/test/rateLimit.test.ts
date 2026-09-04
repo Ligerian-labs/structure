@@ -146,9 +146,12 @@ describe("in-memory rate limit store", () => {
 
   test("a denied decision never reports a reset shorter than its retry-after, even with no points", async () => {
     const store = makeInMemoryStore({ now: () => 7_000_000 });
-    const denied = await Effect.runPromise(
-      store.consume("none", { points: 0, windowMillis: 60_000, blockMillis: 0 }),
-    );
+    const rule = { points: 0, windowMillis: 60_000, blockMillis: 0 };
+    const peeked = await Effect.runPromise(store.peek("none", rule));
+    expect(peeked.allowed).toBe(false);
+    expect(peeked.retryAfterMillis).toBe(60_000);
+    expect(peeked.resetMillis).toBeGreaterThanOrEqual(peeked.retryAfterMillis);
+    const denied = await Effect.runPromise(store.consume("none", rule));
     expect(denied.allowed).toBe(false);
     expect(denied.retryAfterMillis).toBe(60_000);
     expect(denied.resetMillis).toBeGreaterThanOrEqual(denied.retryAfterMillis);

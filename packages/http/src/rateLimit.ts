@@ -540,7 +540,9 @@ export const makeInMemoryStore = (
           const oldest = hits[0];
           const untilOldestLeaves =
             oldest === undefined ? rule.windowMillis : oldest + rule.windowMillis - timestamp;
-          return denied(rule, Math.max(1, untilOldestLeaves), resetMillis);
+          const retryAfterMillis = Math.max(1, untilOldestLeaves);
+          // Same invariant as consume: a denial's reset is never below its retry-after.
+          return denied(rule, retryAfterMillis, Math.max(retryAfterMillis, resetMillis));
         }
         return {
           allowed: true,
