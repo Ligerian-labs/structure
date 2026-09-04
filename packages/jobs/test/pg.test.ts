@@ -2,7 +2,17 @@ import { describe } from "bun:test";
 import * as SqlClient from "@effect/sql/SqlClient";
 import { PgClient } from "@effect/sql-pg";
 import { Readiness, Shutdown } from "@structure-ai/runtime";
-import { Context, Duration, Effect, Exit, type Fiber, Layer, Redacted, Scope } from "effect";
+import {
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  type Fiber,
+  Layer,
+  Logger,
+  Redacted,
+  Scope,
+} from "effect";
 import { migrate, Scheduler, schedulerLayer, tableNames } from "../src/index.js";
 import { registerSchedulerScenarios, type SchedulerHarness } from "./scenarios.js";
 
@@ -38,6 +48,16 @@ gated("PostgreSQL scheduler (needs DATABASE_URL)", () => {
     );
     const shutdown = Context.get(shutdownContext, Shutdown);
     const scheduler = Context.get(context, Scheduler);
+    const logRecords: Array<{ message: string; annotations: Record<string, unknown> }> = [];
+    const recordingLogger = Logger.replace(
+      Logger.defaultLogger,
+      Logger.make(({ message, annotations }) => {
+        logRecords.push({
+          message: Array.isArray(message) ? String(message[0]) : String(message),
+          annotations: Object.fromEntries(annotations),
+        });
+      }),
+    );
 
     const harness: SchedulerHarness = {
       scheduler,
@@ -55,11 +75,16 @@ gated("PostgreSQL scheduler (needs DATABASE_URL)", () => {
                 ...(options?.leaseMillis === undefined
                   ? {}
                   : { lease: Duration.millis(options.leaseMillis) }),
+                ...(options?.drainTimeoutMillis === undefined
+                  ? {}
+                  : { drainTimeout: Duration.millis(options.drainTimeoutMillis) }),
               })
-              .pipe(Effect.provideService(Shutdown, shutdown)),
+              .pipe(Effect.provideService(Shutdown, shutdown), Effect.provide(recordingLogger)),
           ),
         ),
-      stopWorker: () => Effect.runPromise(shutdown.trigger("test-complete")),
+      logRecords: () => logRecords,
+      stopWorker: () =>
+        Effect.runPromise(shutdown.trigger("test-complete").pipe(Effect.provide(recordingLogger))),
       deadLetters: () =>
         Effect.runPromise(
           sql`SELECT job_name, attempts FROM ${sql(tables.deadLetters)} ORDER BY dead_at`,

@@ -11,6 +11,7 @@ import {
   Fiber,
   Layer,
   Metric,
+  Option,
   Schema as S,
   Schedule,
 } from "effect";
@@ -136,6 +137,15 @@ export interface WorkerOptions {
   /** Lease held while a handler runs; expiry makes the row reclaimable. Default 60s. */
   readonly lease?: Duration.DurationInput;
   /**
+   * How long the shutdown drain waits for in-flight handlers before giving
+   * up. Keep it below the coordinator's finalizer timeout so the worker,
+   * not the coordinator, decides. On overrun (or when the coordinator cuts
+   * the drain first) every job still in flight is returned to the queue:
+   * lease released, claimable at once, logged by id at error level; its
+   * late completion is fenced out. Default: wait until the coordinator cuts.
+   */
+  readonly drainTimeout?: Duration.DurationInput;
+  /**
    * Role-aware boot: `api` runs no worker (scheduling only), `worker` and
    * `all` do. Default `all`.
    */
@@ -178,7 +188,8 @@ export interface SchedulerService {
   readonly registeredJobs: () => ReadonlyArray<string>;
   /**
    * Runs the worker loop until the Shutdown coordinator triggers, then
-   * drains: no in-flight job is interrupted. Claims with
+   * drains: no in-flight job is interrupted, and a drain that outlives its
+   * budget returns the in-flight jobs to the queue. Claims with
    * `FOR UPDATE SKIP LOCKED`, heartbeats its lease, retries transient
    * failures with jittered backoff, and dead-letters permanent failures and
    * exhausted attempts.
@@ -487,7 +498,12 @@ export const makeScheduler = (
             ? 60_000
             : Duration.toMillis(Duration.decode(workerOptions.lease));
 
-        const inflight = new Set<Fiber.RuntimeFiber<void, unknown>>();
+        const drainTimeout =
+          workerOptions.drainTimeout === undefined
+            ? undefined
+            : Duration.decode(workerOptions.drainTimeout);
+
+        const inflight = new Map<Fiber.RuntimeFiber<void, unknown>, QueueRow>();
         // The bound itself: a handler runs only while holding one permit, so
         // even a miscounted claim can never exceed `concurrency` executions.
         const permits = yield* Effect.makeSemaphore(concurrency);
@@ -496,6 +512,40 @@ export const makeScheduler = (
         let slotFreed = yield* Deferred.make<void>();
         let stopRequested = false;
 
+        const awaitInflight: Effect.Effect<void> = Effect.whileLoop({
+          while: () => inflight.size > 0,
+          body: () => Effect.sleep("10 millis"),
+          step: () => undefined,
+        });
+
+        // The drain gave up (its own budget, or the coordinator's cut): return
+        // every in-flight job to the queue so another worker picks it up at
+        // once instead of after a full lease, and say which ones, loudly.
+        // The handlers keep running until the process ends; their writes are
+        // fenced out by the released lease.
+        const abandonDrain: Effect.Effect<void> = Effect.gen(function* () {
+          const rows = [...inflight.values()];
+          if (rows.length === 0) return;
+          yield* Effect.logError("jobs worker abandoned drain").pipe(
+            Effect.annotateLogs({
+              jobIds: rows.map((row) => row.id).join(","),
+              jobCount: rows.length,
+            }),
+          );
+          const timestamp = now().toISOString();
+          yield* Effect.forEach(
+            rows,
+            (row) =>
+              sql`
+                UPDATE ${sql(tables.queue)}
+                SET status = 'queued', run_at = ${timestamp}, lease_expires_at = NULL,
+                    lease_owner = NULL, updated_at = ${timestamp}
+                WHERE id = ${row.id} AND status = 'running' AND lease_owner = ${row.lease_owner}
+              `.pipe(Effect.asVoid),
+            { discard: true },
+          );
+        }).pipe(Effect.catchAllCause(() => Effect.void));
+
         yield* shutdown.onShutdown(
           "jobs-worker",
           Effect.sync(() => {
@@ -503,12 +553,16 @@ export const makeScheduler = (
           }).pipe(
             Effect.zipRight(Effect.logInfo("jobs worker draining")),
             Effect.zipRight(
-              Effect.whileLoop({
-                while: () => inflight.size > 0,
-                body: () => Effect.sleep("10 millis"),
-                step: () => undefined,
-              }),
+              drainTimeout === undefined
+                ? awaitInflight
+                : awaitInflight.pipe(
+                    Effect.timeoutOption(drainTimeout),
+                    Effect.flatMap((completed) =>
+                      Option.isNone(completed) ? abandonDrain : Effect.void,
+                    ),
+                  ),
             ),
+            Effect.onInterrupt(() => abandonDrain),
           ),
         );
 
@@ -534,7 +588,7 @@ export const makeScheduler = (
               }
               for (const row of rows) {
                 const fiber = yield* Effect.fork(permits.withPermits(1)(execute(row, leaseMillis)));
-                inflight.add(fiber);
+                inflight.set(fiber, row);
                 void fiber.addObserver(() => {
                   inflight.delete(fiber);
                   Deferred.unsafeDone(slotFreed, Effect.void);
@@ -548,11 +602,7 @@ export const makeScheduler = (
         });
         yield* loop;
         // Graceful drain: wait for in-flight handlers to finish.
-        yield* Effect.whileLoop({
-          while: () => inflight.size > 0,
-          body: () => Effect.sleep("10 millis"),
-          step: () => undefined,
-        });
+        yield* awaitInflight;
         yield* Effect.logInfo("jobs worker drained").pipe(
           Effect.annotateLogs({ drained: inflight.size }),
         );
