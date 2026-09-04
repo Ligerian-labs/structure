@@ -23,7 +23,8 @@ export const tableNames = (options: AdapterOptions = {}): TableNames => {
  * Creates the jobs schema in one transaction, `@structure-ai/migrations`
  * style (idempotent DDL a designated migrator can run at boot). The queue
  * index covers the dispatch predicate (`status = queued AND run_at <= now`
- * plus lease-expiry reclaims).
+ * plus lease-expiry reclaims). `lease_owner` is the per-claim token every
+ * completion, retry, dead-letter and heartbeat is fenced on.
  */
 export const migrate = (
   options: AdapterOptions = {},
@@ -43,12 +44,17 @@ export const migrate = (
         attempt INTEGER NOT NULL DEFAULT 0,
         max_attempts INTEGER NOT NULL DEFAULT 5,
         lease_expires_at TIMESTAMPTZ,
+        lease_owner TEXT,
         last_error TEXT,
         correlation_id TEXT,
         causation_id TEXT,
         created_at TIMESTAMPTZ NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL
       )
+    `;
+    // Instances created before the lease fence existed gain the owner column.
+    yield* sql`
+      ALTER TABLE ${sql(tables.queue)} ADD COLUMN IF NOT EXISTS lease_owner TEXT
     `;
     yield* sql`
       CREATE INDEX IF NOT EXISTS ${sql(`${tables.queue}_dispatch_idx`)}

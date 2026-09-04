@@ -64,6 +64,25 @@ gated("PostgreSQL scheduler (needs DATABASE_URL)", () => {
         Effect.runPromise(
           sql`SELECT job_name, attempts FROM ${sql(tables.deadLetters)} ORDER BY dead_at`,
         ),
+      queueRows: () =>
+        Effect.runPromise(
+          sql<{
+            id: string;
+            status: string;
+            attempt: number;
+            lease_owner: string | null;
+            lease_expires_at: Date | null;
+          }>`SELECT id, status, attempt, lease_owner, lease_expires_at FROM ${sql(tables.queue)}`,
+        ),
+      reclaim: (jobId, owner, leaseMillis) =>
+        Effect.runPromise(
+          sql`
+            UPDATE ${sql(tables.queue)}
+            SET status = 'running', attempt = attempt + 1, lease_owner = ${owner},
+                lease_expires_at = ${new Date(Date.now() + leaseMillis).toISOString()}
+            WHERE id = ${jobId}
+          `.pipe(Effect.asVoid),
+        ),
       close: async () => {
         await Effect.runPromise(Effect.orDie(sql`DROP TABLE IF EXISTS ${sql(tables.queue)}`));
         await Effect.runPromise(Effect.orDie(sql`DROP TABLE IF EXISTS ${sql(tables.deadLetters)}`));
