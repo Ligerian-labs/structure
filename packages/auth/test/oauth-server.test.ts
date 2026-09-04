@@ -1479,3 +1479,35 @@ describe("issued token shape", () => {
     expect(JSON.stringify(rotated)).not.toContain("refreshTokenId");
   });
 });
+
+describe("the fresh pair partly swept before the re-read", () => {
+  test("a revoked fresh refresh record refuses and takes its live access sibling with it", async () => {
+    const events: Array<string> = [];
+    const real = inMemoryOAuthServerStore();
+    // Only the fresh refresh record was revoked in the window (a partial
+    // sweep): its access sibling is still live when we re-read.
+    let partial = false;
+    const store: OAuthServerStore = {
+      ...real,
+      findTokenById: (tenantId, tokenId) =>
+        Effect.gen(function* () {
+          const found = yield* real.findTokenById(tenantId, tokenId);
+          if (found?.kind === "refresh" && found.revokedAt === undefined && !partial) {
+            partial = true;
+            yield* real.revokeToken(tenantId, tokenId, clock.value);
+            return yield* real.findTokenById(tenantId, tokenId);
+          }
+          return found;
+        }),
+    };
+    const { server, first, call } = await grantOn(store, events);
+    expect(
+      await flip(
+        server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(partial).toBe(true);
+    expect(events).toEqual([]);
+    expect(real.snapshot().tokens.filter((token) => token.revokedAt === undefined)).toEqual([]);
+  });
+});
