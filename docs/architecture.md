@@ -55,7 +55,7 @@ No cycles; `dotenv` sits above `config` (it feeds `load(settings, { env })` and 
 
 `@structure-ai/auth` owns credentials, external identities, verification tokens, WebAuthn challenges/passkeys, and opaque sessions. Tenant ID participates in every uniqueness and lookup key. Applications own profile data and authorization decisions; they refer to the authenticated user ID instead of reading or extending auth storage directly.
 
-Durable `AuthStore` implementations preserve the package's atomic commands: identity creation with uniqueness, one-time consumption, password replacement with session revocation, and passkey counter advancement. `auth-sqlite` and `auth-pg` implement that contract with Bun-native SQL, tenant-leading keys, transactions, and compare-and-set updates. Account linking is an explicit application policy and defaults to denied—even when a provider reports the same verified email.
+Durable `AuthStore` implementations preserve the package's atomic commands: identity creation with uniqueness, one-time consumption, password replacement with session revocation, passkey counter advancement, one-time TOTP steps (claimed, never rewound), compare-and-delete recovery codes, and refresh-token family revocation. Second-factor material reaches the store already sealed under the instance secret; access tokens are verified by signature before any claim is read; anonymous rate-limit walls key on the caller the application names, never on a shared constant. `auth-sqlite` and `auth-pg` implement that contract with Bun-native SQL, tenant-leading keys, transactions, and compare-and-set updates. Account linking is an explicit application policy and defaults to denied—even when a provider reports the same verified email.
 
 ## Consistency model
 

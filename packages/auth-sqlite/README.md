@@ -42,6 +42,6 @@ The adapter stores UTC timestamps as ISO text so lexical expiry comparisons rema
 
 ## Operations
 
-`migrate` creates the initial schema idempotently in one transaction. Invoke it from one deploy job or designated migrator, not every serving instance. Future schema changes remain forward-only under the application's migration process.
+`migrate` creates the schema idempotently in one transaction and carries the additive upgrades (`oauth2_tokens.family_id` for refresh-token families, `totp.last_used_step` for one-time TOTP codes, `sessions.elevated_at`) as `ALTER TABLE ... ADD COLUMN` steps that are no-ops once present, so a database created by an older release is upgraded in place. Invoke it from one deploy job or designated migrator, not every serving instance. Future schema changes remain forward-only under the application's migration process.
 
 Applications must schedule tenant-aware deletion of expired rows from tokens, sessions, OAuth states, and passkey challenges. Close the Bun `SQL` connection during bounded application shutdown.
