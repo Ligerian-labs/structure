@@ -55,6 +55,8 @@ export {
   EmailHeaders,
   EmailMessage,
   type EmailMessageInput,
+  isReservedHeaderName,
+  RESERVED_HEADER_NAMES,
 } from "./message.js";
 export {
   driverFromSettings,
