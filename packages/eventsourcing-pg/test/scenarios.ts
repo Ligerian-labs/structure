@@ -8,23 +8,29 @@
  * sync.
  */
 import { expect, test } from "bun:test";
-import type * as SqlClient from "@effect/sql/SqlClient";
+import * as SqlClient from "@effect/sql/SqlClient";
+import { DomainEvent } from "@structure-ai/domain";
 import {
   AggregateStore,
   CheckpointStore,
+  EventRegistry,
   EventStore,
+  HistoryImport,
+  HistoryImporter,
   Inbox,
   Outbox,
   Projection,
   SnapshotStore,
+  type StoredEvent,
 } from "@structure-ai/eventsourcing";
-import { Chunk, Effect, Either, Option, Ref, Stream } from "effect";
-import { type AdapterOptions, appendWithOutbox } from "../src/index.js";
-import { Counter, counterRegistry, testMetadata } from "./fixtures.js";
+import { Chunk, Effect, Either, Exit, Option, Ref, Schema, Stream } from "effect";
+import { type AdapterOptions, appendWithOutbox, tableNames } from "../src/index.js";
+import { Counter, counterRegistry, Incremented, testMetadata } from "./fixtures.js";
 
 /** Services a scenario may use: the five ports plus the raw sql client. */
 export type TestServices =
   | EventStore
+  | HistoryImporter
   | SnapshotStore
   | CheckpointStore
   | Outbox
@@ -378,6 +384,232 @@ export const registerScenarios = (run: RunTest): void => {
         expect(resumed).toEqual({ processed: 1, skipped: 0 });
         expect((yield* Ref.get(applied)).length).toBe(3);
         expect(yield* checkpoints.load("counter-totals")).toBe(3n);
+      }),
+    ));
+};
+
+const importedEvent = (
+  position: bigint,
+  streamName: string,
+  version: number,
+  eventId: string,
+  type: "Incremented" | "OrderPlaced" = "Incremented",
+): StoredEvent => ({
+  position,
+  streamName,
+  version,
+  type,
+  schemaVersion: 1,
+  payload:
+    type === "Incremented"
+      ? { _tag: "Incremented", amount: version }
+      : { _tag: "OrderPlaced", orderId: streamName.slice("Order-".length) },
+  metadata: {
+    eventId,
+    occurredAt: `2025-01-01T00:00:0${position.toString()}.000Z`,
+    aggregateName: type === "Incremented" ? "Counter" : "Order",
+    aggregateId:
+      type === "Incremented"
+        ? streamName.slice("Counter-".length)
+        : streamName.slice("Order-".length),
+    aggregateVersion: version,
+    correlationId: "migration-pg",
+    causationId: `legacy-${eventId}`,
+    actor: "legacy-user",
+  },
+});
+
+const OrderPlaced = DomainEvent.define("OrderPlaced", { orderId: Schema.String });
+const historyRegistry = EventRegistry.make([
+  { schema: Incremented, schemaVersion: 1 },
+  { schema: OrderPlaced, schemaVersion: 1 },
+]);
+
+/** PostgreSQL-only frozen-history scenarios, including a committed interruption and resume. */
+export const registerHistoryImportScenarios = (run: RunTest): void => {
+  test("imports exact cross-stream history without outbox work and retries idempotently", () =>
+    run((options) =>
+      Effect.gen(function* () {
+        const importer = yield* HistoryImporter;
+        const store = yield* EventStore;
+        const outbox = yield* Outbox;
+        const sql = yield* SqlClient.SqlClient;
+        const tables = tableNames(options);
+        const events = [
+          importedEvent(1n, "Counter-a", 1, "pg-event-1"),
+          importedEvent(2n, "Order-b", 1, "pg-event-2", "OrderPlaced"),
+          importedEvent(3n, "Counter-a", 2, "pg-event-3"),
+        ];
+        const checksum = yield* HistoryImport.checksum(events);
+        const request = {
+          importId: "pg-legacy-store",
+          batchId: "batch-1",
+          events,
+          checksum,
+          complete: true,
+        } as const;
+        const first = yield* importer.importBatch(request, historyRegistry);
+        yield* sql`
+          SELECT setval(
+            pg_get_serial_sequence(format('%I', ${tables.events}::text), 'position'),
+            1,
+            true
+          )
+        `;
+        const retry = yield* importer.importBatch(request, historyRegistry);
+        expect(retry).toEqual({ ...first, status: "unchanged" });
+        const stored = Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()));
+        expect(stored).toEqual(events);
+        expect(yield* outbox.pending(10)).toEqual([]);
+        yield* store.append("Counter-a", 2, [
+          {
+            type: events[0]?.type ?? "Incremented",
+            schemaVersion: 1,
+            payload: { _tag: "Incremented", amount: 2 },
+            metadata: {
+              ...importedEvent(4n, "Counter-a", 3, "pg-event-4").metadata,
+            },
+          },
+        ]);
+        const withLiveEvent = Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()));
+        expect(withLiveEvent.at(-1)?.position).toBe(4n);
+      }),
+    ));
+
+  test("resumes an interrupted import and rejects a divergent retry atomically", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const importer = yield* HistoryImporter;
+        const store = yield* EventStore;
+        const firstEvents = [
+          importedEvent(1n, "Counter-a", 1, "pg-resume-1"),
+          importedEvent(2n, "Counter-b", 1, "pg-resume-2"),
+        ];
+        const firstChecksum = yield* HistoryImport.checksum(firstEvents);
+        const first = yield* importer.importBatch(
+          {
+            importId: "pg-resume-store",
+            batchId: "batch-1",
+            events: firstEvents,
+            checksum: firstChecksum,
+          },
+          historyRegistry,
+        );
+
+        const divergentEvents: ReadonlyArray<StoredEvent> = [
+          {
+            ...importedEvent(1n, "Counter-a", 1, "pg-resume-1"),
+            payload: { _tag: "Incremented", amount: 9 },
+          },
+        ];
+        const divergentChecksum = yield* HistoryImport.checksum(divergentEvents);
+        const divergent = yield* Effect.either(
+          importer.importBatch(
+            {
+              importId: "pg-resume-store",
+              batchId: "batch-1",
+              events: divergentEvents,
+              checksum: divergentChecksum,
+            },
+            historyRegistry,
+          ),
+        );
+        expect(Either.isLeft(divergent)).toBe(true);
+        if (Either.isLeft(divergent) && divergent.left._tag === "HistoryImportError") {
+          expect(divergent.left.reason).toBe("divergent-batch");
+        }
+
+        const secondEvents = [importedEvent(3n, "Counter-a", 2, "pg-resume-3")];
+        const secondChecksum = yield* HistoryImport.checksum(secondEvents);
+        yield* importer.importBatch(
+          {
+            importId: "pg-resume-store",
+            batchId: "batch-2",
+            events: secondEvents,
+            checksum: secondChecksum,
+            resumeToken: first.resumeToken,
+            complete: true,
+          },
+          historyRegistry,
+        );
+        expect(Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()))).toEqual([
+          ...firstEvents,
+          ...secondEvents,
+        ]);
+      }),
+    ));
+
+  test("rejects a registry decode failure before PostgreSQL writes any event", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const importer = yield* HistoryImporter;
+        const store = yield* EventStore;
+        const events: ReadonlyArray<StoredEvent> = [
+          importedEvent(1n, "Counter-a", 1, "pg-invalid-1"),
+          {
+            ...importedEvent(2n, "Counter-b", 1, "pg-invalid-2"),
+            type: "UnknownEvent",
+            payload: { _tag: "UnknownEvent" },
+          },
+        ];
+        const checksum = yield* HistoryImport.checksum(events);
+        const result = yield* Effect.either(
+          importer.importBatch(
+            {
+              importId: "pg-invalid-store",
+              batchId: "batch-1",
+              events,
+              checksum,
+              complete: true,
+            },
+            historyRegistry,
+          ),
+        );
+        expect(Either.isLeft(result)).toBe(true);
+        if (Either.isLeft(result)) expect(result.left._tag).toBe("EventDecodeError");
+        expect(Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()))).toEqual([]);
+      }),
+    ));
+
+  test("rolls back position allocation when bookkeeping fails after event inserts", () =>
+    run((options) =>
+      Effect.gen(function* () {
+        const importer = yield* HistoryImporter;
+        const store = yield* EventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const tables = tableNames(options);
+        yield* sql`
+          ALTER TABLE ${sql(tables.historyImportBatches)}
+          ADD CONSTRAINT ${sql(`${tables.historyImportBatches}_reject_test_batch`)}
+          CHECK (batch_id <> 'reject-after-events')
+        `;
+        const events = [importedEvent(1n, "Counter-a", 1, "pg-rollback-1")];
+        const checksum = yield* HistoryImport.checksum(events);
+        const failed = yield* Effect.exit(
+          importer.importBatch(
+            {
+              importId: "pg-rollback-store",
+              batchId: "reject-after-events",
+              events,
+              checksum,
+              complete: true,
+            },
+            historyRegistry,
+          ),
+        );
+        expect(Exit.isFailure(failed)).toBe(true);
+        expect(Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()))).toEqual([]);
+
+        yield* store.append("Counter-live", 0, [
+          {
+            type: "Incremented",
+            schemaVersion: 1,
+            payload: { _tag: "Incremented", amount: 1 },
+            metadata: testMetadata(1),
+          },
+        ]);
+        const stored = Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()));
+        expect(stored[0]?.position).toBe(1n);
       }),
     ));
 };

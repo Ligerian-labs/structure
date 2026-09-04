@@ -35,7 +35,7 @@ describe("AggregateStore", () => {
       yield* counters.execute(
         "c2",
         { _tag: "Increment", amount: 1 },
-        { correlationId: "corr-1", causationId: "cause-1" },
+        { correlationId: "corr-1", causationId: "cause-1", actor: "ada" },
       );
       const store = yield* EventStore;
       const stored = Chunk.toReadonlyArray(yield* Stream.runCollect(store.read("Counter-c2")));
@@ -46,6 +46,7 @@ describe("AggregateStore", () => {
       }
       expect(first.metadata.correlationId).toBe("corr-1");
       expect(first.metadata.causationId).toBe("cause-1");
+      expect(first.metadata.actor).toBe("ada");
       expect(first.metadata.aggregateName).toBe("Counter");
       expect(first.metadata.aggregateId).toBe("c2");
       expect(first.metadata.aggregateVersion).toBe(1);

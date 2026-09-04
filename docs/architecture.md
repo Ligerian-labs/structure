@@ -25,7 +25,7 @@ flowchart LR
 - The **bus** (`cqrs`) owns boundary validation (shape), authorization of the action, idempotency keys (scoped per actor and command, bound to a payload hash, claimed before the handler runs), tracing/metrics. Business rules live one step deeper.
 - **Authorization** (`authorization`) is a typed policy value (roles × `resource:action` permissions, conditional grants, scoped roles) checked against the `Principal` attached to the fiber; the bus `Authorizer` and HTTP guards are adapters over it. It fails closed and distinguishes `Unauthenticated` (401) from `PermissionDenied` (403).
 - The **aggregate** (`domain`) is a pure decider: `decide` accepts/rejects, `evolve` folds. The same definition serves state-stored and event-sourced persistence.
-- The **aggregate store** (`eventsourcing`) enforces optimistic concurrency (`expectedVersion` append) and stamps event metadata (correlation/causation).
+- The **aggregate store** (`eventsourcing`) enforces optimistic concurrency (`expectedVersion` append) and stamps event metadata (correlation/causation and optional actor).
 - **Read models** (`viewmodel`) are hydrated asynchronously by projections; queries only ever read them.
 - **Cross-context effects** leave through the transactional **outbox**; consumers are made idempotent by the **inbox**.
 

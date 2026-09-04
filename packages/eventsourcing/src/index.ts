@@ -15,6 +15,22 @@ export {
   type StoredEventMetadata,
 } from "./EventStore.js";
 export {
+  type HistoryEventDecoder,
+  HistoryImport,
+  type HistoryImportBatch,
+  HistoryImportError,
+  HistoryImporter,
+  type HistoryImporterService,
+  type HistoryImportFailureReason,
+  type HistoryImportResult,
+  type HistoryImportTarget,
+  historyImportConflict,
+  historyImportResumeToken,
+  historyImportTarget,
+  prepareHistoryImportBatch,
+  validateHistoryImportContinuation,
+} from "./HistoryImport.js";
+export {
   InMemoryAll,
   InMemoryCheckpointStore,
   InMemoryEventStore,

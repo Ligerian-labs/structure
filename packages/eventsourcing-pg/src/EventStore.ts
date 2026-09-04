@@ -6,11 +6,19 @@ import {
   type AppendResult,
   EventStore,
   type EventStoreService,
+  HistoryImporter,
+  type HistoryImporterService,
+  type HistoryImportResult,
+  type HistoryImportTarget,
+  historyImportConflict,
+  historyImportResumeToken,
   type OutboxMessage,
+  prepareHistoryImportBatch,
   type StoredEvent,
   type StoredEventMetadata,
+  validateHistoryImportContinuation,
 } from "@structure-ai/eventsourcing";
-import { Effect, Layer, Stream } from "effect";
+import { Context, Effect, Layer, Stream } from "effect";
 import { conflictIdentity, jsonText, toBigInt, toNumber } from "./internal.js";
 import { type AdapterOptions, type TableNames, tableNames } from "./schema.js";
 
@@ -51,12 +59,42 @@ const isEventsVersionConflict = (error: SqlError, eventsTable: string): boolean 
 
 interface EventStoreWithOutbox {
   readonly service: EventStoreService;
+  readonly historyImporter: HistoryImporterService;
   readonly appendWithOutbox: (
     streamName: string,
     expectedVersion: number,
     events: ReadonlyArray<AppendEvent>,
     messages: ReadonlyArray<OutboxMessage>,
   ) => Effect.Effect<AppendResult, ConcurrencyConflict | SqlError>;
+}
+
+interface HistoryImportRow {
+  readonly import_id: string;
+  readonly resume_token: string;
+  readonly last_position: number | bigint | string;
+  readonly complete: boolean;
+}
+
+interface HistoryImportBatchRow {
+  readonly previous_token: string | null;
+  readonly checksum: string;
+  readonly complete: boolean;
+  readonly imported_count: number | bigint | string;
+  readonly last_position: number | bigint | string;
+  readonly result_token: string;
+}
+
+interface LatestPositionRow {
+  readonly position: number | bigint | string | null;
+}
+
+interface StreamVersionRow {
+  readonly stream_name: string;
+  readonly version: number | bigint | string;
+}
+
+interface EventIdRow {
+  readonly event_id: string;
 }
 
 const make = (
@@ -217,7 +255,166 @@ const make = (
       },
     });
 
-    return { service, appendWithOutbox: appendTransaction };
+    const historyImporter = HistoryImporter.of({
+      importBatch: (batch, decoder) =>
+        Effect.gen(function* () {
+          const eventIds = yield* prepareHistoryImportBatch(batch, decoder);
+          const lastEvent = batch.events.at(-1);
+          if (lastEvent === undefined) return yield* Effect.die("validated batch has no events");
+          const resultToken = yield* historyImportResumeToken(batch, lastEvent.position);
+          const result = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`LOCK TABLE ${sql(tables.events)} IN EXCLUSIVE MODE`;
+                yield* sql`LOCK TABLE ${sql(tables.historyImports)} IN EXCLUSIVE MODE`;
+                yield* sql`LOCK TABLE ${sql(tables.historyImportBatches)} IN EXCLUSIVE MODE`;
+
+                const recordedRows = yield* sql<HistoryImportBatchRow>`
+                  SELECT previous_token, checksum, complete, imported_count,
+                         last_position, result_token
+                  FROM ${sql(tables.historyImportBatches)}
+                  WHERE import_id = ${batch.importId} AND batch_id = ${batch.batchId}
+                `;
+                const recorded = recordedRows[0];
+                const complete = batch.complete ?? false;
+                if (recorded !== undefined) {
+                  if (
+                    recorded.checksum !== batch.checksum ||
+                    (recorded.previous_token ?? undefined) !== batch.resumeToken ||
+                    recorded.complete !== complete
+                  ) {
+                    return yield* historyImportConflict(
+                      "divergent-batch",
+                      `batch ${batch.batchId} was already committed with different content or state`,
+                    );
+                  }
+                  return {
+                    status: "unchanged",
+                    importedCount: toNumber(recorded.imported_count),
+                    lastPosition: toBigInt(recorded.last_position),
+                    resumeToken: recorded.result_token,
+                    complete: recorded.complete,
+                  } satisfies HistoryImportResult;
+                }
+
+                const sessionRows = yield* sql<HistoryImportRow>`
+                  SELECT import_id, resume_token, last_position, complete
+                  FROM ${sql(tables.historyImports)}
+                  WHERE import_id = ${batch.importId}
+                `;
+                const session = sessionRows[0];
+                const latestRows = yield* sql<LatestPositionRow>`
+                  SELECT max(position) AS position
+                  FROM ${sql(tables.events)}
+                `;
+                const streamNames = [...new Set(batch.events.map((event) => event.streamName))];
+                const versionRows = yield* sql<StreamVersionRow>`
+                  SELECT stream_name, max(version) AS version
+                  FROM ${sql(tables.events)}
+                  WHERE stream_name IN ${sql.in(streamNames)}
+                  GROUP BY stream_name
+                `;
+                const duplicateRows = yield* sql<EventIdRow>`
+                  SELECT metadata->>'eventId' AS event_id
+                  FROM ${sql(tables.events)}
+                  WHERE metadata->>'eventId' IN ${sql.in([...eventIds])}
+                `;
+                const target: HistoryImportTarget = {
+                  lastPosition: toBigInt(latestRows[0]?.position ?? 0),
+                  streamVersions: new Map(
+                    versionRows.map((row) => [row.stream_name, toNumber(row.version)]),
+                  ),
+                  eventIds: new Set(duplicateRows.map((row) => row.event_id)),
+                };
+
+                if (session === undefined) {
+                  if (target.lastPosition > 0n) {
+                    return yield* historyImportConflict(
+                      "target-not-empty",
+                      "a new import requires an empty event store",
+                    );
+                  }
+                  if (batch.resumeToken !== undefined) {
+                    return yield* historyImportConflict(
+                      "resume-token-mismatch",
+                      "the first batch must not include a resume token",
+                    );
+                  }
+                } else {
+                  if (session.complete) {
+                    return yield* historyImportConflict(
+                      "import-complete",
+                      `import ${batch.importId} is already complete`,
+                    );
+                  }
+                  if (batch.resumeToken !== session.resume_token) {
+                    return yield* historyImportConflict(
+                      "resume-token-mismatch",
+                      `batch ${batch.batchId} does not resume the latest committed batch`,
+                    );
+                  }
+                  if (target.lastPosition !== toBigInt(session.last_position)) {
+                    return yield* historyImportConflict(
+                      "target-not-empty",
+                      "the target changed after the latest import batch",
+                    );
+                  }
+                }
+
+                yield* validateHistoryImportContinuation(batch.events, target);
+                yield* Effect.forEach(
+                  batch.events,
+                  (event) => sql`
+                    INSERT INTO ${sql(tables.events)}
+                      (position, stream_name, version, type, schema_version, payload, metadata)
+                    VALUES
+                      (${String(event.position)}, ${event.streamName}, ${event.version}, ${event.type},
+                       ${event.schemaVersion}, ${jsonText(event.payload)}::jsonb,
+                       ${jsonText(event.metadata)}::jsonb)
+                  `,
+                  { discard: true },
+                );
+                yield* sql`
+                  INSERT INTO ${sql(tables.historyImports)}
+                    (import_id, resume_token, last_position, complete)
+                  VALUES
+                    (${batch.importId}, ${resultToken}, ${String(lastEvent.position)}, ${complete})
+                  ON CONFLICT (import_id) DO UPDATE SET
+                    resume_token = EXCLUDED.resume_token,
+                    last_position = EXCLUDED.last_position,
+                    complete = EXCLUDED.complete
+                `;
+                yield* sql`
+                  INSERT INTO ${sql(tables.historyImportBatches)}
+                    (import_id, batch_id, previous_token, checksum, complete,
+                     imported_count, last_position, result_token)
+                  VALUES
+                    (${batch.importId}, ${batch.batchId}, ${batch.resumeToken ?? null},
+                     ${batch.checksum}, ${complete}, ${batch.events.length},
+                     ${String(lastEvent.position)}, ${resultToken})
+                `;
+                return {
+                  status: "imported",
+                  importedCount: batch.events.length,
+                  lastPosition: lastEvent.position,
+                  resumeToken: resultToken,
+                  complete,
+                } satisfies HistoryImportResult;
+              }),
+            )
+            .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
+          yield* sql`
+            SELECT setval(
+              pg_get_serial_sequence(format('%I', ${tables.events}::text), 'position'),
+              (SELECT max(position) FROM ${sql(tables.events)}),
+              true
+            )
+          `.pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
+          return result;
+        }),
+    });
+
+    return { service, historyImporter, appendWithOutbox: appendTransaction };
   });
 
 /**
@@ -241,8 +438,11 @@ export const appendWithOutbox = (
 /** `EventStore` backed by the `events` table of the `SqlClient` in context. */
 export const eventStoreLayer = (
   options?: AdapterOptions,
-): Layer.Layer<EventStore, never, SqlClient.SqlClient> =>
-  Layer.effect(
-    EventStore,
-    Effect.map(make(tableNames(options)), (store) => store.service),
+): Layer.Layer<EventStore | HistoryImporter, never, SqlClient.SqlClient> =>
+  Layer.effectContext(
+    Effect.map(make(tableNames(options)), (store) =>
+      Context.make(EventStore, store.service).pipe(
+        Context.add(HistoryImporter, store.historyImporter),
+      ),
+    ),
   );

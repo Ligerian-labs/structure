@@ -1,6 +1,6 @@
 # @structure-ai/eventsourcing-pg
 
-PostgreSQL adapters (`@effect/sql-pg`) for the five `@structure-ai/eventsourcing` ports — `EventStore`, `SnapshotStore`, `CheckpointStore`, `Outbox`, `Inbox` — plus a durable `IdempotencyStore` for `@structure-ai/cqrs`. Behavior matches the in-memory implementations (the behavioral spec): the same scenario suite runs against both.
+PostgreSQL adapters (`@effect/sql-pg`) for the `@structure-ai/eventsourcing` ports, including `EventStore`, `HistoryImporter`, snapshots, checkpoints, outbox, and inbox, plus a durable `IdempotencyStore` for `@structure-ai/cqrs`.
 
 ## Usage
 
@@ -24,9 +24,10 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 | --- | --- |
 | `layer(config?)` | `PgClient` + `migrate` + every adapter, and the client itself. `config`: `url`, `maxConnections`, `applicationName`, plus the adapter options. |
 | `storesLayer(options?)` | Every adapter on top of an ambient `SqlClient` (no migration). |
-| `migrate(options?)` | Idempotent `CREATE TABLE IF NOT EXISTS` for all tables: `events`, `snapshots`, `checkpoints`, `outbox`, `inbox`, `idempotency` (prefixed by `tablePrefix`). |
+| `migrate(options?)` | Idempotent `CREATE TABLE IF NOT EXISTS` for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency tables, all prefixed by `tablePrefix`. |
 | `tableNames(options?)` | Resolved table names for a prefix — use it for test isolation and cleanup. |
 | `appendWithOutbox(stream, expectedVersion, events, messages)` | Events and outbox rows committed in one transaction. |
+| `HistoryImporter` from `eventStoreLayer`/`storesLayer` | Preserves frozen source positions and versions in atomic, resumable batches. Import bookkeeping makes identical retries no-ops and rejects divergence. |
 | `idempotencyStoreLayer(options?)` | `@structure-ai/cqrs` `IdempotencyStore` over the `idempotency` table. |
 | `purgeExpiredIdempotency(options?)` | Deletes idempotency records past their TTL; returns the count. |
 | `AdapterOptions` | `tablePrefix` (default none) and `idempotencyTtl` (default 24 hours). |
