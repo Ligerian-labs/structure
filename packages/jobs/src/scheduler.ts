@@ -286,14 +286,24 @@ export const makeScheduler = (
 
     const deadLetter = (row: QueueRow, reason: string): Effect.Effect<void, JobQueueError> =>
       Effect.gen(function* () {
-        yield* sql`
-          INSERT INTO ${sql(tables.deadLetters)}
-            (id, job_name, payload, attempts, last_error, correlation_id, dead_at)
-          VALUES
-            (${crypto.randomUUID()}, ${row.job_name}, ${row.payload}, ${row.attempt},
-             ${reason.slice(0, 2_048)}, ${row.correlation_id}, ${now().toISOString()})
-        `;
-        const owned = yield* fenced(row, "dead-letter", sql`DELETE FROM ${sql(tables.queue)}`);
+        // The fence comes first, in one transaction with the dead-letter
+        // insert: a worker that lost its lease must not file a dead letter
+        // for a job another worker is running, and a job whose queue row is
+        // gone must always have its dead letter.
+        const owned = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const owned = yield* fenced(row, "dead-letter", sql`DELETE FROM ${sql(tables.queue)}`);
+            if (!owned) return false;
+            yield* sql`
+              INSERT INTO ${sql(tables.deadLetters)}
+                (id, job_name, payload, attempts, last_error, correlation_id, dead_at)
+              VALUES
+                (${crypto.randomUUID()}, ${row.job_name}, ${row.payload}, ${row.attempt},
+                 ${reason.slice(0, 2_048)}, ${row.correlation_id}, ${now().toISOString()})
+            `;
+            return true;
+          }),
+        );
         if (!owned) return;
         yield* Metric.increment(deadLettered);
         yield* Effect.logError("job dead-lettered").pipe(

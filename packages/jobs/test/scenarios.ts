@@ -463,6 +463,59 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
     }
   });
 
+  /** A handler that signals when it started and waits to be released, then returns `outcome`. */
+  const gatedHandler = (
+    harness: SchedulerHarness,
+    outcome: () => Effect.Effect<void, JobFailure>,
+  ): { started: Promise<void>; release: () => void } => {
+    let release: () => void = () => undefined;
+    let markStarted: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    void run(
+      harness.scheduler.register({
+        name: "test.ping",
+        payloadSchema: pingPayload,
+        handle: () =>
+          Effect.promise(async () => {
+            markStarted();
+            await gate;
+          }).pipe(Effect.zipRight(Effect.suspend(outcome))),
+      }),
+    );
+    return { started, release };
+  };
+
+  const settle = (millis: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, millis));
+
+  test("a permanent failure after a lost lease writes no dead letter for the row another worker runs", async () => {
+    const harness = await make();
+    try {
+      const gate = gatedHandler(harness, () =>
+        Effect.fail({ reason: "bad-input", classification: "permanent" }),
+      );
+      const worker = await harness.startWorker({ pollMillis: 10 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "doomed-late" }));
+      await gate.started;
+      await harness.reclaim(jobId, "worker-b", 60_000);
+      gate.release();
+      await settle(300);
+      expect(await harness.deadLetters()).toEqual([]);
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(row?.status).toBe("running");
+      expect(row?.lease_owner).toBe("worker-b");
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
   test("cancel removes a pending job before it fires", async () => {
     const harness = await make();
     try {
