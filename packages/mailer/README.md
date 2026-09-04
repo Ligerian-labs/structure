@@ -59,7 +59,7 @@ const previews = renderPreviews([previewEntry(invite)]);
 | `makeBrevoDriver({ apiKey, baseUrl? })` | Brevo transactional API (`POST /v3/smtp/email`, `api-key` header) over `fetch` (`fetchImpl` injectable for tests). Metrics label `brevo`. | 4xx → permanent, 429/408/425/5xx/network → transient |
 | `makeCaptureDriver()` | Tests and dev: records every message, never fails. | — |
 
-Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message); the SMTP driver renders proper `multipart/mixed` containers, RFC 2047 encoded-words for non-ASCII subjects and display names, dot-stuffed DATA payloads, and base64 transfer encoding for all bodies.
+Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message); the SMTP driver renders proper `multipart/mixed` containers, RFC 2047 encoded-words for non-ASCII subjects and display names, dot-stuffed DATA payloads, and base64 transfer encoding for all bodies. Custom `headers` are emitted once, before the MIME headers, and may never carry a generated name (`From`, `To`, `Cc`, `Bcc`, `Reply-To`, `Subject`, `Date`, `Message-ID`, `MIME-Version`, `Content-*`): `EmailHeaders` refuses those keys.
 
 ## Retry and observability
 

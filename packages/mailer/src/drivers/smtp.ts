@@ -3,7 +3,12 @@ import * as tls from "node:tls";
 import { Effect, Redacted } from "effect";
 import type { DriverError, EmailDriver } from "../driver.js";
 import { MailDeliveryFailed, MailRejected, MailValidationError } from "../errors.js";
-import type { EmailAddressInput, EmailAttachmentInput, EmailMessage } from "../message.js";
+import {
+  type EmailAddressInput,
+  type EmailAttachmentInput,
+  type EmailMessage,
+  isReservedHeaderName,
+} from "../message.js";
 
 /**
  * How the session is encrypted: `starttls` (default) connects in the clear
@@ -422,9 +427,12 @@ export const renderSmtpMessage = (message: EmailMessage, hostname: string): stri
     `Message-ID: <${crypto.randomUUID()}@${hostname}>`,
     "MIME-Version: 1.0",
   ];
+  // Custom headers go out once, before the MIME headers of the top entity,
+  // and never under a generated name (the schema refuses those; this is
+  // the belt to that suspender for callers bypassing it).
   if (message.headers !== undefined) {
     for (const [name, value] of Object.entries(message.headers)) {
-      headers.push(`${name}: ${value}`);
+      if (!isReservedHeaderName(name)) headers.push(`${name}: ${value}`);
     }
   }
 
@@ -445,11 +453,6 @@ export const renderSmtpMessage = (message: EmailMessage, hostname: string): stri
       : multipartEntity("mixed", [asPart(content), ...attachments.map(attachmentPart)]);
 
   headers.push(...top.headers);
-  if (message.headers !== undefined) {
-    for (const [name, value] of Object.entries(message.headers)) {
-      headers.push(`${name}: ${value}`);
-    }
-  }
   return [...headers, "", top.body].join(CRLF);
 };
 

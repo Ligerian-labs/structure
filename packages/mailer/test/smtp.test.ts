@@ -2,8 +2,9 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import * as net from "node:net";
 import * as tls from "node:tls";
-import { Effect, Redacted } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import {
+  EmailHeaders,
   MailDeliveryFailed,
   MailRejected,
   MailValidationError,
@@ -473,5 +474,61 @@ describe("smtp message rendering", () => {
       "structure-mailer",
     );
     expect(rendered).toContain("x-tenant: acme");
+  });
+
+  test("custom headers are emitted exactly once", () => {
+    const { headerBlock } = splitAtBody(
+      renderSmtpMessage({ ...message, headers: { "X-Thing": "v" } }, "structure-mailer"),
+    );
+    expect(headerBlock.split("\r\n").filter((line) => line.startsWith("X-Thing:"))).toHaveLength(1);
+  });
+
+  test("a custom header can never displace a generated MIME or envelope header", () => {
+    const { headerBlock } = splitAtBody(
+      renderSmtpMessage(
+        {
+          ...message,
+          html: undefined,
+          headers: {
+            "Content-Type": "text/html",
+            "content-transfer-encoding": "8bit",
+            BCC: "spy@example.net",
+            "Message-Id": "<forged@example.net>",
+          },
+        },
+        "structure-mailer",
+      ),
+    );
+    const lines = headerBlock.split("\r\n");
+    const contentTypes = lines.filter((line) => line.toLowerCase().startsWith("content-type:"));
+    expect(contentTypes).toEqual(["Content-Type: text/plain; charset=utf-8"]);
+    expect(lines.filter((line) => /^content-transfer-encoding:/iu.test(line))).toEqual([
+      "Content-Transfer-Encoding: base64",
+    ]);
+    expect(lines.some((line) => /^bcc:/iu.test(line))).toBe(false);
+    expect(lines.filter((line) => /^message-id:/iu.test(line))).toHaveLength(1);
+    expect(headerBlock).not.toContain("forged@example.net");
+  });
+});
+
+describe("email headers schema", () => {
+  test("rejects the generated MIME and envelope header names, case-insensitively", () => {
+    for (const name of [
+      "Content-Type",
+      "content-transfer-encoding",
+      "MIME-Version",
+      "Bcc",
+      "To",
+      "Subject",
+      "Message-ID",
+      "Date",
+      "From",
+      "Reply-To",
+      "cc",
+    ]) {
+      const decoded = Schema.decodeUnknownEither(EmailHeaders)({ [name]: "x" });
+      expect(decoded._tag).toBe("Left");
+    }
+    expect(Schema.decodeUnknownEither(EmailHeaders)({ "X-Tenant": "acme" })._tag).toBe("Right");
   });
 });
