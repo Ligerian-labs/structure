@@ -125,9 +125,11 @@ export interface AuthService {
     token: Redacted.Redacted<string>,
   ) => Effect.Effect<AuthUser, AuthServiceError>;
   /**
-   * Walled on the email and, when given, the caller's subject together, so
-   * one caller's failures never spend another caller's budget for that
-   * email; with a limiter that can `peek`, failures alone are charged.
+   * Walled twice when the caller is given: on the email joined with the
+   * caller's subject (one caller's failures never spend another caller's
+   * budget for that email) and on the caller's subject alone (a ceiling on
+   * spraying many emails from one place); on the email alone otherwise.
+   * With a limiter that can `peek`, only rejected sign-ins are charged.
    */
   readonly signInPassword: (
     tenantId: TenantId,
@@ -630,14 +632,20 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
         const email = yield* normalizeEmail(inputEmail);
-        const wall = failureWall(
-          tenantId,
-          "password-sign-in",
-          caller === undefined ? email : `${email}\u0000${caller.subject}`,
-        );
-        yield* wall.before;
+        // Two buckets when the caller is known: one for this email from this
+        // caller (a stranger cannot spend the account's budget from elsewhere)
+        // and one for the caller alone (a ceiling on spraying many emails).
+        const walls =
+          caller === undefined
+            ? [failureWall(tenantId, "password-sign-in", email)]
+            : [
+                failureWall(tenantId, "password-sign-in", `${email}\u0000${caller.subject}`),
+                failureWall(tenantId, "password-sign-in", caller.subject),
+              ];
+        yield* Effect.forEach(walls, (wall) => wall.before, { discard: true });
+        const charge = Effect.forEach(walls, (wall) => wall.onFailure, { discard: true });
         const refused = (reason: string) =>
-          wall.onFailure.pipe(Effect.flatMap(() => new InvalidCredentials({ reason })));
+          charge.pipe(Effect.flatMap(() => new InvalidCredentials({ reason })));
         if (password.length === 0 || password.length > (config.password?.maxLength ?? 256)) {
           return yield* refused("password");
         }
@@ -653,7 +661,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         if (!user.emailVerified) {
           // A rejected sign-in all the same: it cost a password verification
           // and answered a question, so it is charged like any other.
-          yield* wall.onFailure;
+          yield* charge;
           return yield* new EmailNotVerified({ userId: user.id });
         }
         const session = yield* createSession(tenantId, user, config);
