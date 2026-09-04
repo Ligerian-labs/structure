@@ -312,3 +312,89 @@ describe("anonymous passkey walls", () => {
     expect([...counts.keys()].filter((key) => key.startsWith("passkey-authenticate:"))).toEqual([]);
   });
 });
+
+describe("password sign-in wall", () => {
+  test("keys on email and caller, peeks before verifying and charges failures only", async () => {
+    const counts = new Map<string, number>();
+    const memory = inMemoryAuthStore();
+    const emails: Array<AuthEmail> = [];
+    const keyOf = (request: RateLimitRequest) => `${request.action}:${request.keyHash}`;
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      emailSender: { send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid) },
+      passwordHasher: argon2id({ memoryCostKiB: 19_456, timeCost: 2 }),
+      rateLimiter: {
+        peek: (request) =>
+          (counts.get(keyOf(request)) ?? 0) >= 5
+            ? Effect.fail(new RateLimitExceeded({ action: request.action }))
+            : Effect.void,
+        check: (request) =>
+          Effect.suspend(() => {
+            const seen = (counts.get(keyOf(request)) ?? 0) + 1;
+            counts.set(keyOf(request), seen);
+            return seen > 5
+              ? Effect.fail(new RateLimitExceeded({ action: request.action }))
+              : Effect.void;
+          }),
+      },
+    });
+    await run(
+      auth.registerPassword({
+        tenantId: "tenant-a",
+        email: "ada@example.com",
+        password: "correct horse battery staple",
+      }),
+    );
+    const verification = emails.find((mail) => mail.kind === "email-verification");
+    await run(auth.verifyEmail("tenant-a", verification?.token ?? Redacted.make("")));
+    counts.clear();
+
+    const attacker = { subject: "203.0.113.7" };
+    for (let index = 0; index < 5; index++) {
+      expect(
+        await fail(auth.signInPassword("tenant-a", "ada@example.com", "wrong", attacker)),
+      ).toBeInstanceOf(InvalidCredentials);
+    }
+    // The attacker's bucket is exhausted: even the right password is refused there...
+    expect(
+      await fail(
+        auth.signInPassword(
+          "tenant-a",
+          "ada@example.com",
+          "correct horse battery staple",
+          attacker,
+        ),
+      ),
+    ).toBeInstanceOf(RateLimitExceeded);
+    // ...while Ada, from her own address, still signs in.
+    const session = await run(
+      auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple", {
+        subject: "198.51.100.9",
+      }),
+    );
+    expect(session.user.email).toBe("ada@example.com");
+    // Only failures were charged: one bucket, five charges, nothing for the success.
+    const signInKeys = [...counts.entries()].filter(([key]) => key.startsWith("password-sign-in:"));
+    expect(signInKeys).toHaveLength(1);
+    expect(signInKeys[0]?.[1]).toBe(5);
+    expect(JSON.stringify(signInKeys)).not.toContain("ada@example.com");
+    expect(JSON.stringify(signInKeys)).not.toContain("203.0.113.7");
+  });
+
+  test("keeps consume-on-arrival for a limiter that cannot peek", async () => {
+    const limits: Array<RateLimitRequest> = [];
+    const memory = inMemoryAuthStore();
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      emailSender: { send: () => Effect.void },
+      passwordHasher: argon2id({ memoryCostKiB: 19_456, timeCost: 2 }),
+      rateLimiter: {
+        check: (request) => Effect.sync(() => limits.push(request)).pipe(Effect.asVoid),
+      },
+    });
+    await fail(auth.signInPassword("tenant-a", "nobody@example.com", "wrong"));
+    expect(limits.filter((entry) => entry.action === "password-sign-in")).toHaveLength(1);
+  });
+});

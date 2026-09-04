@@ -41,7 +41,18 @@ export interface AuthCaller {
 }
 
 export interface RateLimiter {
+  /** Charges one attempt against the bucket; refuses once it is exhausted. */
   readonly check: (
+    request: RateLimitRequest,
+  ) => Effect.Effect<void, AuthDependencyError | RateLimitExceeded>;
+  /**
+   * Refuses when the bucket is exhausted WITHOUT charging it. Optional:
+   * a limiter that implements it lets the password sign-in wall peek
+   * before verifying and charge (`check`) only a failed verification, so
+   * naming a victim's email costs the attacker their own budget, not the
+   * victim's sign-in. Without it the wall keeps charging on arrival.
+   */
+  readonly peek?: (
     request: RateLimitRequest,
   ) => Effect.Effect<void, AuthDependencyError | RateLimitExceeded>;
 }
