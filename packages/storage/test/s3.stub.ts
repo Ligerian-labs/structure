@@ -64,14 +64,14 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
 
   /**
    * Recomputes the `Authorization` header the client should have sent for
-   * the canonical path, from the signed headers it named; `undefined` when
+   * the path as received, from the signed headers it named; `undefined` when
    * the header is malformed, names an unknown key, or a signed header is
    * missing from the request.
    */
   const expectedAuthorization = (
     request: http.IncomingMessage,
     method: string,
-    canonicalPath: string,
+    path: string,
     search: string,
   ): string | undefined => {
     const match = AUTHORIZATION.exec(request.headers.authorization ?? "");
@@ -101,7 +101,7 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
     return signRequest({
       credentials: { accessKeyId, secretAccessKey, region: region ?? "", service: service ?? "" },
       method,
-      url: new URL(`http://${host}${canonicalPath}${search}`),
+      url: new URL(`http://${host}${path}${search}`),
       headers,
       payloadHash,
       now,
@@ -125,11 +125,12 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
     const queryAt = target.indexOf("?");
     const rawPath = queryAt === -1 ? target : target.slice(0, queryAt);
     const search = queryAt === -1 ? "" : target.slice(queryAt);
-    // A real store (MinIO, S3) routes on the path with repeated slashes
-    // collapsed and verifies the signature over that canonical path, so a
-    // client that signed `//bucket/key` disagrees with it.
-    const canonicalPath = rawPath.replace(/\/{2,}/gu, "/");
-    const url = new URL(`${canonicalPath}${search}`, "http://stub.local");
+    // The signature is verified over the path exactly as received, which is
+    // what a real store does. A client that signed `//bucket/key` never
+    // agrees with it: Bun's `fetch` sends the request line with the leading
+    // slashes collapsed (`/bucket/key`), and a store that does receive a
+    // literal `//` path refuses it outright (MinIO answers 400).
+    const url = new URL(`${rawPath}${search}`, "http://stub.local");
     const method = request.method ?? "GET";
     const signed = (request.headers.authorization ?? "").startsWith("AWS4-HMAC-SHA256");
     requests.push({ method, path: rawPath, signed });
@@ -138,14 +139,11 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
       response.end("<Error><Code>AccessDenied</Code></Error>");
       return;
     }
-    if (
-      expectedAuthorization(request, method, canonicalPath, search) !==
-      request.headers.authorization
-    ) {
+    if (expectedAuthorization(request, method, rawPath, search) !== request.headers.authorization) {
       unverified.push({ method, path: rawPath });
       response.writeHead(403, { "content-type": "application/xml" });
       response.end(
-        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match the signature you provided. Check your key and signing method.</Message><Resource>${decodeURIComponent(canonicalPath)}</Resource></Error>`,
+        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match the signature you provided. Check your key and signing method.</Message><Resource>${decodeURIComponent(rawPath)}</Resource></Error>`,
       );
       return;
     }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { load } from "@structure-ai/config";
-import { Effect, Redacted } from "effect";
+import { Cause, Effect, Exit, Option, Redacted } from "effect";
 import { makeS3Storage, objectKey, storageFromSettings, storageSettings } from "../src/index.js";
 import { sha256Hex, signRequest } from "../src/sigv4.js";
 import {
@@ -82,6 +82,16 @@ describe("S3 endpoint normalisation", () => {
     expect(pathOf(urls[9] ?? "")).toBe("/bucket");
   });
 
+  test("a path prefix on the endpoint is kept, and its trailing slash stripped", async () => {
+    const urls = await exerciseEveryOperation("http://gateway:8080/s3/");
+    expect(urls.length).toBe(10);
+    for (const url of urls) {
+      expect(pathOf(url)).not.toContain("//");
+      expect(pathOf(url).startsWith("/s3/bucket")).toBe(true);
+    }
+    expect(pathOf(urls[0] ?? "")).toBe("/s3/bucket/tenant/files%2Fone.bin");
+  });
+
   test("an endpoint without a trailing slash, and the AWS default, are unchanged", async () => {
     const clean = await exerciseEveryOperation("http://minio:9000");
     expect(clean.every((url) => url.startsWith("http://minio:9000/bucket"))).toBe(true);
@@ -139,10 +149,10 @@ describe("S3 endpoint normalisation (against the signature-verifying stub)", () 
     const single = sign("/stub-bucket/probe%2Fsingle.txt");
     const accepted = await fetch(single.url, { method: "PUT", headers: single.headers, body: "x" });
     expect(accepted.status).toBe(200);
-    // The signature covered `//stub-bucket/...`; the wire may carry the
-    // leading slashes collapsed already (Bun's fetch does), the store
-    // canonicalises either way, and the two never agree.
-    expect(server.unverified.at(-1)?.path).toMatch(/^\/+stub-bucket\/probe%2Fdoubled\.txt$/u);
+    // The signature covered `//stub-bucket/...`; Bun's fetch sends the
+    // request line with the leading slashes collapsed, and the two never
+    // agree.
+    expect(server.unverified.at(-1)?.path).toBe("/stub-bucket/probe%2Fdoubled.txt");
     expect(server.requests.at(-1)?.path).toBe("/stub-bucket/probe%2Fsingle.txt");
   });
 
@@ -179,5 +189,33 @@ describe("S3 endpoint normalisation (against the signature-verifying stub)", () 
     expect(mine.length).toBe(3);
     expect(mine.every((request) => request.path.startsWith("/stub-bucket/"))).toBe(true);
     expect(server.unverified.length).toBe(rejectedBefore);
+  });
+
+  test("a STORAGE_S3_ENDPOINT the driver cannot reach fails through the typed channel, not as a defect", async () => {
+    const settings = await Effect.runPromise(
+      load(storageSettings, {
+        overrides: {
+          STORAGE_DRIVER: "s3",
+          STORAGE_S3_BUCKET: "stub-bucket",
+          STORAGE_S3_REGION: "us-east-1",
+          // A plausible operator typo: no scheme. `URL.origin` would be "null" here.
+          STORAGE_S3_ENDPOINT: "minio:9000",
+          STORAGE_S3_ACCESS_KEY_ID: STUB_ACCESS_KEY_ID,
+          STORAGE_S3_SECRET_ACCESS_KEY: STUB_SECRET_ACCESS_KEY,
+        },
+      }),
+    );
+    const storage = await Effect.runPromise(storageFromSettings(settings));
+    const key = await Effect.runPromise(objectKey("files/unreachable.txt"));
+    const exit = await Effect.runPromiseExit(
+      storage.put({ key, body: new Uint8Array([1]), contentType: "text/plain" }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.isDie(exit.cause)).toBe(false);
+      const failure = Cause.failureOption(exit.cause);
+      expect(Option.isSome(failure)).toBe(true);
+      if (Option.isSome(failure)) expect(failure.value._tag).toBe("StorageUnavailable");
+    }
   });
 });
