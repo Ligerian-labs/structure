@@ -2,21 +2,26 @@ import { describe, expect, test } from "bun:test";
 import { Effect, Redacted } from "effect";
 import {
   type AuthAuditEvent,
+  AuthDependencyError,
   type AuthEmail,
   AuthValidationError,
   allowAllRateLimiter,
   argon2id,
+  generateTotpSecret,
   InvalidAuthToken,
   InvalidCredentials,
   inMemoryAuthStore,
   makeAuth,
   makeTotp,
   RateLimitExceeded,
+  sha256,
   type TenantAuthConfig,
   TOTP_STEP_SECONDS,
   type TotpService,
   totpCode,
 } from "../src/index.js";
+
+const INSTANCE_SECRET = Redacted.make("instance-secret-for-tests");
 
 const tenantConfig: TenantAuthConfig = {
   baseUrl: new URL("https://accounts.example.com"),
@@ -56,6 +61,7 @@ const build = () => {
     auth,
     resolveTenant: () => Effect.succeed(tenantConfig),
     rateLimiter: allowAllRateLimiter,
+    secret: INSTANCE_SECRET,
     lockoutThreshold: 3,
     lockoutCooldownMillis: 15 * 60 * 1_000,
     primitives,
@@ -388,5 +394,93 @@ describe("lost authenticator", () => {
       harness.totp.resetSecondFactor("tenant-a", plain.user.id, { actor: "ops@example.com" }),
     );
     expect(harness.audit.length).toBe(before);
+  });
+});
+
+describe("second factor at rest", () => {
+  test("stores the secret sealed and the recovery codes salted under the instance secret", async () => {
+    const { harness, session } = await signedInUser("ada@example.com");
+    const { enrollment, confirmation } = await enroll(harness, session.token);
+    const record = harness.memory.snapshot().totp[0];
+    expect(record?.secretBase32).not.toBe(enrollment.secretBase32);
+    expect(record?.secretBase32.startsWith("v1:")).toBe(true);
+    const codes = confirmation.recoveryCodes.map((code) => Redacted.value(code));
+    const plainHashes = await Promise.all(codes.map((code) => run(sha256(code))));
+    for (const stored of record?.recoveryCodeHashes ?? []) {
+      expect(stored.startsWith("v1:")).toBe(true);
+      expect(plainHashes).not.toContain(stored);
+    }
+    // One salt per code: two enrollments of the same code never share a hash.
+    const salts = new Set((record?.recoveryCodeHashes ?? []).map((stored) => stored.split(":")[1]));
+    expect(salts.size).toBe(codes.length);
+
+    // The same store read under another instance secret yields no second factor.
+    const foreign = makeTotp({
+      store: harness.memory.store,
+      auth: harness.auth,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      rateLimiter: allowAllRateLimiter,
+      secret: Redacted.make("another-instance"),
+      primitives: { now: harness.now },
+    });
+    const pending = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    const code = await run(totpCode(enrollment.secretBase32, harness.now()));
+    expect(await fail(foreign.verify("tenant-a", pending.token, code))).toBeInstanceOf(
+      AuthDependencyError,
+    );
+    expect(await run(harness.totp.sessionRequiresElevation("tenant-a", pending.token))).toBe(true);
+    // The owning instance still verifies both kinds of code.
+    expect((await run(harness.totp.verify("tenant-a", pending.token, code))).elevated).toBe(true);
+    const another = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(
+      (await run(harness.totp.verify("tenant-a", another.token, codes[3] ?? ""))).elevated,
+    ).toBe(true);
+    expect(harness.memory.snapshot().totp[0]?.recoveryCodeHashes).toHaveLength(codes.length - 1);
+  });
+
+  test("a record from before sealing keeps verifying and is sealed on its first success", async () => {
+    const { harness, session } = await signedInUser("ada@example.com");
+    const secret = generateTotpSecret();
+    const legacyHash = await run(sha256("abcde-fghij"));
+    await run(
+      harness.memory.store.putTotpSecret({
+        tenantId: "tenant-a",
+        userId: session.user.id,
+        secretBase32: secret,
+        confirmed: true,
+        recoveryCodeHashes: [legacyHash],
+        failedAttempts: 0,
+        enrolledAt: harness.now(),
+      }),
+    );
+    const pending = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(await run(harness.totp.sessionRequiresElevation("tenant-a", pending.token))).toBe(true);
+    const code = await run(totpCode(secret, harness.now()));
+    expect((await run(harness.totp.verify("tenant-a", pending.token, code))).elevated).toBe(true);
+    const sealed = harness.memory.snapshot().totp[0];
+    expect(sealed?.secretBase32).not.toBe(secret);
+    expect(sealed?.secretBase32.startsWith("v1:")).toBe(true);
+    expect(sealed?.recoveryCodeHashes).toEqual([legacyHash]);
+    // The legacy recovery code still works once...
+    const another = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(
+      (await run(harness.totp.verify("tenant-a", another.token, "abcde-fghij"))).elevated,
+    ).toBe(true);
+    expect(harness.memory.snapshot().totp[0]?.recoveryCodeHashes).toEqual([]);
+    // ...and the sealed secret verifies the next step.
+    harness.advance(TOTP_STEP_SECONDS * 1_000);
+    const third = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    const next = await run(totpCode(secret, harness.now()));
+    expect((await run(harness.totp.verify("tenant-a", third.token, next))).elevated).toBe(true);
   });
 });

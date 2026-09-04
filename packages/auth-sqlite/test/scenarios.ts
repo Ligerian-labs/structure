@@ -437,6 +437,14 @@ export const registerTotpScenarios = (makeHarness: MakeHarness): void => {
       const remaining = await run(store.findTotp("tenant-a", "user-1"));
       expect(remaining?.recoveryCodeHashes).toEqual([]);
 
+      // Only the secret moves when it is re-sealed; the rest of the record stays.
+      await run(store.markTotpStepUsed("tenant-a", "user-1", 42));
+      await run(store.replaceTotpSecret("tenant-a", "user-1", "v1:sealed:secret"));
+      const resealed = await run(store.findTotp("tenant-a", "user-1"));
+      expect(resealed?.secretBase32).toBe("v1:sealed:secret");
+      expect(resealed?.confirmed).toBe(true);
+      expect(resealed?.lastUsedStep).toBe(42);
+
       await run(store.removeTotp("tenant-a", "user-1"));
       expect(await run(store.findTotp("tenant-a", "user-1"))).toBeUndefined();
     }));

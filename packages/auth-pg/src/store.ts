@@ -645,13 +645,25 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
         if (row === undefined) return false;
         const hashes = decodeTotp(row).recoveryCodeHashes;
         if (!hashes.includes(codeHash)) return false;
-        await sql`
+        // Compare-and-delete: the update only lands on the list as it was
+        // read, so two consumers of one code cannot both succeed.
+        const updated = await sql<Array<{ readonly user_id: string }>>`
           UPDATE ${sql(tables.totp)}
           SET recovery_code_hashes = ${JSON.stringify(hashes.filter((hash) => hash !== codeHash))}
           WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+            AND recovery_code_hashes = ${row.recovery_code_hashes}
+          RETURNING user_id
         `;
-        return true;
+        return updated.length > 0;
       }),
+    replaceTotpSecret: (tenantId, userId, secretBase32) =>
+      read("replace-totp-secret", async () => {
+        await sql`
+          UPDATE ${sql(tables.totp)}
+          SET secret_base32 = ${secretBase32}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+        `;
+      }).pipe(Effect.asVoid),
     elevateSession: (tenantId, tokenHash, now) =>
       read("elevate-session", async () => {
         await sql`
