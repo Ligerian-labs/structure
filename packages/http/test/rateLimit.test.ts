@@ -105,6 +105,45 @@ describe("in-memory rate limit store", () => {
     expect((await Effect.runPromise(store.consume("k", rule))).allowed).toBe(true);
   });
 
+  test("past maxKeys the store evicts the least recently used key, so fresh keys never grow it", async () => {
+    let now = 5_000_000;
+    const store = makeInMemoryStore({ maxKeys: 100, now: () => now });
+    const rule = { points: 5, windowMillis: 60_000, blockMillis: 0 };
+    for (let index = 0; index < 1_000; index++) {
+      await Effect.runPromise(store.consume(`flood-${index}`, rule));
+    }
+    expect(store.size()).toBeLessThanOrEqual(100);
+    // The most recent keys survive with their budget; the oldest were evicted.
+    expect((await Effect.runPromise(store.peek("flood-999", rule))).remaining).toBe(4);
+    expect((await Effect.runPromise(store.peek("flood-0", rule))).remaining).toBe(5);
+    // A key touched again is the most recent, so it outlives a later flood.
+    await Effect.runPromise(store.consume("flood-950", rule));
+    for (let index = 1_000; index < 1_098; index++) {
+      await Effect.runPromise(store.consume(`flood-${index}`, rule));
+    }
+    expect((await Effect.runPromise(store.peek("flood-950", rule))).remaining).toBe(3);
+    now += 1;
+    expect(store.size()).toBeLessThanOrEqual(100);
+  });
+
+  test("the sweep of stale entries is periodic, not per consume", async () => {
+    let now = 9_000_000;
+    const store = makeInMemoryStore({ maxKeys: 10, now: () => now, sweepIntervalMillis: 1_000 });
+    const rule = { points: 1, windowMillis: 100, blockMillis: 0 };
+    for (let index = 0; index < 10; index++) {
+      await Effect.runPromise(store.consume(`k-${index}`, rule));
+    }
+    expect(store.size()).toBe(10);
+    // Every hit is out of the window, but the sweep does not run until its interval elapsed.
+    now += 500;
+    await Effect.runPromise(store.consume("k-0", rule));
+    expect(store.size()).toBe(10);
+    now += 600;
+    await Effect.runPromise(store.consume("k-0", rule));
+    // The sweep ran: k-0 (just touched) survives, the nine stale entries are gone.
+    expect(store.size()).toBe(1);
+  });
+
   test("peek reports the budget without consuming it", async () => {
     let now = 1_000;
     const store = makeInMemoryStore({ now: () => now });
