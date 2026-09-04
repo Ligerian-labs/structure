@@ -247,6 +247,15 @@ export const schemaStatements = (options: AdapterOptions = {}): ReadonlyArray<st
   ];
 };
 
+/** Additive passkey display metadata upgrade for an existing auth schema. */
+export const passkeyMetadataStatements = (options: AdapterOptions = {}): ReadonlyArray<string> => {
+  const passkeys = tableNames(options).passkeys;
+  return [
+    `ALTER TABLE ${ident(passkeys)} ADD COLUMN IF NOT EXISTS label TEXT`,
+    `ALTER TABLE ${ident(passkeys)} ADD COLUMN IF NOT EXISTS aaguid TEXT`,
+  ];
+};
+
 /**
  * Structurally identical to `@structure-ai/migrations`' `Migration`, so the
  * value drops into `makeSet([...])` without this package depending on the
@@ -264,17 +273,11 @@ export interface AuthMigration {
   readonly checksum: string;
 }
 
-/**
- * The auth schema as one forward migration over the `SqlClient` in context
- * (named `create_<prefix>schema`). Add it to the application's single
- * migration set next to the event store, jobs, and view-model migrations so
- * the designated migrator applies everything under one lock and one
- * transaction. The DDL is idempotent, so re-running `up` outside the
- * migrator's bookkeeping is a no-op.
- */
-export const migration = (id: number, options: AdapterOptions = {}): AuthMigration => {
-  const name = `create_${options.tablePrefix ?? DEFAULT_PREFIX}schema`;
-  const statements = schemaStatements(options);
+const makeMigration = (
+  id: number,
+  name: string,
+  statements: ReadonlyArray<string>,
+): AuthMigration => {
   return {
     id,
     name,
@@ -291,10 +294,30 @@ export const migration = (id: number, options: AdapterOptions = {}): AuthMigrati
 };
 
 /**
- * Creates the complete auth schema in one transaction over a Bun `SQL`
- * handle — the all-in-one path for apps without a `@structure-ai/migrations`
- * set (and for tests). Same DDL as `migration`. Run from the designated
- * migrator; the stores never migrate implicitly.
+ * The frozen initial auth schema over the `SqlClient` in context. Add later
+ * package migrations separately so existing checksums remain valid.
+ */
+export const migration = (id: number, options: AdapterOptions = {}): AuthMigration =>
+  makeMigration(
+    id,
+    `create_${options.tablePrefix ?? DEFAULT_PREFIX}schema`,
+    schemaStatements(options),
+  );
+
+/**
+ * Forward-only upgrade that adds nullable passkey display metadata. Place it
+ * after `migration` in the application's migration set.
+ */
+export const passkeyMetadataMigration = (id: number, options: AdapterOptions = {}): AuthMigration =>
+  makeMigration(
+    id,
+    `add_${options.tablePrefix ?? DEFAULT_PREFIX}passkey_metadata`,
+    passkeyMetadataStatements(options),
+  );
+
+/**
+ * Creates and upgrades the complete auth schema in one transaction over a
+ * Bun `SQL` handle. Run it from the designated migrator; stores never migrate.
  */
 export const migrate = (
   sql: SQL,
@@ -303,7 +326,8 @@ export const migrate = (
   Effect.tryPromise({
     try: async () => {
       await sql.begin(async (tx) => {
-        for (const statement of schemaStatements(options)) {
+        const statements = [...schemaStatements(options), ...passkeyMetadataStatements(options)];
+        for (const statement of statements) {
           await tx.unsafe(statement);
         }
       });

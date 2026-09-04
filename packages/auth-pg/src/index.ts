@@ -5,6 +5,7 @@ export {
   type AuthMigration,
   migrate,
   migration,
+  passkeyMetadataMigration,
   type TableNames,
   tableNames,
 } from "./schema.js";

@@ -34,7 +34,7 @@ const store = makeAuthStore(sql, options);
 - User/password and user/OAuth creation use database transactions and tenant-scoped uniqueness.
 - One-time tokens, OAuth states, and passkey challenges use atomic `DELETE ... RETURNING` consumption.
 - Password replacement and all-session revocation commit in one transaction.
-- Passkey counter updates compare the expected stored value and fail with `IdentityConflict` on races.
+- Passkey labels and AAGUIDs survive round trips. Rename and removal match tenant, user, and credential id; counter updates compare the expected stored value and fail with `IdentityConflict` on races.
 - Sessions and tokens contain only hashes supplied by `@structure-ai/auth`; raw bearer values never enter these tables.
 - Foreign keys cascade user deletion into credentials and sessions.
 
@@ -42,6 +42,6 @@ The adapter stores UTC timestamps as ISO text so lexical expiry comparisons rema
 
 ## Operations
 
-`migrate` creates the initial schema idempotently in one transaction. Invoke it from one deploy job or designated migrator, not every serving instance. Future schema changes remain forward-only under the application's migration process.
+`migrate` creates the schema idempotently in one transaction and adds nullable passkey metadata columns to older auth tables without rewriting credentials. Invoke it from one deploy job or designated migrator, not every serving instance. Future schema changes remain forward-only under the application's migration process.
 
 Applications must schedule tenant-aware deletion of expired rows from tokens, sessions, OAuth states, and passkey challenges. Close the Bun `SQL` connection during bounded application shutdown.

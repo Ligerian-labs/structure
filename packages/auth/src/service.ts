@@ -10,6 +10,7 @@ import {
   InvalidAuthToken,
   InvalidCredentials,
   type RateLimitExceeded,
+  SecondFactorRequired,
   type UnsupportedPasskey,
 } from "./errors.js";
 import type {
@@ -194,7 +195,21 @@ export interface AuthService {
     tenantId: TenantId,
     sessionToken: Redacted.Redacted<string>,
     response: PasskeyRegistrationResponse,
+    metadata?: PasskeyRegistrationMetadata,
   ) => Effect.Effect<void, AuthServiceError>;
+  /** Renames one passkey owned by the signed-in user. */
+  readonly renamePasskey: (
+    tenantId: TenantId,
+    sessionToken: Redacted.Redacted<string>,
+    credentialId: string,
+    label: string | undefined,
+  ) => Effect.Effect<boolean, AuthServiceError>;
+  /** Removes one passkey owned by the signed-in user. */
+  readonly removePasskey: (
+    tenantId: TenantId,
+    sessionToken: Redacted.Redacted<string>,
+    credentialId: string,
+  ) => Effect.Effect<boolean, AuthServiceError>;
   readonly beginPasskeyAuthentication: (
     tenantId: TenantId,
     email?: string,
@@ -220,8 +235,14 @@ export type AuthServiceError =
   | IdentityConflict
   | InvalidAuthToken
   | InvalidCredentials
+  | SecondFactorRequired
   | RateLimitExceeded
   | UnsupportedPasskey;
+
+/** Application-owned display metadata saved with a registered passkey. */
+export interface PasskeyRegistrationMetadata {
+  readonly label?: string;
+}
 
 const normalizeEmail = (value: string): Effect.Effect<string, AuthValidationError> => {
   const email = value.trim().toLowerCase();
@@ -516,18 +537,39 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
       return record;
     });
 
-  const getSession = (
+  const resolveSession = (
     tenantId: TenantId,
     token: Redacted.Redacted<string>,
-  ): Effect.Effect<AuthSession, AuthServiceError> =>
+  ): Effect.Effect<
+    { readonly session: AuthSession; readonly elevatedAt?: Date },
+    AuthServiceError
+  > =>
     Effect.gen(function* () {
       const hash = yield* primitives.hashToken(tokenValue(token));
       const record = yield* options.store.findSession(tenantId, hash, primitives.now());
       if (record === undefined) return yield* new InvalidCredentials({ reason: "session" });
       const user = yield* options.store.findUserById(tenantId, record.userId);
       if (user === undefined) return yield* new InvalidCredentials({ reason: "session-user" });
-      return { token, user, expiresAt: record.expiresAt };
+      return {
+        session: { token, user, expiresAt: record.expiresAt },
+        ...(record.elevatedAt === undefined ? {} : { elevatedAt: record.elevatedAt }),
+      };
     });
+
+  const getSession = (tenantId: TenantId, token: Redacted.Redacted<string>) =>
+    resolveSession(tenantId, token).pipe(Effect.map(({ session }) => session));
+
+  const requireElevatedSession = (
+    tenantId: TenantId,
+    token: Redacted.Redacted<string>,
+  ): Effect.Effect<AuthSession, AuthServiceError> =>
+    resolveSession(tenantId, token).pipe(
+      Effect.flatMap(({ session, elevatedAt }) =>
+        options.secondFactor !== undefined && elevatedAt === undefined
+          ? Effect.fail(new SecondFactorRequired({ userId: session.user.id }))
+          : Effect.succeed(session),
+      ),
+    );
 
   return {
     registerPassword: (input) =>
@@ -645,8 +687,8 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
         yield* limit(tenantId, "password-change", tokenValue(sessionToken));
+        const session = yield* requireElevatedSession(tenantId, sessionToken);
         yield* validatePassword(newPassword, config);
-        const session = yield* getSession(tenantId, sessionToken);
         if (session.user.email === undefined) {
           return yield* new InvalidCredentials({ reason: "password-identity" });
         }
@@ -967,7 +1009,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
             reason: "is not configured for this tenant",
           });
         }
-        const session = yield* getSession(tenantId, sessionToken);
+        const session = yield* requireElevatedSession(tenantId, sessionToken);
         const challenge = primitives.randomToken(32);
         const challengeHash = yield* primitives.hashToken(challenge);
         yield* options.store.putPasskeyChallenge({
@@ -1008,7 +1050,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
           })),
         };
       }),
-    finishPasskeyRegistration: (tenantId, sessionToken, response) =>
+    finishPasskeyRegistration: (tenantId, sessionToken, response, metadata = {}) =>
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
         yield* limit(tenantId, "passkey-register", tokenValue(sessionToken));
@@ -1018,7 +1060,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
             reason: "is not configured for this tenant",
           });
         }
-        const session = yield* getSession(tenantId, sessionToken);
+        const session = yield* requireElevatedSession(tenantId, sessionToken);
         const clientChallenge = yield* passkeyChallengeFromClientData(
           response.response.clientDataJSON,
         );
@@ -1041,6 +1083,8 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
           algorithm: verified.algorithm,
           counter: verified.counter,
           transports: verified.transports,
+          ...(metadata.label === undefined ? {} : { label: metadata.label }),
+          ...(verified.aaguid === undefined ? {} : { aaguid: verified.aaguid }),
           createdAt: primitives.now(),
         });
         yield* recordAudit(tenantId, "passkey-register", "succeeded", { userId: session.user.id });
@@ -1097,12 +1141,43 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         const config = yield* configFor(tenantId);
         void config;
         yield* limit(tenantId, "oauth-complete", tokenValue(sessionToken));
-        const session = yield* getSession(tenantId, sessionToken);
+        const session = yield* requireElevatedSession(tenantId, sessionToken);
         yield* options.store.removeOAuthIdentity(tenantId, session.user.id, provider);
         yield* recordAudit(tenantId, "oauth-unlink", "succeeded", {
           userId: session.user.id,
           provider,
         });
+      }),
+    renamePasskey: (tenantId, sessionToken, credentialId, label) =>
+      Effect.gen(function* () {
+        yield* configFor(tenantId);
+        yield* limit(tenantId, "passkey-rename", tokenValue(sessionToken));
+        const session = yield* requireElevatedSession(tenantId, sessionToken);
+        const renamed = yield* options.store.renamePasskey(
+          tenantId,
+          session.user.id,
+          credentialId,
+          label,
+        );
+        if (renamed) {
+          yield* recordAudit(tenantId, "passkey-rename", "succeeded", {
+            userId: session.user.id,
+          });
+        }
+        return renamed;
+      }),
+    removePasskey: (tenantId, sessionToken, credentialId) =>
+      Effect.gen(function* () {
+        yield* configFor(tenantId);
+        yield* limit(tenantId, "passkey-remove", tokenValue(sessionToken));
+        const session = yield* requireElevatedSession(tenantId, sessionToken);
+        const removed = yield* options.store.removePasskey(tenantId, session.user.id, credentialId);
+        if (removed) {
+          yield* recordAudit(tenantId, "passkey-remove", "succeeded", {
+            userId: session.user.id,
+          });
+        }
+        return removed;
       }),
     finishPasskeyAuthentication: (tenantId, response) =>
       Effect.gen(function* () {

@@ -140,4 +140,32 @@ describe("auth HTTP handler", () => {
     );
     expect(oversized.status).toBe(400);
   });
+
+  test("returns 401 when a pending second-factor session attempts passkey registration", async () => {
+    const memory = inMemoryAuthStore();
+    const emails: Array<AuthEmail> = [];
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(config),
+      emailSender: { send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid) },
+      rateLimiter: allowAllRateLimiter,
+      secondFactor: { isEnrolled: () => Effect.succeed(true) },
+    });
+    const http = await Effect.runPromise(
+      makeAuthHandler(auth, { resolveTenant: () => Effect.succeed("tenant-a") }),
+    );
+    await http.handler(request("/auth/magic-link/request", { email: "pending@example.com" }));
+    const magicLink = emails[0];
+    if (magicLink === undefined) throw new Error("magic-link email was not captured");
+    const consumed = await http.handler(
+      request("/auth/magic-link/consume", { token: Redacted.value(magicLink.token) }),
+    );
+    const cookie = consumed.headers.get("set-cookie")?.split(";")[0] ?? "";
+
+    const response = await http.handler(request("/auth/passkeys/register/options", {}, { cookie }));
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual(
+      expect.objectContaining({ error: "SecondFactorRequired" }),
+    );
+  });
 });

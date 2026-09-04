@@ -26,7 +26,7 @@ const auth = makeAuth({
 2. **Expose the routes**: `makeAuthHandler(auth, { resolveTenant })` returns `Effect<AuthHandler, InvalidAuthRoutes>` — run it with `Effect.runPromise` or compose it in your startup `Effect.gen`. Defaults to `/auth`, tenant resolved from trusted host/routing data (never a JSON body field), origins checked on mutations, `Cache-Control: no-store`. Token pages POST the token so link scanners don't consume credentials. Remap individual paths with `routes` (stable route ids) — see the `override-auth-routes` skill.
 3. **Pick the store**:
    - `inMemoryAuthStore()` — tests and local dev only.
-   - `@structure-ai/auth-sqlite` / `auth-pg` — durable: schema first, in the designated migration process only (`auth-pg`: `migration(id[, { tablePrefix }])` in the app's `@structure-ai/migrations` set, or `migrate(sql[, options])` over Bun `SQL`; `auth-sqlite`: `migrate(sql[, options])`), then `makeAuthStore(sql[, options])` — stores never migrate.
+   - `@structure-ai/auth-sqlite` / `auth-pg` — durable: schema first, in the designated migration process only (`auth-pg`: `migration(id[, { tablePrefix }])` plus `passkeyMetadataMigration(nextId[, options])` in the app's `@structure-ai/migrations` set, or `migrate(sql[, options])` over Bun `SQL`; `auth-sqlite`: `migrate(sql[, options])`), then `makeAuthStore(sql[, options])` — stores never migrate.
    - Custom `AuthStore` — preserve the compound-transaction semantics (atomic one-time consumption, password change + session revocation in one transaction, tenant-scoped uniqueness).
 4. **Sessions**: opaque 256-bit bearer token returned as `Redacted`; only SHA-256 digests are stored. Turn it into a `Principal` for `@structure-ai/authorization` at your app's edge (session lookup → `Principal.within`).
 5. **Account linking** is deny-by-default (`AccountLinkDenied`); supply an `AccountLinkPolicy.authorize` only with an explicit product decision.
@@ -39,6 +39,8 @@ const auth = makeAuth({
 - Raw one-time/session tokens and OAuth client secrets never enter storage, logs, audit events, or errors — they are `Redacted` at the boundary.
 - Enumeration-safe responses: password-reset and magic-link requests give no account-existence signal.
 - A successful password reset or change revokes every older session.
+- Passkey records may carry an owner label and the authenticator's AAGUID. Use `renamePasskey` and `removePasskey` for owner-scoped account management instead of writing adapter tables directly.
+- When `secondFactor` is configured, password changes, passkey registration/rename/removal, and OAuth unlinking require an elevated session and fail with `SecondFactorRequired` while pending.
 - Expired token/session/challenge cleanup is the application's scheduled job, not the library's.
 
 ## Verify

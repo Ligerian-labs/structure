@@ -95,6 +95,19 @@ export interface AuthStore {
     tenantId: TenantId,
     userId: UserId,
   ) => StoreEffect<ReadonlyArray<PasskeyRecord>>;
+  /** Renames an owned credential and reports whether it existed. */
+  readonly renamePasskey: (
+    tenantId: TenantId,
+    userId: UserId,
+    credentialId: string,
+    label: string | undefined,
+  ) => StoreEffect<boolean>;
+  /** Removes an owned credential and reports whether it existed. */
+  readonly removePasskey: (
+    tenantId: TenantId,
+    userId: UserId,
+    credentialId: string,
+  ) => StoreEffect<boolean>;
   readonly updatePasskeyCounter: (
     tenantId: TenantId,
     credentialId: string,
@@ -390,6 +403,23 @@ export const inMemoryAuthStore = (): InMemoryAuthStore => {
           (passkey) => passkey.tenantId === tenantId && passkey.userId === userId,
         ),
       ),
+    renamePasskey: (tenantId, userId, credentialId, label) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, credentialId);
+        const current = state.passkeys.get(key);
+        if (current === undefined || current.userId !== userId) return false;
+        const { label: _currentLabel, ...withoutLabel } = current;
+        state.passkeys.set(key, label === undefined ? withoutLabel : { ...current, label });
+        return true;
+      }),
+    removePasskey: (tenantId, userId, credentialId) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, credentialId);
+        const current = state.passkeys.get(key);
+        return current !== undefined && current.userId === userId
+          ? state.passkeys.delete(key)
+          : false;
+      }),
     updatePasskeyCounter: (tenantId, credentialId, expectedCounter, counter) =>
       Effect.suspend(() => {
         const key = scoped(tenantId, credentialId);
