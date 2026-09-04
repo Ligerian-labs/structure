@@ -4,6 +4,7 @@ import { Shutdown } from "@structure-ai/runtime";
 import {
   Context,
   Data,
+  Deferred,
   Duration,
   Effect,
   Fiber,
@@ -123,8 +124,14 @@ export interface RecurOptions {
 export interface WorkerOptions {
   /** Idle poll interval. Default 1s. */
   readonly pollInterval?: Duration.DurationInput;
-  /** Claims per poll. Default 10. */
+  /** Rows claimed per poll, never more than the free concurrency. Default 10. */
   readonly batchSize?: number;
+  /**
+   * Ceiling on handlers executing at once in this worker, enforced by a
+   * semaphore; the claim loop never takes more rows than it has free slots
+   * and waits for a slot instead of polling when full. Default `batchSize`.
+   */
+  readonly concurrency?: number;
   /** Lease held while a handler runs; expiry makes the row reclaimable. Default 60s. */
   readonly lease?: Duration.DurationInput;
   /**
@@ -427,13 +434,20 @@ export const makeScheduler = (
           workerOptions.pollInterval === undefined
             ? 1_000
             : Duration.toMillis(Duration.decode(workerOptions.pollInterval));
-        const batchSize = workerOptions.batchSize ?? 10;
+        const batchSize = Math.max(1, workerOptions.batchSize ?? 10);
+        const concurrency = Math.max(1, workerOptions.concurrency ?? batchSize);
         const leaseMillis =
           workerOptions.lease === undefined
             ? 60_000
             : Duration.toMillis(Duration.decode(workerOptions.lease));
 
         const inflight = new Set<Fiber.RuntimeFiber<void, unknown>>();
+        // The bound itself: a handler runs only while holding one permit, so
+        // even a miscounted claim can never exceed `concurrency` executions.
+        const permits = yield* Effect.makeSemaphore(concurrency);
+        // Signalled whenever an in-flight fiber ends, so a full worker wakes
+        // as soon as a slot frees instead of sleeping a whole poll interval.
+        let slotFreed = yield* Deferred.make<void>();
         let stopRequested = false;
 
         yield* shutdown.onShutdown(
@@ -459,15 +473,29 @@ export const makeScheduler = (
               const shuttingDown = yield* shutdown.isShuttingDown;
               if (shuttingDown) stopRequested = true;
               if (stopRequested) return;
-              const rows = yield* Effect.orDie(claim(batchSize, leaseMillis));
+              // Claim at most as many rows as there are free slots: a claimed
+              // row that could not start would sit on a ticking lease.
+              const waiter = slotFreed;
+              const capacity = Math.min(batchSize, concurrency - inflight.size);
+              if (capacity <= 0) {
+                yield* Deferred.await(waiter).pipe(Effect.timeout(pollMillis), Effect.ignore);
+                return;
+              }
+              const rows = yield* Effect.orDie(claim(capacity, leaseMillis));
               if (rows.length === 0) {
                 yield* Effect.sleep(pollMillis);
                 return;
               }
               for (const row of rows) {
-                const fiber = yield* Effect.fork(execute(row, leaseMillis));
+                const fiber = yield* Effect.fork(permits.withPermits(1)(execute(row, leaseMillis)));
                 inflight.add(fiber);
-                void fiber.addObserver(() => inflight.delete(fiber));
+                void fiber.addObserver(() => {
+                  inflight.delete(fiber);
+                  Deferred.unsafeDone(slotFreed, Effect.void);
+                });
+              }
+              if (inflight.size >= concurrency) {
+                slotFreed = yield* Deferred.make<void>();
               }
             }),
           step: () => undefined,

@@ -52,7 +52,7 @@ Payloads are `Schema<P, string>` (usually `Schema.parseJson(...)`) — stored as
 
 ## Worker lifecycle and roles
 
-`workerLayer({ role })` follows the platform's `SERVICE_ROLE` convention: `api` processes only schedule (the layer logs and does nothing), `worker`/`all` fork the dispatch loop. The loop registers a `Shutdown` finalizer: on shutdown it stops claiming, waits for in-flight handlers (bounded by the coordinator's finalizer timeout), then exits — no in-flight job is killed. `jobsSettings` (`@structure-ai/config`) maps `SERVICE_ROLE`, `JOBS_POLL_INTERVAL`, `JOBS_BATCH_SIZE`, `JOBS_LEASE`, `JOBS_TABLE_PREFIX`.
+`workerLayer({ role })` follows the platform's `SERVICE_ROLE` convention: `api` processes only schedule (the layer logs and does nothing), `worker`/`all` fork the dispatch loop. The loop runs at most `concurrency` handlers at once (default `batchSize`; a semaphore enforces it) and claims only as many rows as it has free slots, waking when a slot frees rather than polling, so a backlog never turns into an unbounded fan-out. It registers a `Shutdown` finalizer: on shutdown it stops claiming, waits for in-flight handlers (bounded by the coordinator's finalizer timeout), then exits — no in-flight job is killed. `jobsSettings` (`@structure-ai/config`) maps `SERVICE_ROLE`, `JOBS_POLL_INTERVAL`, `JOBS_BATCH_SIZE`, `JOBS_CONCURRENCY`, `JOBS_LEASE`, `JOBS_TABLE_PREFIX`.
 
 ## Observability
 
