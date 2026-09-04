@@ -317,7 +317,9 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
 
         // Anything that fails after initiate leaves parts behind in the
         // bucket unless the upload is aborted; best effort, the original
-        // failure is what the caller sees.
+        // failure is what the caller sees. An initiate reply without an
+        // UploadId cannot be aborted (there is no id to name), so that one
+        // malformed-provider case is left to the bucket's lifecycle rule.
         const abort = async (): Promise<void> => {
           if (uploadId === undefined) return;
           await doFetch({
