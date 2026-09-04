@@ -154,6 +154,16 @@ describe("S3 endpoint normalisation (against the signature-verifying stub)", () 
     // agree.
     expect(server.unverified.at(-1)?.path).toBe("/stub-bucket/probe%2Fdoubled.txt");
     expect(server.requests.at(-1)?.path).toBe("/stub-bucket/probe%2Fsingle.txt");
+    // A doubled slash in the middle of the path does reach the server (fetch
+    // collapses leading ones only): the stub must verify over what it
+    // received, never over a collapsed form, or a forged path passes.
+    const forged = sign("/stub-bucket/probe%2Fmid.txt");
+    const refused = await fetch(
+      forged.url.replace("/stub-bucket/probe%2Fmid.txt", "/stub-bucket//probe%2Fmid.txt"),
+      { method: "PUT", headers: forged.headers, body: "x" },
+    );
+    expect(refused.status).toBe(403);
+    expect(server.unverified.at(-1)?.path).toBe("/stub-bucket//probe%2Fmid.txt");
   });
 
   test("a driver built by hand with a trailing-slash endpoint round-trips", async () => {
