@@ -141,6 +141,32 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
       (matches) => hashes.find((_, index) => matches[index] === true),
     );
 
+  /**
+   * Consumes the stored entry behind `code`. When the store answers false
+   * because the list moved underneath (a concurrent consumer of ANOTHER
+   * code won the compare-and-delete), the record is re-read and the
+   * consumption retried: a lost race is not a wrong code. False only when
+   * no entry matches, or the matched entry is gone (spent meanwhile).
+   */
+  const consumeRecoveryCode = (
+    tenantId: TenantId,
+    userId: string,
+    hashes: ReadonlyArray<string>,
+    code: string,
+  ): Effect.Effect<boolean, TotpServiceError> =>
+    Effect.gen(function* () {
+      let entries = hashes;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const entry = yield* recoveryEntryFor(entries, code);
+        if (entry === undefined) return false;
+        if (yield* options.store.consumeRecoveryCode(tenantId, userId, entry)) return true;
+        const current = yield* options.store.findTotp(tenantId, userId);
+        if (current === undefined || !current.recoveryCodeHashes.includes(entry)) return false;
+        entries = current.recoveryCodeHashes;
+      }
+      return false;
+    });
+
   /** Seals a plaintext (pre-sealing) secret in place; a no-op once sealed. */
   const sealLegacySecret = (tenantId: TenantId, userId: string, stored: string) =>
     sealer.isSealed(stored)
@@ -268,16 +294,13 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
           yield* elevate(tenantId, sessionToken, user.id);
           return { elevated: true as const };
         }
-        if (isRecoveryCode(code)) {
-          const entry = yield* recoveryEntryFor(enrollment.recoveryCodeHashes, code);
-          const consumed =
-            entry !== undefined &&
-            (yield* options.store.consumeRecoveryCode(tenantId, user.id, entry));
-          if (consumed) {
-            yield* options.store.resetTotpFailures(tenantId, user.id);
-            yield* elevate(tenantId, sessionToken, user.id);
-            return { elevated: true as const };
-          }
+        if (
+          isRecoveryCode(code) &&
+          (yield* consumeRecoveryCode(tenantId, user.id, enrollment.recoveryCodeHashes, code))
+        ) {
+          yield* options.store.resetTotpFailures(tenantId, user.id);
+          yield* elevate(tenantId, sessionToken, user.id);
+          return { elevated: true as const };
         }
         const outcome = yield* options.store.recordTotpFailure({
           tenantId,
@@ -314,14 +337,11 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
         }
         const secretBase32 = yield* sealer.open(enrollment.secretBase32);
         const step = yield* matchTotpCode(secretBase32, code, primitives.now());
-        const entry = isRecoveryCode(code)
-          ? yield* recoveryEntryFor(enrollment.recoveryCodeHashes, code)
-          : undefined;
         const accepted =
           step !== undefined
             ? yield* options.store.markTotpStepUsed(tenantId, user.id, step)
-            : entry !== undefined &&
-              (yield* options.store.consumeRecoveryCode(tenantId, user.id, entry));
+            : isRecoveryCode(code) &&
+              (yield* consumeRecoveryCode(tenantId, user.id, enrollment.recoveryCodeHashes, code));
         if (!accepted) {
           const outcome = yield* options.store.recordTotpFailure({
             tenantId,
