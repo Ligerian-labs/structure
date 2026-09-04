@@ -4,6 +4,7 @@ import {
   type AuthAuditEvent,
   AuthDependencyError,
   type AuthEmail,
+  type AuthStore,
   AuthValidationError,
   allowAllRateLimiter,
   argon2id,
@@ -482,5 +483,50 @@ describe("second factor at rest", () => {
     );
     const next = await run(totpCode(secret, harness.now()));
     expect((await run(harness.totp.verify("tenant-a", third.token, next))).elevated).toBe(true);
+  });
+});
+
+describe("recovery codes under concurrent writes", () => {
+  test("a consumption lost to a concurrent write is retried, never counted as a wrong code", async () => {
+    const { harness, session } = await signedInUser("ada@example.com");
+    const { confirmation } = await enroll(harness, session.token);
+    const codes = confirmation.recoveryCodes.map((code) => Redacted.value(code));
+    // A store whose first consumption answers false while the entry is still
+    // there: the shape of a compare-and-delete that lost to another writer.
+    let lostRaces = 0;
+    const racing: AuthStore = {
+      ...harness.memory.store,
+      consumeRecoveryCode: (tenantId, userId, entry) =>
+        lostRaces === 0
+          ? Effect.sync(() => {
+              lostRaces += 1;
+              return false;
+            })
+          : harness.memory.store.consumeRecoveryCode(tenantId, userId, entry),
+    };
+    const totp = makeTotp({
+      store: racing,
+      auth: harness.auth,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      rateLimiter: allowAllRateLimiter,
+      secret: INSTANCE_SECRET,
+      primitives: { now: harness.now },
+    });
+    const pending = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect((await run(totp.verify("tenant-a", pending.token, codes[0] ?? ""))).elevated).toBe(true);
+    expect(lostRaces).toBe(1);
+    const record = harness.memory.snapshot().totp[0];
+    expect(record?.failedAttempts).toBe(0);
+    expect(record?.recoveryCodeHashes).toHaveLength(codes.length - 1);
+    // A code that is genuinely gone still fails, and is charged.
+    const another = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(await fail(totp.verify("tenant-a", another.token, codes[0] ?? ""))).toBeInstanceOf(
+      InvalidCredentials,
+    );
+    expect(harness.memory.snapshot().totp[0]?.failedAttempts).toBe(1);
   });
 });
