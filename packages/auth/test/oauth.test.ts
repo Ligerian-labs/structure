@@ -8,6 +8,7 @@ import {
   inMemoryAuthStore,
   makeAuth,
   type OAuthHttpClient,
+  RateLimitExceeded,
   type TenantAuthConfig,
 } from "../src/index.js";
 
@@ -260,5 +261,49 @@ describe("OAuth providers", () => {
     );
     expect(completed.session.user.email).toBeUndefined();
     expect(completed.session.user.emailVerified).toBe(false);
+  });
+});
+
+describe("external sign-in start wall", () => {
+  test("is keyed on the caller, so one caller cannot exhaust a provider for everyone", async () => {
+    const counts = new Map<string, number>();
+    const memory = inMemoryAuthStore();
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(config),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: {
+        check: (request) =>
+          Effect.suspend(() => {
+            const key = `${request.action}:${request.keyHash}`;
+            const seen = (counts.get(key) ?? 0) + 1;
+            counts.set(key, seen);
+            return seen > 60
+              ? Effect.fail(new RateLimitExceeded({ action: request.action }))
+              : Effect.void;
+          }),
+      },
+    });
+    for (let index = 0; index < 60; index++) {
+      await Effect.runPromise(
+        auth.beginOAuth("tenant-a", "google", undefined, { subject: "203.0.113.7" }),
+      );
+    }
+    const refused = await Effect.runPromise(
+      Effect.flip(auth.beginOAuth("tenant-a", "google", undefined, { subject: "203.0.113.7" })),
+    );
+    expect(refused).toBeInstanceOf(RateLimitExceeded);
+    const other = await Effect.runPromise(
+      auth.beginOAuth("tenant-a", "google", undefined, { subject: "198.51.100.9" }),
+    );
+    expect(other.authorizationUrl).toContain("accounts.google.com");
+    const keys = [...counts.keys()].filter((key) => key.startsWith("oauth-start:"));
+    expect(keys).toHaveLength(2);
+    expect(JSON.stringify(keys)).not.toContain("203.0.113.7");
+    // Without a caller subject there is no shared bucket to exhaust.
+    for (let index = 0; index < 70; index++) {
+      await Effect.runPromise(auth.beginOAuth("tenant-a", "google"));
+    }
+    expect([...counts.keys()].filter((key) => key.startsWith("oauth-start:"))).toHaveLength(2);
   });
 });

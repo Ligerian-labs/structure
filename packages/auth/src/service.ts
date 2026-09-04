@@ -172,10 +172,15 @@ export interface AuthService {
     tenantId: TenantId,
     cookieHeader: string | null,
   ) => Effect.Effect<Redacted.Redacted<string> | undefined, AuthServiceError>;
+  /**
+   * Walled on the caller's subject (never on the provider id, which every
+   * caller would share); without a caller subject no framework wall applies.
+   */
   readonly beginOAuth: (
     tenantId: TenantId,
     provider: import("./model.js").OAuthProviderId,
     returnTo?: string,
+    caller?: AuthCaller,
   ) => Effect.Effect<{ readonly authorizationUrl: string }, AuthServiceError>;
   readonly completeOAuth: (input: {
     readonly tenantId: TenantId;
@@ -763,10 +768,10 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         }
         return undefined;
       }),
-    beginOAuth: (tenantId, providerId, returnTo) =>
+    beginOAuth: (tenantId, providerId, returnTo, caller) =>
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
-        yield* limit(tenantId, "oauth-start", providerId);
+        if (caller !== undefined) yield* limit(tenantId, "oauth-start", caller.subject);
         const provider = yield* oauthProviders.resolve(tenantId, providerId, config);
         if (provider === undefined) {
           return yield* new AuthValidationError({

@@ -538,7 +538,7 @@ export const makeAuthHandler = (
           }
           const body = yield* decodeBody(request, maxBodyBytes);
           const returnTo = yield* stringField(body, "returnTo", true);
-          return jsonResponse(200, yield* auth.beginOAuth(tenantId, provider, returnTo));
+          return jsonResponse(200, yield* auth.beginOAuth(tenantId, provider, returnTo, caller));
         }
         case "oauthCallback": {
           if (provider === undefined) {
