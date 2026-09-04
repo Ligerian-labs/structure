@@ -439,7 +439,9 @@ const resetOf = (
  * exceed `maxKeys`, so a flood of distinct keys costs O(1) per consume and
  * never more than `maxKeys` entries. Stale entries (every hit older than the
  * longest window seen, no block) are swept at most once per
- * `sweepIntervalMillis` (default one minute), never on every consume. Pass
+ * `sweepIntervalMillis` (default one minute), never on every consume. Only
+ * `consume` refreshes a key's recency: `peek` spends nothing and moves
+ * nothing, so a key that is only ever peeked ages out like an idle one. Pass
  * `now` for deterministic tests; `size()` exposes the entry count.
  */
 export const makeInMemoryStore = (
