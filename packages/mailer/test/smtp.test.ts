@@ -20,6 +20,8 @@ const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise
 
 interface FakeSmtpServer {
   readonly port: number;
+  /** Client connections the relay still holds open. */
+  readonly openSockets: () => number;
   readonly commands: Array<string>;
   /** Commands received over an encrypted socket (after STARTTLS or on implicit TLS). */
   readonly secureCommands: Array<string>;
@@ -131,6 +133,7 @@ const startFakeSmtp = async (options: FakeSmtpOptions = {}): Promise<FakeSmtpSer
   if (address === null || typeof address === "string") throw new Error("no listen address");
   return {
     port: address.port,
+    openSockets: () => sockets.size,
     commands,
     secureCommands,
     dataPayloads,
@@ -264,6 +267,30 @@ describe("smtp driver: transport security", () => {
       expect(plain.commands.some((line) => line.toUpperCase().startsWith("MAIL FROM"))).toBe(false);
       expect(plain.authPlainTokens).toHaveLength(0);
       expect(plain.dataPayloads).toHaveLength(0);
+    } finally {
+      await plain.close();
+    }
+  });
+
+  test("a refused cleartext session is closed, not left half-open on the relay", async () => {
+    const plain = await startFakeSmtp();
+    try {
+      await run(
+        Effect.flip(
+          makeSmtpDriver({
+            host: "relay.test",
+            port: plain.port,
+            user: "mailer",
+            password: Redacted.make("hunter2"),
+            connect: toLoopback,
+          }).send({ ...message, subject: "closed" }),
+        ),
+      );
+      const deadline = Date.now() + 1_000;
+      while (plain.openSockets() > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(plain.openSockets()).toBe(0);
     } finally {
       await plain.close();
     }
