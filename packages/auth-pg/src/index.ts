@@ -7,5 +7,7 @@ export {
   migration,
   type TableNames,
   tableNames,
+  upgradeMigration,
+  upgradeStatements,
 } from "./schema.js";
 export { makeAuthStore } from "./store.js";

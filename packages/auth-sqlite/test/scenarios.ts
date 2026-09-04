@@ -515,9 +515,38 @@ export const registerOAuthServerScenarios = (
       );
       const token = await run(remake.findTokenByHash("tenant-a", "token-hash"));
       expect(token?.tokenId).toBe("token-1");
+      expect(token?.familyId).toBeUndefined();
       await run(store.revokeToken("tenant-a", "token-1", later));
       const revoked = await run(store.findTokenById("tenant-a", "token-1"));
       expect(revoked?.revokedAt).toEqual(later);
+
+      // Token families: the id round-trips, and revoking a family reaches
+      // every live member (access and refresh) and nothing outside it.
+      const member = (tokenId: string, familyId: string, kind: "access" | "refresh") =>
+        store.putToken({
+          tenantId: "tenant-a",
+          tokenId,
+          kind,
+          clientId: "as_client-1",
+          userId: "user-1",
+          scope: ["mcp:tools"],
+          ...(kind === "refresh" ? { tokenHash: `${tokenId}-hash` } : {}),
+          familyId,
+          expiresAt: later,
+          createdAt: at,
+        });
+      await run(member("fam-a-r1", "family-a", "refresh"));
+      await run(member("fam-a-a2", "family-a", "access"));
+      await run(member("fam-a-r2", "family-a", "refresh"));
+      await run(member("fam-b-r1", "family-b", "refresh"));
+      expect((await run(remake.findTokenById("tenant-a", "fam-a-a2")))?.familyId).toBe("family-a");
+      await run(store.revokeFamily("tenant-a", "family-a", later));
+      for (const tokenId of ["fam-a-r1", "fam-a-a2", "fam-a-r2"]) {
+        expect((await run(remake.findTokenById("tenant-a", tokenId)))?.revokedAt).toEqual(later);
+      }
+      expect((await run(remake.findTokenById("tenant-a", "fam-b-r1")))?.revokedAt).toBeUndefined();
+      await run(store.revokeFamily("tenant-b", "family-b", later));
+      expect((await run(remake.findTokenById("tenant-a", "fam-b-r1")))?.revokedAt).toBeUndefined();
 
       await run(
         store.putEndSessionHint({

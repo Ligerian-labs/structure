@@ -313,17 +313,6 @@ describe("refresh, revocation, introspection", () => {
     expect(rotated.refreshToken).toBeDefined();
     expect(rotated.refreshToken).not.toBe(refreshToken);
 
-    // Replaying the rotated-away token fails.
-    const replay = await flip(
-      server.refresh({
-        tenantId: "tenant-a",
-        clientId: minted.record.clientId,
-        clientSecret: secret,
-        refreshToken: Redacted.make(refreshToken),
-      }),
-    );
-    expect(replay).toBeInstanceOf(InvalidAuthToken);
-
     // Introspection: active before revocation.
     const before = await run(
       server.introspect({
@@ -367,6 +356,27 @@ describe("refresh, revocation, introspection", () => {
       server.verifyAccessToken("tenant-a", Redacted.make(first.accessToken)),
     );
     expect(verifyError).toBeInstanceOf(InvalidAuthToken);
+
+    // Replaying the rotated-away refresh token fails, and takes the pair it
+    // was rotated into down with it (reuse revokes the family).
+    const replay = await flip(
+      server.refresh({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        clientSecret: secret,
+        refreshToken: Redacted.make(refreshToken),
+      }),
+    );
+    expect(replay).toBeInstanceOf(InvalidAuthToken);
+    const rotatedAfterReplay = await run(
+      server.introspect({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        clientSecret: secret,
+        token: Redacted.make(rotated.refreshToken ?? ""),
+      }),
+    );
+    expect(rotatedAfterReplay.active).toBe(false);
   });
 });
 
@@ -663,5 +673,104 @@ describe("access-token verification", () => {
         ),
       ),
     ).toBeInstanceOf(InvalidAuthToken);
+  });
+});
+
+describe("refresh-token reuse", () => {
+  test("presenting a rotated-away refresh token revokes the whole family it started", async () => {
+    const events: Array<{ readonly action: string; readonly userId?: string }> = [];
+    const store = inMemoryOAuthServerStore();
+    const key = await run(generateSigningKey());
+    const server = makeAuthorizationServer({
+      store,
+      resolveTenant: (tenantId) =>
+        Effect.succeed({ baseUrl: new URL(`https://${tenantId}.example.com`) }),
+      signingKeys: { current: key },
+      registration: { signedIn: true },
+      primitives: { now: () => clock.value },
+      audit: {
+        record: (event) =>
+          Effect.sync(() => {
+            events.push({
+              action: event.action,
+              ...(event.userId === undefined ? {} : { userId: event.userId }),
+            });
+          }),
+      },
+    });
+    const minted = await registerClient(server);
+    const secret = minted.clientSecret ?? Redacted.make("");
+    const { verifier, challenge } = await pkce();
+    await run(
+      server.grantConsent({
+        tenantId: "tenant-a",
+        userId: "user-1",
+        clientId: minted.record.clientId,
+        scope: ["mcp:tools"],
+      }),
+    );
+    const decision = await run(
+      server.authorize(
+        {
+          tenantId: "tenant-a",
+          clientId: minted.record.clientId,
+          redirectUri: "https://agent.example.com/callback",
+          scope: ["mcp:tools"],
+          codeChallenge: challenge,
+          codeChallengeMethod: "S256",
+        },
+        "user-1",
+      ),
+    );
+    if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+    const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+    const first = await run(
+      server.exchangeCode({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        clientSecret: secret,
+        code: Redacted.make(code),
+        codeVerifier: verifier,
+        redirectUri: "https://agent.example.com/callback",
+      }),
+    );
+    const refresh = (token: string) =>
+      server.refresh({
+        tenantId: "tenant-a",
+        clientId: minted.record.clientId,
+        clientSecret: secret,
+        refreshToken: Redacted.make(token),
+      });
+    const introspect = (token: string) =>
+      run(
+        server.introspect({
+          tenantId: "tenant-a",
+          clientId: minted.record.clientId,
+          clientSecret: secret,
+          token: Redacted.make(token),
+        }),
+      );
+    // R1 → R2 (legitimate rotation), then R2 → R3: a live family of three generations.
+    const second = await run(refresh(first.refreshToken ?? ""));
+    const third = await run(refresh(second.refreshToken ?? ""));
+    expect((await introspect(third.refreshToken ?? "")).active).toBe(true);
+    expect((await introspect(third.accessToken)).active).toBe(true);
+
+    // A thief replays R1: refused, and every descendant dies with it.
+    expect(await flip(refresh(first.refreshToken ?? ""))).toBeInstanceOf(InvalidAuthToken);
+    expect((await introspect(second.refreshToken ?? "")).active).toBe(false);
+    expect((await introspect(third.refreshToken ?? "")).active).toBe(false);
+    expect((await introspect(third.accessToken)).active).toBe(false);
+    expect(
+      await flip(server.verifyAccessToken("tenant-a", Redacted.make(third.accessToken))),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(await flip(refresh(third.refreshToken ?? ""))).toBeInstanceOf(InvalidAuthToken);
+    expect(events).toContainEqual({ action: "oauth-refresh-reuse", userId: "user-1" });
+
+    // A family is exactly one grant: another exchange's tokens are untouched.
+    const tokens = store.snapshot().tokens;
+    const families = new Set(tokens.map((token) => token.familyId));
+    expect(families.size).toBe(1);
+    expect(tokens.every((token) => token.revokedAt !== undefined)).toBe(true);
   });
 });

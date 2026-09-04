@@ -68,7 +68,8 @@ export interface AuthAuditEvent {
     | "apikey-mint"
     | "apikey-revoke"
     | "totp-locked"
-    | "oauth-unlink";
+    | "oauth-unlink"
+    | "oauth-refresh-reuse";
   readonly outcome: "succeeded";
   readonly userId?: string;
   readonly provider?: OAuthProviderId;

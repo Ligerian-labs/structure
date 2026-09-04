@@ -8,6 +8,7 @@ import {
   InvalidCredentials,
 } from "./errors.js";
 import type { TenantId, UserId } from "./model.js";
+import { type AuthAuditSink, noOpAuthAuditSink } from "./ports.js";
 
 // --- model -------------------------------------------------------------------------
 
@@ -134,6 +135,14 @@ export interface OAuthTokenRecord {
   readonly scope: ReadonlyArray<OAuthServerScope>;
   /** Hash for opaque tokens (refresh); absent for self-contained JWTs. */
   readonly tokenHash?: string;
+  /**
+   * The grant this token descends from: set at code exchange and carried
+   * through every refresh rotation, so reuse of a rotated-away refresh token
+   * revokes the whole family. Absent on records minted before families
+   * existed; such a record roots a family under its own `tokenId` when it
+   * is next refreshed.
+   */
+  readonly familyId?: string;
   readonly expiresAt: Date;
   readonly revokedAt?: Date;
   readonly createdAt: Date;
@@ -192,6 +201,12 @@ export interface OAuthServerStore {
   readonly revokeToken: (
     tenantId: TenantId,
     tokenId: string,
+    now: Date,
+  ) => Effect.Effect<void, AuthStoreError>;
+  /** Revokes every live token of a family (access and refresh alike). */
+  readonly revokeFamily: (
+    tenantId: TenantId,
+    familyId: string,
     now: Date,
   ) => Effect.Effect<void, AuthStoreError>;
   readonly putEndSessionHint: (record: EndSessionHintRecord) => Effect.Effect<void, AuthStoreError>;
@@ -262,6 +277,18 @@ export const inMemoryOAuthServerStore = (): OAuthServerStore & {
         const current = tokens.get(key);
         if (current !== undefined) tokens.set(key, { ...current, revokedAt: now });
       }),
+    revokeFamily: (tenantId, familyId, now) =>
+      Effect.sync(() => {
+        for (const [key, token] of tokens) {
+          if (
+            token.tenantId === tenantId &&
+            token.familyId === familyId &&
+            token.revokedAt === undefined
+          ) {
+            tokens.set(key, { ...token, revokedAt: now });
+          }
+        }
+      }),
     putEndSessionHint: (record) =>
       Effect.sync(() => {
         hints.set(scoped(record.tenantId, record.hintHash), record);
@@ -309,6 +336,8 @@ export interface AuthorizationServerOptions {
   readonly codeTtlMillis?: number;
   /** Bounded grace for end-session hints. Default 5 minutes. */
   readonly endSessionHintTtlMillis?: number;
+  /** Receives `oauth-refresh-reuse` when a rotated-away refresh token is presented. */
+  readonly audit?: AuthAuditSink;
   readonly primitives?: Partial<{
     readonly now: () => Date;
     readonly randomToken: (byteLength?: number) => string;
@@ -538,6 +567,7 @@ export const makeAuthorizationServer = (
   const refreshTokenTtl = options.refreshTokenTtlMillis ?? 30 * 24 * 60 * 60 * 1_000;
   const codeTtl = options.codeTtlMillis ?? 60 * 1_000;
   const hintTtl = options.endSessionHintTtlMillis ?? 5 * 60 * 1_000;
+  const audit = options.audit ?? noOpAuthAuditSink;
 
   const clientError = (reason: string): AuthValidationError =>
     new AuthValidationError({ field: "client", reason });
@@ -572,6 +602,7 @@ export const makeAuthorizationServer = (
     userId: UserId | undefined,
     scope: ReadonlyArray<OAuthServerScope>,
     withRefresh: boolean,
+    familyId: string,
   ): Effect.Effect<IssuedTokens, AuthDependencyError | AuthStoreError> =>
     Effect.gen(function* () {
       const issuedAt = now();
@@ -595,6 +626,7 @@ export const makeAuthorizationServer = (
         clientId: client.clientId,
         ...(userId === undefined ? {} : { userId }),
         scope: [...scope],
+        familyId,
         expiresAt: accessExpiresAt,
         createdAt: issuedAt,
       });
@@ -610,6 +642,7 @@ export const makeAuthorizationServer = (
           ...(userId === undefined ? {} : { userId }),
           scope: [...scope],
           tokenHash: refreshHash,
+          familyId,
           expiresAt: new Date(issuedAt.getTime() + refreshTokenTtl),
           createdAt: issuedAt,
         });
@@ -756,6 +789,7 @@ export const makeAuthorizationServer = (
         if (challenge !== record.codeChallenge) {
           return yield* new InvalidCredentials({ reason: "pkce" });
         }
+        // Every grant starts a token family of its own.
         return yield* issueTokens(
           input.tenantId,
           tenant.baseUrl.toString(),
@@ -763,6 +797,7 @@ export const makeAuthorizationServer = (
           record.userId,
           record.scope,
           true,
+          randomTokenImpl(12),
         );
       }),
     refresh: (input) =>
@@ -783,11 +818,21 @@ export const makeAuthorizationServer = (
         ) {
           return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
         }
+        const familyId = record.familyId ?? record.tokenId;
         if (record.revokedAt !== undefined) {
-          // Replay of a rotated refresh token: revoke everything it reached.
+          // Reuse of a rotated-away refresh token is the one signal the
+          // protocol gives that it leaked: whoever holds the descendants,
+          // thief or victim, loses them all, and the event is audited.
+          yield* options.store.revokeFamily(input.tenantId, familyId, now());
+          yield* audit.record({
+            tenantId: input.tenantId,
+            action: "oauth-refresh-reuse",
+            outcome: "succeeded",
+            ...(record.userId === undefined ? {} : { userId: record.userId }),
+          });
           return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
         }
-        // Rotation: the old refresh token dies, a fresh pair is issued.
+        // Rotation: the old refresh token dies, a fresh pair joins its family.
         yield* options.store.revokeToken(input.tenantId, record.tokenId, now());
         return yield* issueTokens(
           input.tenantId,
@@ -796,6 +841,7 @@ export const makeAuthorizationServer = (
           record.userId,
           record.scope,
           true,
+          familyId,
         );
       }),
     revoke: (input) =>

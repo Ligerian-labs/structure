@@ -49,6 +49,7 @@ interface TokenRow {
   readonly user_id: string | null;
   readonly scope: string;
   readonly token_hash: string | null;
+  readonly family_id: string | null;
   readonly expires_at: DateValue;
   readonly revoked_at: DateValue | null;
   readonly created_at: DateValue;
@@ -100,6 +101,7 @@ const decodeToken = (row: TokenRow): OAuthTokenRecord => ({
   ...(row.user_id === null ? {} : { userId: row.user_id }),
   scope: decodeList(row.scope),
   ...(row.token_hash === null ? {} : { tokenHash: row.token_hash }),
+  ...(row.family_id === null ? {} : { familyId: row.family_id }),
   expiresAt: date(row.expires_at),
   ...(row.revoked_at === null ? {} : { revokedAt: date(row.revoked_at) }),
   createdAt: date(row.created_at),
@@ -208,20 +210,21 @@ export const makeOAuthServerStore = (sql: SQL, options: AdapterOptions = {}): OA
       read("oauth-put-token", async () => {
         await sql`
           INSERT INTO ${sql(tables.oauthTokens)}
-            (tenant_id, token_id, kind, client_id, user_id, scope, token_hash, expires_at,
-             revoked_at, created_at)
+            (tenant_id, token_id, kind, client_id, user_id, scope, token_hash, family_id,
+             expires_at, revoked_at, created_at)
           VALUES
             (${record.tenantId}, ${record.tokenId}, ${record.kind}, ${record.clientId},
              ${record.userId ?? null}, ${JSON.stringify(record.scope)},
-             ${record.tokenHash ?? null}, ${record.expiresAt.toISOString()},
-             ${record.revokedAt?.toISOString() ?? null}, ${record.createdAt.toISOString()})
+             ${record.tokenHash ?? null}, ${record.familyId ?? null},
+             ${record.expiresAt.toISOString()}, ${record.revokedAt?.toISOString() ?? null},
+             ${record.createdAt.toISOString()})
         `;
       }).pipe(Effect.asVoid),
     findTokenByHash: (tenantId, tokenHash) =>
       read("oauth-find-token-by-hash", async () => {
         const rows = await sql<TokenRow[]>`
-          SELECT tenant_id, token_id, kind, client_id, user_id, scope, token_hash, expires_at,
-                 revoked_at, created_at
+          SELECT tenant_id, token_id, kind, client_id, user_id, scope, token_hash, family_id,
+                 expires_at, revoked_at, created_at
           FROM ${sql(tables.oauthTokens)}
           WHERE tenant_id = ${tenantId} AND token_hash = ${tokenHash}
         `;
@@ -230,8 +233,8 @@ export const makeOAuthServerStore = (sql: SQL, options: AdapterOptions = {}): OA
     findTokenById: (tenantId, tokenId) =>
       read("oauth-find-token-by-id", async () => {
         const rows = await sql<TokenRow[]>`
-          SELECT tenant_id, token_id, kind, client_id, user_id, scope, token_hash, expires_at,
-                 revoked_at, created_at
+          SELECT tenant_id, token_id, kind, client_id, user_id, scope, token_hash, family_id,
+                 expires_at, revoked_at, created_at
           FROM ${sql(tables.oauthTokens)}
           WHERE tenant_id = ${tenantId} AND token_id = ${tokenId}
         `;
@@ -243,6 +246,14 @@ export const makeOAuthServerStore = (sql: SQL, options: AdapterOptions = {}): OA
           UPDATE ${sql(tables.oauthTokens)}
           SET revoked_at = ${at.toISOString()}
           WHERE tenant_id = ${tenantId} AND token_id = ${tokenId}
+        `;
+      }).pipe(Effect.asVoid),
+    revokeFamily: (tenantId, familyId, at) =>
+      read("oauth-revoke-family", async () => {
+        await sql`
+          UPDATE ${sql(tables.oauthTokens)}
+          SET revoked_at = ${at.toISOString()}
+          WHERE tenant_id = ${tenantId} AND family_id = ${familyId} AND revoked_at IS NULL
         `;
       }).pipe(Effect.asVoid),
     putEndSessionHint: (record) =>
