@@ -151,6 +151,7 @@ export {
   generateRecoveryCodes,
   generateTotpSecret,
   hotp,
+  matchTotpCode,
   TOTP_STEP_SECONDS,
   totpCode,
   totpQrPayload,

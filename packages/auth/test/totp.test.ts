@@ -106,6 +106,9 @@ const enroll = async (
       await run(totpCode(enrollment.secretBase32, harness.now())),
     ),
   );
+  // The confirming code is spent (one-time steps): move to the next one, as
+  // a person waiting for their authenticator to tick would.
+  harness.advance(TOTP_STEP_SECONDS * 1_000);
   return { enrollment, confirmation };
 };
 
@@ -290,5 +293,46 @@ describe("unenrollment", () => {
     expect(await run(harness.totp.sessionRequiresElevation("tenant-a", plain.token))).toBe(false);
     const unenrollEvent = harness.audit.find((event) => event.action === "totp-unenroll");
     expect(unenrollEvent).toBeDefined();
+  });
+});
+
+describe("one-time codes", () => {
+  test("a code that already elevated a session is refused everywhere until the next step", async () => {
+    const { harness, session } = await signedInUser("ada@example.com");
+    const { enrollment } = await enroll(harness, session.token);
+    // The confirming code itself (one step back now) is spent: it cannot elevate a session.
+    const confirmingCode = await run(
+      totpCode(
+        enrollment.secretBase32,
+        new Date(harness.now().getTime() - TOTP_STEP_SECONDS * 1_000),
+      ),
+    );
+    const pendingAfterConfirm = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(
+      await fail(harness.totp.verify("tenant-a", pendingAfterConfirm.token, confirmingCode)),
+    ).toBeInstanceOf(InvalidCredentials);
+
+    const first = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    const second = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    const code = await run(totpCode(enrollment.secretBase32, harness.now()));
+    expect((await run(harness.totp.verify("tenant-a", first.token, code))).elevated).toBe(true);
+    // The same code, seen once, is worth exactly one login.
+    expect(await fail(harness.totp.verify("tenant-a", second.token, code))).toBeInstanceOf(
+      InvalidCredentials,
+    );
+    expect(await fail(harness.totp.unenroll("tenant-a", first.token, code))).toBeInstanceOf(
+      InvalidCredentials,
+    );
+    expect(await run(harness.totp.sessionRequiresElevation("tenant-a", second.token))).toBe(true);
+    // The next step's code is fresh again.
+    harness.advance(TOTP_STEP_SECONDS * 1_000);
+    const next = await run(totpCode(enrollment.secretBase32, harness.now()));
+    expect((await run(harness.totp.verify("tenant-a", second.token, next))).elevated).toBe(true);
   });
 });

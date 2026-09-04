@@ -120,6 +120,16 @@ export interface AuthStore {
     readonly now: Date;
   }) => StoreEffect<{ readonly locked: boolean; readonly lockedUntil?: Date }>;
   readonly resetTotpFailures: (tenantId: TenantId, userId: UserId) => StoreEffect<void>;
+  /**
+   * Atomic: records `step` as the last accepted time step and answers true,
+   * or answers false without writing when that step, or a later one, was
+   * already accepted (the code is a replay).
+   */
+  readonly markTotpStepUsed: (
+    tenantId: TenantId,
+    userId: UserId,
+    step: number,
+  ) => StoreEffect<boolean>;
   /** Single-use: removes the hash when present, reports whether it matched. */
   readonly consumeRecoveryCode: (
     tenantId: TenantId,
@@ -449,6 +459,15 @@ export const inMemoryAuthStore = (): InMemoryAuthStore => {
           const { lockedUntil: _expired, ...rest } = current;
           state.totp.set(key, { ...rest, failedAttempts: 0 });
         }
+      }),
+    markTotpStepUsed: (tenantId, userId, step) =>
+      Effect.sync(() => {
+        const key = scoped(tenantId, userId);
+        const current = state.totp.get(key);
+        if (current === undefined) return false;
+        if (current.lastUsedStep !== undefined && current.lastUsedStep >= step) return false;
+        state.totp.set(key, { ...current, lastUsedStep: step });
+        return true;
       }),
     consumeRecoveryCode: (tenantId, userId, codeHash) =>
       Effect.sync(() => {

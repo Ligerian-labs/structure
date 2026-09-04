@@ -107,6 +107,7 @@ interface TotpRow {
   readonly recovery_code_hashes: string;
   readonly failed_attempts: number;
   readonly locked_until: DateValue | null;
+  readonly last_used_step: number | string | null;
   readonly enrolled_at: DateValue;
 }
 
@@ -123,6 +124,7 @@ const decodeTotp = (row: TotpRow): TotpRecord => ({
   recoveryCodeHashes: decodeHashes(row.recovery_code_hashes),
   failedAttempts: Number(row.failed_attempts),
   ...(row.locked_until === null ? {} : { lockedUntil: date(row.locked_until) }),
+  ...(row.last_used_step === null ? {} : { lastUsedStep: Number(row.last_used_step) }),
   enrolledAt: date(row.enrolled_at),
 });
 
@@ -545,18 +547,19 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
         await sql`
           INSERT INTO ${sql(tables.totp)}
             (tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
-             failed_attempts, locked_until, enrolled_at)
+             failed_attempts, locked_until, last_used_step, enrolled_at)
           VALUES
             (${record.tenantId}, ${record.userId}, ${record.secretBase32},
              ${record.confirmed ? 1 : 0}, ${JSON.stringify(record.recoveryCodeHashes)},
              ${record.failedAttempts}, ${record.lockedUntil?.toISOString() ?? null},
-             ${record.enrolledAt.toISOString()})
+             ${record.lastUsedStep ?? null}, ${record.enrolledAt.toISOString()})
           ON CONFLICT (tenant_id, user_id) DO UPDATE SET
             secret_base32 = excluded.secret_base32,
             confirmed = excluded.confirmed,
             recovery_code_hashes = excluded.recovery_code_hashes,
             failed_attempts = excluded.failed_attempts,
             locked_until = excluded.locked_until,
+            last_used_step = excluded.last_used_step,
             enrolled_at = excluded.enrolled_at
         `;
       }).pipe(Effect.asVoid),
@@ -564,7 +567,7 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
       read("find-totp", async () => {
         const rows = await sql<TotpRow[]>`
           SELECT tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
-                 failed_attempts, locked_until, enrolled_at
+                 failed_attempts, locked_until, last_used_step, enrolled_at
           FROM ${sql(tables.totp)}
           WHERE tenant_id = ${tenantId} AND user_id = ${userId}
         `;
@@ -578,7 +581,7 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
               failed_attempts = 0, locked_until = NULL, enrolled_at = ${now.toISOString()}
           WHERE tenant_id = ${tenantId} AND user_id = ${userId} AND confirmed = 0
           RETURNING tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
-                    failed_attempts, locked_until, enrolled_at
+                    failed_attempts, locked_until, last_used_step, enrolled_at
         `;
         return rows[0] === undefined ? undefined : decodeTotp(rows[0]);
       }),
@@ -601,7 +604,7 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
               END
           WHERE tenant_id = ${tenantId} AND user_id = ${userId}
           RETURNING tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
-                    failed_attempts, locked_until, enrolled_at
+                    failed_attempts, locked_until, last_used_step, enrolled_at
         `;
         const record = rows[0] === undefined ? undefined : decodeTotp(rows[0]);
         if (record === undefined || record.failedAttempts < threshold) {
@@ -610,6 +613,17 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
         return record.lockedUntil === undefined
           ? { locked: true as const }
           : { locked: true as const, lockedUntil: record.lockedUntil };
+      }),
+    markTotpStepUsed: (tenantId, userId, step) =>
+      read("mark-totp-step-used", async () => {
+        const rows = await sql<Array<{ readonly user_id: string }>>`
+          UPDATE ${sql(tables.totp)}
+          SET last_used_step = ${step}
+          WHERE tenant_id = ${tenantId} AND user_id = ${userId}
+            AND (last_used_step IS NULL OR last_used_step < ${step})
+          RETURNING user_id
+        `;
+        return rows.length > 0;
       }),
     resetTotpFailures: (tenantId, userId) =>
       read("reset-totp-failures", async () => {
@@ -623,7 +637,7 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
       read("consume-recovery-code", async () => {
         const rows = await sql<TotpRow[]>`
           SELECT tenant_id, user_id, secret_base32, confirmed, recovery_code_hashes,
-                 failed_attempts, locked_until, enrolled_at
+                 failed_attempts, locked_until, last_used_step, enrolled_at
           FROM ${sql(tables.totp)}
           WHERE tenant_id = ${tenantId} AND user_id = ${userId}
         `;
