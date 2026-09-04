@@ -12,7 +12,7 @@ import {
   RateLimitExceeded,
   UnsupportedPasskey,
 } from "./errors.js";
-import type { TenantId } from "./model.js";
+import type { OAuthProviderId, TenantId } from "./model.js";
 import type { AuthService, AuthServiceError } from "./service.js";
 import type { PasskeyAuthenticationResponse, PasskeyRegistrationResponse } from "./webauthn.js";
 
@@ -31,6 +31,12 @@ export interface AuthHandlerOptions {
    * fail construction with `InvalidAuthRoutes`.
    */
   readonly routes?: Partial<Record<AuthRouteId, string>>;
+  /**
+   * Application path used after a successful browser OAuth callback. When set,
+   * the callback responds with 303 to the validated `returnTo`, or this path
+   * when OAuth started without one. Leave unset to keep the JSON response.
+   */
+  readonly oauthCallbackRedirect?: string;
   readonly maxBodyBytes?: number;
   readonly allowOrigin?: (
     tenantId: TenantId,
@@ -41,6 +47,11 @@ export interface AuthHandlerOptions {
 
 export interface AuthHandler {
   readonly handler: (request: Request) => Promise<Response>;
+  /** The callback URI to register for this handler's compiled route table. */
+  readonly authorizationServerRedirectUri: (
+    tenantId: TenantId,
+    provider: OAuthProviderId,
+  ) => Effect.Effect<string, AuthServiceError>;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -54,6 +65,16 @@ const jsonResponse = (
   Response.json(body, {
     status,
     headers: { "cache-control": "no-store", ...headers },
+  });
+
+const redirectResponse = (location: string, cookie: string): Response =>
+  new Response(null, {
+    status: 303,
+    headers: {
+      "cache-control": "no-store",
+      location,
+      "set-cookie": cookie,
+    },
   });
 
 const decodeBody = (
@@ -371,6 +392,27 @@ const matchRoute = (
   return undefined;
 };
 
+const pathForRoute = (
+  routes: ReadonlyArray<CompiledRoute>,
+  id: AuthRouteId,
+  provider: OAuthProviderId,
+): string => {
+  const route = routes.find((candidate) => candidate.id === id);
+  if (route === undefined) return "/";
+  return `/${route.segments
+    .map((segment) => (segment === PROVIDER_PARAM ? encodeURIComponent(provider) : segment))
+    .join("/")}`;
+};
+
+const isApplicationPath = (path: string): boolean => {
+  if (!path.startsWith("/")) return false;
+  try {
+    return new URL(path, "https://auth.invalid").origin === "https://auth.invalid";
+  } catch {
+    return false;
+  }
+};
+
 const defaultOrigin = (
   _tenantId: TenantId,
   origin: string,
@@ -384,10 +426,27 @@ export const makeAuthHandler = (
   const basePath = (options.basePath ?? "/auth").replace(/\/$/u, "");
   const maxBodyBytes = options.maxBodyBytes ?? 64 * 1_024;
   const allowOrigin = options.allowOrigin ?? defaultOrigin;
-  const { routes, violations } = compileRoutes(basePath, options.routes);
+  const compiled = compileRoutes(basePath, options.routes);
+  const violations = [...compiled.violations];
+  if (
+    options.oauthCallbackRedirect !== undefined &&
+    !isApplicationPath(options.oauthCallbackRedirect)
+  ) {
+    violations.push({
+      route: "oauthCallbackRedirect",
+      reason: "must be an absolute application path starting with one /",
+    });
+  }
   if (violations.length > 0) {
     return Effect.fail(new InvalidAuthRoutes({ violations }));
   }
+  const routes = compiled.routes;
+  const authorizationServerRedirectUri = (tenantId: TenantId, provider: OAuthProviderId) =>
+    auth.authorizationServerRedirectUri(
+      tenantId,
+      provider,
+      pathForRoute(routes, "oauthCallback", provider),
+    );
 
   const program = (request: Request): Effect.Effect<Response, AuthServiceError> =>
     Effect.gen(function* () {
@@ -528,7 +587,14 @@ export const makeAuthHandler = (
           }
           const body = yield* decodeBody(request, maxBodyBytes);
           const returnTo = yield* stringField(body, "returnTo", true);
-          return jsonResponse(200, yield* auth.beginOAuth(tenantId, provider, returnTo));
+          const redirectTo = returnTo ?? options.oauthCallbackRedirect;
+          return jsonResponse(
+            200,
+            yield* auth.beginOAuth(tenantId, provider, {
+              ...(redirectTo === undefined ? {} : { returnTo: redirectTo }),
+              callbackPath: pathForRoute(routes, "oauthCallback", provider),
+            }),
+          );
         }
         case "oauthCallback": {
           if (provider === undefined) {
@@ -550,11 +616,21 @@ export const makeAuthHandler = (
             code: Redacted.make(code),
             ...(cookie === undefined ? {} : { currentSessionToken: cookie }),
           });
+          const sessionCookie = yield* auth.sessionCookie(tenantId, completed.session);
+          if (options.oauthCallbackRedirect !== undefined) {
+            const location =
+              completed.returnTo ??
+              new URL(
+                options.oauthCallbackRedirect,
+                yield* authorizationServerRedirectUri(tenantId, provider),
+              ).toString();
+            return redirectResponse(location, sessionCookie);
+          }
           return jsonResponse(
             200,
             { user: completed.session.user, returnTo: completed.returnTo },
             {
-              "set-cookie": yield* auth.sessionCookie(tenantId, completed.session),
+              "set-cookie": sessionCookie,
             },
           );
         }
@@ -596,6 +672,7 @@ export const makeAuthHandler = (
     });
 
   return Effect.succeed({
+    authorizationServerRedirectUri,
     handler: (request) =>
       Effect.runPromise(
         program(request).pipe(

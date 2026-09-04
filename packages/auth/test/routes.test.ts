@@ -25,16 +25,37 @@ const auth = makeAuth({
   resolveTenant: () => Effect.succeed(config),
   emailSender: { send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid) },
   rateLimiter: allowAllRateLimiter,
+  oauthHttpClient: {
+    execute: (request) =>
+      Effect.succeed(
+        request.method === "POST"
+          ? Response.json({ access_token: "provider-access-token", token_type: "Bearer" })
+          : Response.json({
+              sub: "route-test-subject",
+              email: "route-oauth@example.com",
+              email_verified: true,
+            }),
+      ),
+  },
 });
 
-const handlerEffect = (routes: Partial<Record<AuthRouteId, string>>) =>
+const handlerEffect = (
+  routes: Partial<Record<AuthRouteId, string>>,
+  options: { readonly basePath?: string; readonly oauthCallbackRedirect?: string } = {},
+) =>
   makeAuthHandler(auth, {
     resolveTenant: () => Effect.succeed("tenant-a"),
     routes,
+    ...(options.basePath === undefined ? {} : { basePath: options.basePath }),
+    ...(options.oauthCallbackRedirect === undefined
+      ? {}
+      : { oauthCallbackRedirect: options.oauthCallbackRedirect }),
   });
 
-const makeHandler = (routes: Partial<Record<AuthRouteId, string>>) =>
-  Effect.runPromise(handlerEffect(routes));
+const makeHandler = (
+  routes: Partial<Record<AuthRouteId, string>>,
+  options?: { readonly basePath?: string; readonly oauthCallbackRedirect?: string },
+) => Effect.runPromise(handlerEffect(routes, options));
 
 const violationsOf = (routes: Partial<Record<AuthRouteId, string>>) =>
   Effect.runPromise(
@@ -109,11 +130,90 @@ describe("auth route overrides", () => {
   });
 
   test("serves an overridden oauth start route with a :provider segment", async () => {
-    const http = await makeHandler({ oauthStart: "/login/oauth/:provider/start" });
+    const http = await makeHandler({
+      oauthStart: "/login/oauth/:provider/start",
+      oauthCallback: "/login/oauth/:provider/finish",
+    });
     const started = await http.handler(post("/login/oauth/google/start", {}));
     expect(started.status).toBe(200);
     const body = (await started.json()) as { authorizationUrl: string };
     expect(body.authorizationUrl).toContain("https://accounts.google.com");
+    expect(new URL(body.authorizationUrl).searchParams.get("redirect_uri")).toBe(
+      "https://accounts.example.com/login/oauth/google/finish",
+    );
+    expect(await Effect.runPromise(http.authorizationServerRedirectUri("tenant-a", "google"))).toBe(
+      "https://accounts.example.com/login/oauth/google/finish",
+    );
+  });
+
+  test("derives the provider redirect URI from basePath", async () => {
+    const http = await makeHandler({}, { basePath: "/api/v1/auth" });
+    const started = await http.handler(post("/api/v1/auth/oauth/google/start", {}));
+    const body = (await started.json()) as { authorizationUrl: string };
+    expect(new URL(body.authorizationUrl).searchParams.get("redirect_uri")).toBe(
+      "https://accounts.example.com/api/v1/auth/oauth/google/callback",
+    );
+  });
+
+  test("redirects browser callbacks to the validated return URL when configured", async () => {
+    const http = await makeHandler({}, { oauthCallbackRedirect: "/signed-in" });
+    const started = await http.handler(
+      post("/auth/oauth/google/start", { returnTo: "/dashboard" }),
+    );
+    const body = (await started.json()) as { authorizationUrl: string };
+    const state = new URL(body.authorizationUrl).searchParams.get("state") ?? "";
+    const callback = await http.handler(
+      get(`/auth/oauth/google/callback?state=${encodeURIComponent(state)}&code=provider-code`),
+    );
+
+    expect(callback.status).toBe(303);
+    expect(callback.headers.get("location")).toBe("https://accounts.example.com/dashboard");
+    expect(callback.headers.get("set-cookie")).toContain("structure_session=");
+    expect(callback.headers.get("cache-control")).toBe("no-store");
+
+    const fallbackStart = await http.handler(post("/auth/oauth/google/start", {}));
+    const fallbackBody = (await fallbackStart.json()) as { authorizationUrl: string };
+    const fallbackState = new URL(fallbackBody.authorizationUrl).searchParams.get("state") ?? "";
+    const fallbackCallback = await http.handler(
+      get(
+        `/auth/oauth/google/callback?state=${encodeURIComponent(fallbackState)}&code=provider-code`,
+      ),
+    );
+    expect(fallbackCallback.status).toBe(303);
+    expect(fallbackCallback.headers.get("location")).toBe("https://accounts.example.com/signed-in");
+  });
+
+  test("keeps the OAuth callback JSON response when no redirect is configured", async () => {
+    const http = await makeHandler({});
+    const started = await http.handler(post("/auth/oauth/google/start", {}));
+    const body = (await started.json()) as { authorizationUrl: string };
+    const state = new URL(body.authorizationUrl).searchParams.get("state") ?? "";
+    const callback = await http.handler(
+      get(`/auth/oauth/google/callback?state=${encodeURIComponent(state)}&code=provider-code`),
+    );
+
+    expect(callback.status).toBe(200);
+    expect(callback.headers.get("content-type")).toContain("application/json");
+    expect(await callback.json()).toEqual(
+      expect.objectContaining({
+        user: expect.objectContaining({ email: "route-oauth@example.com" }),
+      }),
+    );
+  });
+
+  test("rejects an OAuth callback redirect outside the application origin", async () => {
+    const violations = await Effect.runPromise(
+      handlerEffect({}, { oauthCallbackRedirect: "//evil.example.com/signed-in" }).pipe(
+        Effect.map((): ReadonlyArray<AuthRouteViolation> => []),
+        Effect.catchAll((error: InvalidAuthRoutes) => Effect.succeed(error.violations)),
+      ),
+    );
+    expect(violations).toEqual([
+      expect.objectContaining({
+        route: "oauthCallbackRedirect",
+        reason: expect.stringContaining("application path"),
+      }),
+    ]);
   });
 
   test("rejects an override equal to its default as a legal no-op", async () => {

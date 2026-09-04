@@ -120,6 +120,12 @@ export interface PasskeyTenantConfig {
 
 export interface TenantAuthConfig {
   readonly baseUrl: URL;
+  /** Application pages that receive emailed tokens. Relative values resolve against `baseUrl`. */
+  readonly links?: {
+    readonly emailVerification?: string;
+    readonly magicLink?: string;
+    readonly passwordReset?: string;
+  };
   readonly password?: {
     readonly minLength?: number;
     readonly maxLength?: number;

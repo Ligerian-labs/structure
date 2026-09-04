@@ -17,19 +17,20 @@ description: Remap @structure-ai/auth HTTP endpoint paths through AuthHandlerOpt
 import { makeAuthHandler } from "@structure-ai/auth";
 import { Effect } from "effect";
 
-const { handler } = await Effect.runPromise(
+const { authorizationServerRedirectUri, handler } = await Effect.runPromise(
   makeAuthHandler(auth, {
     resolveTenant: (request) => resolveTenantFromHost(request),
     basePath: "/api/auth",
     routes: {
       signInPassword: "/login",
       oauthStart: "/login/oauth/:provider/start",
+      oauthCallback: "/login/oauth/:provider/callback",
     },
   }),
 );
 ```
 
-3. **Update the coupled artifacts** — anything that references the moved path: frontend fetch calls, the application pages that receive emailed tokens and POST them back, and provider OAuth callback registrations (`oauthCallback`). The library does not alias old paths.
+3. **Update the coupled artifacts** — update frontend fetch calls and register the result of `authorizationServerRedirectUri(tenantId, provider)` with each OAuth provider. Email landing pages come from `TenantAuthConfig.links`; route overrides do not move them. The library does not alias old paths.
 
 4. **Assert the move in tests**: the new path returns the old response (status + `set-cookie`) and the default path returns 404.
 

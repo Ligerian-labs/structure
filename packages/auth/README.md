@@ -22,6 +22,11 @@ const auth = makeAuth({
   resolveTenant: (tenantId) =>
     Effect.succeed({
       baseUrl: new URL(`https://${tenantId}.example.com`),
+      links: {
+        emailVerification: "/verify-email",
+        magicLink: "/sign-in/link",
+        passwordReset: "/reset-password",
+      },
       passkey: {
         rpId: `${tenantId}.example.com`,
         rpName: "Example",
@@ -41,11 +46,18 @@ const auth = makeAuth({
   audit: applicationAuditSink,
 });
 
-const { handler } = await Effect.runPromise(
+const { authorizationServerRedirectUri, handler } = await Effect.runPromise(
   makeAuthHandler(auth, {
     // Resolve tenant from trusted host/routing data, never a JSON body field.
     resolveTenant: (request) => resolveTenantFromHost(request),
+    basePath: "/api/auth",
+    oauthCallbackRedirect: "/signed-in",
   }),
+);
+
+// Register this exact value in the provider console for each tenant/provider.
+const googleCallback = await Effect.runPromise(
+  authorizationServerRedirectUri("acme", "google"),
 );
 ```
 
@@ -87,7 +99,7 @@ const program = Effect.gen(function* () {
   // navigator.credentials.create({ publicKey: registration }) in the browser
   yield* auth.finishPasskeyRegistration("acme", session.token, browserResponse);
 
-  const oauth = yield* auth.beginOAuth("acme", "github", "/settings");
+  const oauth = yield* auth.beginOAuth("acme", "github", { returnTo: "/settings" });
   // Redirect to oauth.authorizationUrl. The callback submits state + code.
 
   return { pending, verified };
@@ -99,6 +111,10 @@ Password reset and magic-link request methods deliberately return no account-exi
 ## HTTP routes
 
 `makeAuthHandler` validates its route table at construction and returns `Effect<AuthHandler, InvalidAuthRoutes>`. It accepts JSON bodies up to 64 KiB, checks mutation origins, resolves the tenant through the caller, maps errors without internal causes, and sets `Cache-Control: no-store`. Routes default to the `/auth` namespace (`basePath` moves it).
+
+The handler compiles the OAuth callback from `basePath` and `routes.oauthCallback`. OAuth startup uses that same URI for provider authorization and the later code exchange. `authorizationServerRedirectUri(tenantId, provider)` returns the exact URI to register in the provider console.
+
+By default, a successful OAuth callback returns the existing JSON body. Set `oauthCallbackRedirect` to an absolute application path to enable the browser flow. The callback then responds with `303 See Other` to the validated `returnTo` supplied at startup, or to the configured path when `returnTo` is absent. The response sets the session cookie in both modes.
 
 | Route id | Method | Default path |
 | --- | --- | --- |
@@ -139,7 +155,7 @@ const { handler } = await Effect.runPromise(
 
 Invalid shapes, unknown ids, and same-method path collisions (a `:provider` segment matches any single segment, including defaults) fail construction with every violation aggregated in `InvalidAuthRoutes` — overrides never shadow each other silently at runtime. Renaming paths changes neither cookie paths nor the origin/tenant/error envelope. Route ids are contract-stable; renaming an id is a breaking change.
 
-Magic-link/reset/verification emails land on application pages. Those pages POST the token to the matching endpoint so link scanners do not consume credentials merely by fetching a URL.
+Magic-link/reset/verification emails land on application pages. Set those pages with `TenantAuthConfig.links.emailVerification`, `links.magicLink`, and `links.passwordReset`. Each value may be relative to `baseUrl` or an absolute URL. The service adds the token query parameter. Those pages POST the token to the matching endpoint so link scanners do not consume credentials merely by fetching a URL.
 
 ## API keys
 
