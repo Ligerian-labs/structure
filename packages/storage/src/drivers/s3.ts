@@ -22,7 +22,14 @@ export interface S3StorageOptions {
   readonly region: string;
   readonly accessKeyId: string;
   readonly secretAccessKey: Redacted.Redacted<string>;
-  /** Path-style endpoint base. Default: `https://s3.<region>.amazonaws.com`. */
+  /**
+   * Path-style endpoint base: scheme, host and port, no trailing slash. The
+   * driver appends `/<bucket>/<key>` itself, and strips any trailing slash
+   * at construction so `http://minio:9000/` signs the same `/bucket/key`
+   * path as `http://minio:9000` (a doubled slash is rejected by every
+   * S3-compatible store as `SignatureDoesNotMatch`). Default:
+   * `https://s3.<region>.amazonaws.com`.
+   */
   readonly endpoint?: string;
   /** Optional key prefix inside the bucket (multi-tenant namespacing). */
   readonly keyPrefix?: string;
@@ -53,7 +60,10 @@ const metadataHeaderName = (name: string): string | undefined => {
  * either way, never the whole blob.
  */
 export const makeS3Storage = (options: S3StorageOptions): Storage => {
-  const endpoint = options.endpoint ?? `https://s3.${options.region}.amazonaws.com`;
+  const endpoint = (options.endpoint ?? `https://s3.${options.region}.amazonaws.com`).replace(
+    /\/+$/u,
+    "",
+  );
   const partSize = options.partSize ?? DEFAULT_PART_SIZE;
   const policy = options.policy ?? dispositionPolicy();
   const fetchImpl = options.fetchImpl ?? fetch;
