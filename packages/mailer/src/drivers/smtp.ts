@@ -2,8 +2,16 @@ import * as net from "node:net";
 import * as tls from "node:tls";
 import { Effect, Redacted } from "effect";
 import type { DriverError, EmailDriver } from "../driver.js";
-import { MailDeliveryFailed, MailRejected } from "../errors.js";
+import { MailDeliveryFailed, MailRejected, MailValidationError } from "../errors.js";
 import type { EmailAddressInput, EmailAttachmentInput, EmailMessage } from "../message.js";
+
+/**
+ * How the session is encrypted: `starttls` (default) connects in the clear
+ * and upgrades before anything sensitive is written; `implicit` speaks TLS
+ * from the first byte (the port-465 convention); `none` never encrypts and
+ * is only accepted towards a loopback relay or with `allowPlaintext`.
+ */
+export type SmtpTlsMode = "starttls" | "implicit" | "none";
 
 export interface SmtpOptions {
   readonly host: string;
@@ -13,17 +21,53 @@ export interface SmtpOptions {
   readonly password?: Redacted.Redacted<string>;
   /** EHLO identifier this client announces. Default `structure-mailer`. */
   readonly hostname?: string;
-  /** Upgrade with STARTTLS when the server advertises it. Default true. */
+  /**
+   * Legacy switch: `false` is the same as `tls.mode: "none"` (no STARTTLS
+   * attempt). Default true. Prefer `tls.mode`.
+   */
   readonly startTls?: boolean;
   readonly tls?: {
+    /** Default `starttls`. */
+    readonly mode?: SmtpTlsMode;
     readonly rejectUnauthorized?: boolean;
     readonly servername?: string;
+    /** Extra trusted CA certificate(s), PEM, for relays with a private CA. */
+    readonly ca?: string | ReadonlyArray<string>;
   };
+  /**
+   * Accept a cleartext session to a non-loopback relay. Default false: the
+   * driver never writes credentials or a message over an unencrypted socket
+   * unless the relay is loopback (`localhost`, `127.0.0.0/8`, `::1`) or this
+   * is set explicitly.
+   */
+  readonly allowPlaintext?: boolean;
+  /** Injectable raw socket factory (tests, custom tunnelling). Defaults to `node:net` connect. */
+  readonly connect?: (host: string, port: number) => net.Socket;
   /** Default 10s. */
   readonly connectTimeoutMillis?: number;
   /** Default 10s. */
   readonly commandTimeoutMillis?: number;
 }
+
+/** Loopback relay hosts are exempt from the TLS requirement. */
+export const isLoopbackHost = (host: string): boolean => {
+  const bare = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/gu, "");
+  return (
+    bare === "localhost" ||
+    bare === "localhost." ||
+    bare === "::1" ||
+    /^127(?:\.\d{1,3}){3}$/u.test(bare)
+  );
+};
+
+const tlsModeOf = (options: SmtpOptions): SmtpTlsMode =>
+  options.tls?.mode ?? (options.startTls === false ? "none" : "starttls");
+
+const plaintextAllowed = (options: SmtpOptions): boolean =>
+  options.allowPlaintext === true || isLoopbackHost(options.host);
 
 /** A 5yz reply (or unrecoverable misconfiguration): permanent. */
 class SmtpRefusal extends Error {
@@ -131,12 +175,19 @@ const openSession = (options: SmtpOptions): Promise<Session> =>
     const queue = makeLineQueue();
     const hostname = options.hostname ?? "structure-mailer";
 
+    const mode = tlsModeOf(options);
+    const tlsOptions = {
+      servername: options.tls?.servername ?? options.host,
+      rejectUnauthorized: options.tls?.rejectUnauthorized ?? true,
+      ...(options.tls?.ca === undefined ? {} : { ca: [...toArray(options.tls.ca)] }),
+    };
     let buffer = "";
-    let current: net.Socket | tls.TLSSocket = net.connect({
-      host: options.host,
-      port: options.port ?? 587,
-    });
-    current.setNoDelay(true);
+    const connect =
+      options.connect ?? ((host: string, port: number): net.Socket => net.connect({ host, port }));
+    const raw = connect(options.host, options.port ?? (mode === "implicit" ? 465 : 587));
+    raw.setNoDelay(true);
+    let current: net.Socket | tls.TLSSocket =
+      mode === "implicit" ? tls.connect({ socket: raw, ...tlsOptions }) : raw;
     let opened = false;
 
     const transport = (message: string): SmtpTransportError => new SmtpTransportError(message);
@@ -205,11 +256,7 @@ const openSession = (options: SmtpOptions): Promise<Session> =>
       new Promise((resolveTls, rejectTls) => {
         const raw = current;
         raw.removeAllListeners("data");
-        const secure = tls.connect({
-          socket: raw,
-          servername: options.tls?.servername ?? options.host,
-          rejectUnauthorized: options.tls?.rejectUnauthorized ?? true,
-        });
+        const secure = tls.connect({ socket: raw, ...tlsOptions });
         secure.once("error", (error) => rejectTls(transport(`smtp tls: ${error.message}`)));
         secure.once("secure", () => {
           current = secure;
@@ -225,13 +272,19 @@ const openSession = (options: SmtpOptions): Promise<Session> =>
         current.setTimeout(0);
         await ehlo();
         if (
-          (options.startTls ?? true) &&
+          mode === "starttls" &&
           extensions.has("STARTTLS") &&
           !(current instanceof tls.TLSSocket)
         ) {
           await command("STARTTLS", [220]);
           await upgradeTls();
           await ehlo();
+        }
+        // The one rule that keeps credentials and bodies off a cleartext
+        // wire: past this point the socket is encrypted, or plaintext was
+        // explicitly accepted (loopback relay, or `allowPlaintext`).
+        if (!(current instanceof tls.TLSSocket) && !plaintextAllowed(options)) {
+          throw new SmtpRefusal("smtp-tls-required");
         }
         opened = true;
         resolveOpening({
@@ -243,6 +296,7 @@ const openSession = (options: SmtpOptions): Promise<Session> =>
           authMechanisms,
         });
       } catch (error) {
+        current.destroy();
         fail(error instanceof Error ? error : transport("smtp opening failed"));
       }
     };
@@ -254,6 +308,9 @@ const openSession = (options: SmtpOptions): Promise<Session> =>
 
     void start();
   });
+
+const toArray = (value: string | ReadonlyArray<string>): ReadonlyArray<string> =>
+  typeof value === "string" ? [value] : value;
 
 const deliver = async (options: SmtpOptions, message: EmailMessage): Promise<void> => {
   const session = await openSession(options);
@@ -405,21 +462,44 @@ export const stuffDots = (message: string): string =>
     .join(CRLF);
 
 /**
+ * Validates the transport-security combination of a set of options: a
+ * cleartext session (`tls.mode: "none"` or `startTls: false`) towards a
+ * non-loopback relay needs `allowPlaintext`. Returns the error instead of
+ * throwing so settings loaders can surface it as a typed failure.
+ */
+export const validateSmtpOptions = (options: SmtpOptions): MailValidationError | undefined =>
+  tlsModeOf(options) === "none" && !plaintextAllowed(options)
+    ? new MailValidationError({
+        field: "tls.mode",
+        reason: `"none" would send credentials and messages to ${options.host} in cleartext; set allowPlaintext to accept that for a non-loopback relay`,
+      })
+    : undefined;
+
+/**
  * SMTP driver: a minimal RFC 5321 client over `node:net`/`node:tls` — EHLO,
- * opportunistic STARTTLS, AUTH PLAIN/LOGIN, one connection per message.
+ * STARTTLS (required by default: a relay that does not offer it is refused
+ * before AUTH, `smtp-tls-required`), implicit TLS on request, AUTH
+ * PLAIN/LOGIN, one connection per message. A loopback relay may be spoken
+ * to in the clear; any other needs an explicit `allowPlaintext`, checked
+ * here at construction so a misconfiguration fails at boot (it throws the
+ * `MailValidationError` that {@link validateSmtpOptions} reports).
  * 5yz replies are permanent rejections; 4yz replies, timeouts, and
  * connection/TLS failures are transient (the mailer retries those).
  */
-export const makeSmtpDriver = (options: SmtpOptions): EmailDriver => ({
-  name: "smtp",
-  send: (message) =>
-    Effect.tryPromise({
-      try: () => deliver(options, message),
-      catch: (cause): DriverError =>
-        cause instanceof SmtpRefusal
-          ? new MailRejected({ driver: "smtp", reason: cause.reason })
-          : cause instanceof SmtpRetryable
-            ? new MailDeliveryFailed({ driver: "smtp", reason: `smtp-${cause.code}` })
-            : new MailDeliveryFailed({ driver: "smtp", reason: "smtp-transport" }),
-    }),
-});
+export const makeSmtpDriver = (options: SmtpOptions): EmailDriver => {
+  const invalid = validateSmtpOptions(options);
+  if (invalid !== undefined) throw invalid;
+  return {
+    name: "smtp",
+    send: (message) =>
+      Effect.tryPromise({
+        try: () => deliver(options, message),
+        catch: (cause): DriverError =>
+          cause instanceof SmtpRefusal
+            ? new MailRejected({ driver: "smtp", reason: cause.reason })
+            : cause instanceof SmtpRetryable
+              ? new MailDeliveryFailed({ driver: "smtp", reason: `smtp-${cause.code}` })
+              : new MailDeliveryFailed({ driver: "smtp", reason: "smtp-transport" }),
+      }),
+  };
+};
