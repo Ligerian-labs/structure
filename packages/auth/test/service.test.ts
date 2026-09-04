@@ -398,3 +398,70 @@ describe("password sign-in wall", () => {
     expect(limits.filter((entry) => entry.action === "password-sign-in")).toHaveLength(1);
   });
 });
+
+describe("password sign-in wall: rejected sign-ins are charged", () => {
+  /** A limiter that can peek: `check` charges, `peek` only refuses an exhausted bucket. */
+  const peekingLimiter = (cap: number) => {
+    const counts = new Map<string, number>();
+    const keyOf = (request: RateLimitRequest) => `${request.action}:${request.keyHash}`;
+    return {
+      counts,
+      limiter: {
+        peek: (request: RateLimitRequest) =>
+          (counts.get(keyOf(request)) ?? 0) >= cap
+            ? Effect.fail(new RateLimitExceeded({ action: request.action }))
+            : Effect.void,
+        check: (request: RateLimitRequest) =>
+          Effect.suspend(() => {
+            const seen = (counts.get(keyOf(request)) ?? 0) + 1;
+            counts.set(keyOf(request), seen);
+            return seen > cap
+              ? Effect.fail(new RateLimitExceeded({ action: request.action }))
+              : Effect.void;
+          }),
+      },
+    };
+  };
+
+  test("an unverified account's sign-in is charged like any other rejection", async () => {
+    const memory = inMemoryAuthStore();
+    const { limiter, counts } = peekingLimiter(5);
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(tenantConfig),
+      emailSender: { send: () => Effect.void },
+      passwordHasher: argon2id({ memoryCostKiB: 19_456, timeCost: 2 }),
+      rateLimiter: limiter,
+    });
+    await run(
+      auth.registerPassword({
+        tenantId: "tenant-a",
+        email: "new@example.com",
+        password: "correct horse battery staple",
+      }),
+    );
+    counts.clear();
+    const caller = { subject: "203.0.113.7" };
+    for (let index = 0; index < 5; index++) {
+      expect(
+        await fail(
+          auth.signInPassword(
+            "tenant-a",
+            "new@example.com",
+            "correct horse battery staple",
+            caller,
+          ),
+        ),
+      ).toBeInstanceOf(EmailNotVerified);
+    }
+    // The sixth attempt is refused by the wall, before any password work.
+    expect(
+      await fail(
+        auth.signInPassword("tenant-a", "new@example.com", "correct horse battery staple", caller),
+      ),
+    ).toBeInstanceOf(RateLimitExceeded);
+    const charged = [...counts.values()];
+    expect(charged.length).toBeGreaterThan(0);
+    expect(charged.every((count) => count === 5)).toBe(true);
+  });
+});

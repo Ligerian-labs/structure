@@ -650,7 +650,12 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         if (!matches) return yield* refused("password");
         const user = yield* options.store.findUserById(tenantId, credential.userId);
         if (user === undefined) return yield* refused("password-user");
-        if (!user.emailVerified) return yield* new EmailNotVerified({ userId: user.id });
+        if (!user.emailVerified) {
+          // A rejected sign-in all the same: it cost a password verification
+          // and answered a question, so it is charged like any other.
+          yield* wall.onFailure;
+          return yield* new EmailNotVerified({ userId: user.id });
+        }
         const session = yield* createSession(tenantId, user, config);
         yield* recordAudit(tenantId, "password-sign-in", "succeeded", { userId: user.id });
         return session;
