@@ -539,6 +539,44 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
     }
   });
 
+  test("the claim never takes more rows than free slots: running rows stay within the bound", async () => {
+    const harness = await make();
+    try {
+      const executed = new Set<string>();
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: (payload) =>
+            Effect.sleep("40 millis").pipe(
+              Effect.zipRight(
+                Effect.sync(() => {
+                  executed.add(payload.message);
+                }),
+              ),
+            ),
+        }),
+      );
+      for (let index = 0; index < 30; index++) {
+        await run(harness.scheduler.schedule(testJob, { message: `claim-${index}` }));
+      }
+      const worker = await harness.startWorker({ pollMillis: 5, batchSize: 10, concurrency: 2 });
+      let peakRunning = 0;
+      const deadline = Date.now() + 15_000;
+      while (executed.size < 30 && Date.now() < deadline) {
+        const running = (await harness.queueRows()).filter((row) => row.status === "running");
+        peakRunning = Math.max(peakRunning, running.length);
+        await settle(5);
+      }
+      expect(executed.size).toBe(30);
+      expect(peakRunning).toBeLessThanOrEqual(2);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
   test("cancel removes a pending job before it fires", async () => {
     const harness = await make();
     try {
