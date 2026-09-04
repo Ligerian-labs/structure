@@ -323,7 +323,7 @@ describe("mailer settings", () => {
     expect(explicit.smtpPort).toEqual(Option.some(2525));
   });
 
-test("layerFromSettings resolves a capture driver with a schema-valid sender by default", async () => {
+  test("layerFromSettings resolves a capture driver with a schema-valid sender by default", async () => {
     const settings = await run(load(mailerSettings, { overrides: {} }));
     const service = await run(Effect.provide(Mailer, layerFromSettings(settings)));
     const sent = await run(
