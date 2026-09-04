@@ -58,10 +58,12 @@ const metadataHeaderName = (name: string): string | undefined => {
 
 /**
  * S3 driver (path-style, SigV4-signed, no SDK dependency). Fixed bytes go
- * out as one signed PUT. Streams are read sequentially into bounded
- * `partSize` buffers: a stream that ends within one part is sent as a single
- * PUT, larger ones use multipart upload — memory stays capped at one part
- * either way, never the whole blob.
+ * out as one signed PUT. Streams are read sequentially into one bounded
+ * `partSize` buffer: a stream that ends within one part is sent as a single
+ * PUT, larger ones initiate a multipart upload on the first full part and
+ * send each part as it fills — memory stays capped at one part plus one
+ * chunk, never the whole blob; a failure after initiate aborts the upload
+ * so no orphaned parts accumulate in the bucket.
  */
 export const makeS3Storage = (options: S3StorageOptions): Storage => {
   const endpoint = options.endpoint ?? `https://s3.${options.region}.amazonaws.com`;
@@ -262,104 +264,127 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
     Effect.tryPromise({
       try: async (): Promise<StoredObject> => {
         const reader = (input.body as ReadableStream<Uint8Array>).getReader();
-        const parts: Array<Uint8Array> = [];
+        const keyString = keyToString(input.key);
         let buffered = new Uint8Array(0);
         let total = 0;
-        let done = false;
-        // Read sequentially into bounded partSize buffers: memory never
-        // exceeds one part plus one chunk, whatever the blob's size.
-        while (!done) {
-          const next = await reader.read();
-          if (next.done) {
-            done = true;
-            break;
-          }
-          const chunk = next.value ?? new Uint8Array(0);
-          total += chunk.byteLength;
-          const merged = new Uint8Array(buffered.byteLength + chunk.byteLength);
-          merged.set(buffered, 0);
-          merged.set(chunk, buffered.byteLength);
-          buffered = merged;
-          while (buffered.byteLength >= partSize) {
-            parts.push(buffered.slice(0, partSize));
-            buffered = buffered.slice(partSize);
-          }
-        }
-        if (buffered.byteLength > 0) parts.push(buffered);
-
-        if (parts.length <= 1) {
-          const only = parts[0] ?? new Uint8Array(0);
-          const single = await doFetch({
-            method: "PUT",
-            url: objectUrl(input.key),
-            headers,
-            payloadHash: sha256Hex(only),
-            body: only,
-          });
-          if (single.status !== 200) {
-            throw failure("put", single.status, keyToString(input.key));
-          }
-          return storedFromPut(input, single.headers, total);
-        }
-
-        // Multipart upload: initiate, upload each part, complete.
-        const initiate = await doFetch({
-          method: "POST",
-          url: objectUrl(input.key, "uploads="),
-          headers,
-        });
-        if (initiate.status !== 200) {
-          throw failure("put-multipart-initiate", initiate.status, keyToString(input.key));
-        }
-        const initiateBody = await readText(initiate, "put-multipart-initiate");
-        const uploadId = /<UploadId>([^<]+)<\/UploadId>/u.exec(initiateBody)?.[1];
-        if (uploadId === undefined) {
-          throw new StorageUnavailable({
-            driver: "s3",
-            operation: "put-multipart-initiate",
-            reason: "s3-missing-upload-id",
-          });
-        }
+        let uploadId: string | undefined;
         const partTags: Array<string> = [];
-        for (let index = 0; index < parts.length; index++) {
-          const part = parts[index];
-          const partNumber = index + 1;
-          if (part === undefined) continue;
+
+        // Multipart is initiated lazily, on the first full part: a stream
+        // that ends within one part is a single PUT.
+        const initiate = async (): Promise<string> => {
+          const response = await doFetch({
+            method: "POST",
+            url: objectUrl(input.key, "uploads="),
+            headers,
+          });
+          if (response.status !== 200) {
+            throw failure("put-multipart-initiate", response.status, keyString);
+          }
+          const id = /<UploadId>([^<]+)<\/UploadId>/u.exec(
+            await readText(response, "put-multipart-initiate"),
+          )?.[1];
+          if (id === undefined) {
+            throw new StorageUnavailable({
+              driver: "s3",
+              operation: "put-multipart-initiate",
+              reason: "s3-missing-upload-id",
+            });
+          }
+          return id;
+        };
+
+        // Each part goes out as soon as it fills, one at a time, so memory
+        // holds one part plus one chunk, never the whole blob.
+        const uploadPart = async (part: Uint8Array): Promise<void> => {
+          uploadId ??= await initiate();
+          const partNumber = partTags.length + 1;
           const response = await doFetch({
             method: "PUT",
-            url: objectUrl(input.key, `partNumber=${partNumber}&uploadId=${uploadId}`),
+            url: objectUrl(
+              input.key,
+              `partNumber=${partNumber}&uploadId=${encodeURIComponent(uploadId)}`,
+            ),
             headers,
             payloadHash: sha256Hex(part),
             body: part,
           });
           if (response.status !== 200) {
-            throw failure("put-part", response.status, keyToString(input.key));
+            throw failure("put-part", response.status, keyString);
           }
           partTags.push(response.headers.get("etag") ?? `part-${partNumber}`);
-        }
-        const completeBody = `<CompleteMultipartUpload>${partTags
-          .map(
-            (etag, index) =>
-              `<Part><PartNumber>${index + 1}</PartNumber><ETag>${etag}</ETag></Part>`,
-          )
-          .join("")}</CompleteMultipartUpload>`;
-        const complete = await doFetch({
-          method: "POST",
-          url: objectUrl(input.key, `uploadId=${encodeURIComponent(uploadId)}`),
-          headers: { ...headers, "content-type": "application/xml" },
-          payloadHash: sha256Hex(completeBody),
-          body: completeBody,
-        });
-        if (complete.status !== 200) {
-          throw failure("put-multipart-complete", complete.status, keyToString(input.key));
-        }
-        return {
-          key: input.key,
-          contentType: input.contentType,
-          size: total,
-          disposition: input.disposition ?? "attachment",
-          ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
         };
+
+        // Anything that fails after initiate leaves parts behind in the
+        // bucket unless the upload is aborted; best effort, the original
+        // failure is what the caller sees.
+        const abort = async (): Promise<void> => {
+          if (uploadId === undefined) return;
+          await doFetch({
+            method: "DELETE",
+            url: objectUrl(input.key, `uploadId=${encodeURIComponent(uploadId)}`),
+          }).catch(() => undefined);
+        };
+
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            const chunk = next.value ?? new Uint8Array(0);
+            total += chunk.byteLength;
+            const merged = new Uint8Array(buffered.byteLength + chunk.byteLength);
+            merged.set(buffered, 0);
+            merged.set(chunk, buffered.byteLength);
+            buffered = merged;
+            while (buffered.byteLength >= partSize) {
+              await uploadPart(buffered.slice(0, partSize));
+              buffered = buffered.slice(partSize);
+            }
+          }
+
+          if (uploadId === undefined) {
+            const single = await doFetch({
+              method: "PUT",
+              url: objectUrl(input.key),
+              headers,
+              payloadHash: sha256Hex(buffered),
+              body: buffered,
+            });
+            if (single.status !== 200) {
+              throw failure("put", single.status, keyString);
+            }
+            return storedFromPut(input, single.headers, total);
+          }
+
+          if (buffered.byteLength > 0) await uploadPart(buffered);
+          const completeBody = `<CompleteMultipartUpload>${partTags
+            .map(
+              (etag, index) =>
+                `<Part><PartNumber>${index + 1}</PartNumber><ETag>${etag}</ETag></Part>`,
+            )
+            .join("")}</CompleteMultipartUpload>`;
+          const complete = await doFetch({
+            method: "POST",
+            url: objectUrl(input.key, `uploadId=${encodeURIComponent(uploadId)}`),
+            headers: { ...headers, "content-type": "application/xml" },
+            payloadHash: sha256Hex(completeBody),
+            body: completeBody,
+          });
+          if (complete.status !== 200) {
+            throw failure("put-multipart-complete", complete.status, keyString);
+          }
+          return {
+            key: input.key,
+            contentType: input.contentType,
+            size: total,
+            disposition: input.disposition ?? "attachment",
+            ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+          };
+        } catch (cause) {
+          await abort();
+          await reader.cancel(cause).catch(() => undefined);
+          throw cause;
+        }
       },
       catch: (cause): StorageError =>
         typeof cause === "object" &&
