@@ -931,6 +931,9 @@ export const makeAuthorizationServer = (
             ? undefined
             : yield* options.store.findTokenById(input.tenantId, issued.refreshTokenId);
         if (fresh === undefined || fresh.revokedAt !== undefined) {
+          // Gone (a cleanup in the window) or swept: leave nothing of this
+          // pair live behind the refusal.
+          yield* options.store.revokeFamily(input.tenantId, familyId, now());
           return yield* new InvalidAuthToken({ purpose: "oauth-refresh-token" });
         }
         return publicTokens(issued);
