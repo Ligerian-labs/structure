@@ -205,6 +205,11 @@ describe.skipIf(databaseUrl === undefined)("position gap (needs DATABASE_URL)", 
     SCENARIO_TIMEOUT,
   );
 
+  // Pins WHERE the serialization sits: a systematic defect (no lock, a lock
+  // taken after the inserts, a lock that covers only some writers) produces
+  // about a hundred jumps per run here. A defect that fires on a small
+  // fraction of appends can slip through one run; that is a soak's job, not
+  // this test's.
   test("concurrent appends never leave a gap in the feed a reader walks", async () => {
     const writers = 12;
     const rounds = 40;
@@ -280,30 +285,81 @@ describe.skipIf(databaseUrl === undefined)("position gap (needs DATABASE_URL)", 
     expect(outcome.seen).toBe(BigInt(total));
   }, 60_000);
 
-  test("a batched readAll returns positions in order whatever the heap order", async () => {
-    const outcome = await withStores((prefix) =>
-      Effect.gen(function* () {
-        const store = yield* EventStore;
-        const sql = yield* SqlClient.SqlClient;
-        const tables = tableNames({ tablePrefix: prefix });
-        yield* store.append("Counter-a", 0, [event(1), event(2), event(3)]);
-        yield* store.append("Counter-b", 0, [event(1), event(2)]);
-        // An UPDATE writes a new tuple version at the end of the heap, so a
-        // scan without ORDER BY would now yield position 1 last.
-        yield* sql`UPDATE ${sql(tables.events)} SET metadata = metadata WHERE position = 1`;
-        const positions = (fromPosition: bigint, batchSize: number) =>
-          Effect.map(Stream.runCollect(store.readAll({ fromPosition, batchSize })), (chunk) =>
-            Chunk.toReadonlyArray(chunk).map((stored) => stored.position),
+  test(
+    "a batched readAll returns positions in order whatever the heap order",
+    async () => {
+      const outcome = await withStores((prefix) =>
+        Effect.gen(function* () {
+          const store = yield* EventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const tables = tableNames({ tablePrefix: prefix });
+          yield* store.append("Counter-a", 0, [event(1), event(2), event(3)]);
+          yield* store.append("Counter-b", 0, [event(1), event(2)]);
+          // An UPDATE writes a new tuple version at the end of the heap, so a
+          // scan without ORDER BY would now yield position 1 last.
+          yield* sql`UPDATE ${sql(tables.events)} SET metadata = metadata WHERE position = 1`;
+          const positions = (fromPosition: bigint, batchSize: number) =>
+            Effect.map(Stream.runCollect(store.readAll({ fromPosition, batchSize })), (chunk) =>
+              Chunk.toReadonlyArray(chunk).map((stored) => stored.position),
+            );
+          return {
+            head: yield* positions(1n, 2),
+            middle: yield* positions(2n, 3),
+            all: yield* positions(1n, 10),
+          };
+        }),
+      );
+      expect(outcome.head).toEqual([1n, 2n]);
+      expect(outcome.middle).toEqual([2n, 3n, 4n]);
+      expect(outcome.all).toEqual([1n, 2n, 3n, 4n, 5n]);
+    },
+    SCENARIO_TIMEOUT,
+  );
+
+  // The steady state of a live store is a SPARSE feed: every rolled-back
+  // append (a lost unique-constraint race, a caller transaction that aborts
+  // after appending) burns the sequence value it drew. The feed must skip
+  // such holes, never wait at them: a reader that cut at the first
+  // non-contiguous position would wedge for ever.
+  test(
+    "the feed skips a position burned by a rolled-back append",
+    async () => {
+      const outcome = await withStores(() =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const store = yield* EventStore;
+          const checkpoints = yield* CheckpointStore;
+          yield* store.append("Counter-a", 0, [event(1)]);
+          const aborted = yield* Effect.either(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* store.append("Counter-b", 0, [event(1)]);
+                return yield* Effect.fail("abort after appending");
+              }),
+            ),
           );
-        return {
-          head: yield* positions(1n, 2),
-          middle: yield* positions(2n, 3),
-          all: yield* positions(1n, 10),
-        };
-      }),
-    );
-    expect(outcome.head).toEqual([1n, 2n]);
-    expect(outcome.middle).toEqual([2n, 3n, 4n]);
-    expect(outcome.all).toEqual([1n, 2n, 3n, 4n, 5n]);
-  });
+          yield* store.append("Counter-c", 0, [event(1)]);
+          const seen = yield* Ref.make<ReadonlyArray<bigint>>([]);
+          const stats = yield* Projection.catchup(positionsProjection("gap-sparse", seen), {
+            batchSize: 1,
+          });
+          return {
+            aborted: aborted._tag,
+            feed: Chunk.toReadonlyArray(
+              yield* Stream.runCollect(store.readAll({ fromPosition: 1n })),
+            ).map((stored) => stored.position),
+            delivered: yield* Ref.get(seen),
+            checkpoint: yield* checkpoints.load("gap-sparse"),
+            stats,
+          };
+        }),
+      );
+      expect(outcome.aborted).toBe("Left");
+      expect(outcome.feed).toEqual([1n, 3n]);
+      expect(outcome.delivered).toEqual([1n, 3n]);
+      expect(outcome.checkpoint).toBe(3n);
+      expect(outcome.stats).toEqual({ processed: 2, skipped: 0 });
+    },
+    SCENARIO_TIMEOUT,
+  );
 });
