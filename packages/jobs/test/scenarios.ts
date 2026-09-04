@@ -521,6 +521,33 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
     }
   });
 
+  test("a cron job whose lease was lost is not rescheduled over the other worker's run", async () => {
+    const harness = await make();
+    try {
+      const gate = gatedHandler(harness, () => Effect.void);
+      const worker = await harness.startWorker({ pollMillis: 10 });
+      await run(
+        harness.scheduler.recur(
+          testJob,
+          { message: "tick" },
+          { cron: "*/5 * * * *", scheduleKey: "tick-fence" },
+        ),
+      );
+      harness.clock.value = new Date(harness.clock.value.getTime() + 5 * 60_001);
+      await gate.started;
+      await harness.reclaim("tick-fence", "worker-b", 60_000);
+      gate.release();
+      await settle(300);
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === "tick-fence");
+      expect(row?.status).toBe("running");
+      expect(row?.lease_owner).toBe("worker-b");
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
   test("an abandoned drain never requeues a row another worker reclaimed meanwhile", async () => {
     const harness = await make();
     try {
