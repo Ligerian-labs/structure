@@ -37,7 +37,8 @@ export interface TotpServiceOptions {
    * (HKDF-SHA-256 with a purpose label), so a database read alone yields no
    * second factor. Enrollments stored before sealing existed keep verifying
    * and are sealed on their next successful verification. Rotating the
-   * secret invalidates every enrollment sealed under the old one.
+   * secret invalidates every enrollment sealed under the old one. At least
+   * 32 characters; `makeTotp` throws otherwise (a boot-time failure).
    */
   readonly secret: Redacted.Redacted<string>;
   readonly audit?: AuthAuditSink;
@@ -121,7 +122,20 @@ export interface TotpService {
 
 const isRecoveryCode = (code: string): boolean => /^[a-z2-7]{5}-[a-z2-7]{5}$/u.test(code);
 
+const MIN_SECRET_LENGTH = 32;
+
+/**
+ * Builds the TOTP service. Throws `AuthValidationError` when `secret` is
+ * shorter than 32 characters: a sealing secret is a boot-time invariant
+ * and fails at composition, never at a user's first enrollment.
+ */
 export const makeTotp = (options: TotpServiceOptions): TotpService => {
+  if (Redacted.value(options.secret).length < MIN_SECRET_LENGTH) {
+    throw new AuthValidationError({
+      field: "secret",
+      reason: `must be at least ${MIN_SECRET_LENGTH} characters`,
+    });
+  }
   const primitives: AuthPrimitives = {
     now: options.primitives?.now ?? (() => new Date()),
     randomToken: options.primitives?.randomToken ?? randomToken,
