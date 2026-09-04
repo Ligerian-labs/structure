@@ -52,7 +52,7 @@ interface Storage {
 
 ## Observability & readiness
 
-Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_total` / `_errors_total` / `_duration_ms`) and a structured log line carrying driver, operation, key, and size — never body or metadata content. `ObjectNotFound` is not counted as a driver failure. `storageReadinessCheck(storage)` registers a `@structure-ai/runtime` readiness check (ready when a root `list` answers).
+Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_total` / `_errors_total` / `_duration_ms`) and a structured log line carrying driver, operation, key, and size — never body or metadata content. `ObjectNotFound` is not counted as a driver failure. `storageReadinessCheck(storage)` registers a `@structure-ai/runtime` readiness check (ready when a `head` of one fixed probe key answers, found or not; it never lists the store).
 
 ## Settings
 
