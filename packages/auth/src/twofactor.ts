@@ -17,12 +17,7 @@ import {
 } from "./ports.js";
 import type { AuthPrimitives, AuthService, AuthServiceError } from "./service.js";
 import type { AuthStore } from "./store.js";
-import {
-  generateRecoveryCodes,
-  generateTotpSecret,
-  totpQrPayload,
-  verifyTotpCode,
-} from "./totp.js";
+import { generateRecoveryCodes, generateTotpSecret, matchTotpCode, totpQrPayload } from "./totp.js";
 
 const DEFAULT_LOCKOUT_THRESHOLD = 5;
 const DEFAULT_LOCKOUT_COOLDOWN = 15 * 60 * 1_000;
@@ -183,13 +178,15 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
         if (pending === undefined || pending.confirmed) {
           return yield* new InvalidAuthToken({ purpose: "totp-enrollment" });
         }
-        const valid = yield* verifyTotpCode(pending.secretBase32, code, primitives.now());
-        if (!valid) return yield* new InvalidCredentials({ reason: "totp" });
+        const step = yield* matchTotpCode(pending.secretBase32, code, primitives.now());
+        if (step === undefined) return yield* new InvalidCredentials({ reason: "totp" });
         const recoveryCodes = generateRecoveryCodes();
         const hashes = yield* Effect.all(
           recoveryCodes.map((codeText) => primitives.hashToken(codeText)),
         );
         yield* options.store.confirmTotp(tenantId, user.id, hashes, primitives.now());
+        // The confirming code is spent too: it must not elevate a session next.
+        yield* options.store.markTotpStepUsed(tenantId, user.id, step);
         yield* recordAudit(tenantId, "totp-confirm", user.id);
         return { recoveryCodes: recoveryCodes.map((codeText) => Redacted.make(codeText)) };
       }),
@@ -209,8 +206,13 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
           // Locked second factors never bypass: they wait out the cooldown.
           return yield* lockoutError(enrollment.lockedUntil);
         }
-        const totpValid = yield* verifyTotpCode(enrollment.secretBase32, code, primitives.now());
-        if (totpValid) {
+        const step = yield* matchTotpCode(enrollment.secretBase32, code, primitives.now());
+        // A valid code is accepted once: the step is claimed atomically, and
+        // a second presentation (any session, any purpose) is a plain failure.
+        if (
+          step !== undefined &&
+          (yield* options.store.markTotpStepUsed(tenantId, user.id, step))
+        ) {
           yield* options.store.resetTotpFailures(tenantId, user.id);
           yield* elevate(tenantId, sessionToken, user.id);
           return { elevated: true as const };
@@ -257,8 +259,13 @@ export const makeTotp = (options: TotpServiceOptions): TotpService => {
         ) {
           return yield* lockoutError(enrollment.lockedUntil);
         }
-        const valid = yield* verifyTotpCode(enrollment.secretBase32, code, primitives.now());
-        if (!valid) return yield* new InvalidCredentials({ reason: "totp" });
+        const step = yield* matchTotpCode(enrollment.secretBase32, code, primitives.now());
+        if (
+          step === undefined ||
+          !(yield* options.store.markTotpStepUsed(tenantId, user.id, step))
+        ) {
+          return yield* new InvalidCredentials({ reason: "totp" });
+        }
         yield* options.store.removeTotp(tenantId, user.id);
         yield* recordAudit(tenantId, "totp-unenroll", user.id);
       }),

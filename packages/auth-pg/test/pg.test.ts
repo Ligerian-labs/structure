@@ -69,6 +69,7 @@ describe("migration definition", () => {
     // The base schema's statements are frozen: the v2 columns live in their
     // own migration so a recorded base checksum never drifts.
     expect(schemaStatements().join("\n")).not.toContain("family_id");
+    expect(schemaStatements().join("\n")).not.toContain("last_used_step");
     expect(upgradeMigration(2).name).toBe("upgrade_auth_schema_v2");
     expect(upgradeMigration(2).checksum).toBe(
       migrationChecksum(2, "upgrade_auth_schema_v2", upgradeStatements()),

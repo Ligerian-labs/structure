@@ -260,6 +260,8 @@ export const upgradeStatements = (options: AdapterOptions = {}): ReadonlyArray<s
     `ALTER TABLE ${ident(t.oauthTokens)} ADD COLUMN IF NOT EXISTS family_id TEXT`,
     `CREATE INDEX IF NOT EXISTS ${ident(`${t.oauthTokens}_family_idx`)}
       ON ${ident(t.oauthTokens)} (tenant_id, family_id)`,
+    // One-time TOTP codes: the last accepted time step, so a code cannot elevate twice.
+    `ALTER TABLE ${ident(t.totp)} ADD COLUMN IF NOT EXISTS last_used_step BIGINT`,
   ];
 };
 

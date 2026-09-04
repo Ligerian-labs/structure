@@ -185,12 +185,17 @@ export const migrate = (
             recovery_code_hashes TEXT NOT NULL,
             failed_attempts INTEGER NOT NULL CHECK (failed_attempts >= 0),
             locked_until TEXT,
+            last_used_step INTEGER,
             enrolled_at TEXT NOT NULL,
             PRIMARY KEY (tenant_id, user_id),
             FOREIGN KEY (tenant_id, user_id)
               REFERENCES ${tx(tables.users)} (tenant_id, id) ON DELETE CASCADE
           )
         `;
+        // Upgrade path for totp tables created before one-time steps were recorded.
+        await tx`ALTER TABLE ${tx(tables.totp)} ADD COLUMN last_used_step INTEGER`.catch(
+          () => undefined,
+        );
         await tx`
           CREATE TABLE IF NOT EXISTS ${tx(tables.oauthClients)} (
             tenant_id TEXT NOT NULL,

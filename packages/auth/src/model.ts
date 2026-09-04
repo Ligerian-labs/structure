@@ -57,6 +57,11 @@ export interface TotpRecord {
   readonly recoveryCodeHashes: ReadonlyArray<string>;
   readonly failedAttempts: number;
   readonly lockedUntil?: Date;
+  /**
+   * The last time step whose code was accepted (verify, confirm, unenroll).
+   * A code from that step or an earlier one is a replay, however valid.
+   */
+  readonly lastUsedStep?: number;
   readonly enrolledAt: Date;
 }
 

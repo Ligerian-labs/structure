@@ -400,6 +400,27 @@ export const registerTotpScenarios = (makeHarness: MakeHarness): void => {
       expect(cleared?.lockedUntil).toBeUndefined();
     }));
 
+  test("an accepted time step is claimed once and never moves backwards", () =>
+    withHarness(makeHarness, async ({ store, remake }) => {
+      await run(
+        store.createPasswordUser(
+          user("tenant-a", "user-1", "ada@example.com"),
+          password("tenant-a", "user-1", "ada@example.com"),
+        ),
+      );
+      await run(store.putTotpSecret(enrollment("user-1")));
+      expect((await run(store.findTotp("tenant-a", "user-1")))?.lastUsedStep).toBeUndefined();
+      expect(await run(store.markTotpStepUsed("tenant-a", "user-1", 59_574_240))).toBe(true);
+      expect(await run(store.markTotpStepUsed("tenant-a", "user-1", 59_574_240))).toBe(false);
+      expect(await run(store.markTotpStepUsed("tenant-a", "user-1", 59_574_239))).toBe(false);
+      expect(await run(store.markTotpStepUsed("tenant-a", "user-1", 59_574_241))).toBe(true);
+      expect((await run(remake().findTotp("tenant-a", "user-1")))?.lastUsedStep).toBe(59_574_241);
+      expect(await run(store.markTotpStepUsed("tenant-a", "user-2", 59_574_242))).toBe(false);
+      // Confirming and re-writing the record keeps the claimed step.
+      await run(store.confirmTotp("tenant-a", "user-1", ["hash-a"], later));
+      expect((await run(store.findTotp("tenant-a", "user-1")))?.lastUsedStep).toBe(59_574_241);
+    }));
+
   test("recovery codes are single-use and removal clears the enrollment", () =>
     withHarness(makeHarness, async ({ store }) => {
       await run(

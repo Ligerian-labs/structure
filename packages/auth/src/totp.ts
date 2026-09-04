@@ -125,28 +125,38 @@ const timingSafeEqual = (a: string, b: string): boolean => {
 };
 
 /**
- * Verifies a code against a secret at `at`, accepting codes from the
- * previous, current, and next step (window ±1). Comparison is
- * constant-time; a window miss reveals nothing about how close the code was.
+ * Matches a code against a secret at `at`, accepting codes from the
+ * previous, current, and next step (window ±1), and answers the time step
+ * that matched, or `undefined`. Comparison is constant-time and every
+ * candidate is compared in a fixed order, so timing discloses neither
+ * whether nor which step matched. The step is what lets a verifier remember
+ * an accepted code and refuse its replay (RFC 6238 §5.2).
  */
+export const matchTotpCode = (
+  secretBase32: string,
+  code: string,
+  at: Date,
+): Effect.Effect<number | undefined, AuthDependencyError | AuthValidationError> =>
+  Effect.gen(function* () {
+    if (!/^\d{6}$/u.test(code)) return undefined;
+    const secret = yield* base32Decode(secretBase32);
+    const current = timeCounter(at);
+    const steps = [current - 1, current, current + 1];
+    const candidates = yield* Effect.all(steps.map((step) => hotp(secret, step)));
+    let matched: number | undefined;
+    for (const [index, candidate] of candidates.entries()) {
+      if (timingSafeEqual(candidate, code)) matched = steps[index];
+    }
+    return matched;
+  });
+
+/** True when `code` is valid for `secretBase32` at `at` (window ±1); see `matchTotpCode`. */
 export const verifyTotpCode = (
   secretBase32: string,
   code: string,
   at: Date,
 ): Effect.Effect<boolean, AuthDependencyError | AuthValidationError> =>
-  Effect.gen(function* () {
-    if (!/^\d{6}$/u.test(code)) return false;
-    const secret = yield* base32Decode(secretBase32);
-    const current = timeCounter(at);
-    // Every candidate in the window is computed and compared, in a fixed
-    // order, so timing does not disclose which step matched.
-    const candidates = yield* Effect.all([
-      hotp(secret, current - 1),
-      hotp(secret, current),
-      hotp(secret, current + 1),
-    ]);
-    return candidates.some((candidate) => timingSafeEqual(candidate, code));
-  });
+  Effect.map(matchTotpCode(secretBase32, code, at), (step) => step !== undefined);
 
 /** `otpauth://` provisioning URI for authenticator apps and QR payloads. */
 export const totpQrPayload = (input: {
