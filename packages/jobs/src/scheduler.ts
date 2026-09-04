@@ -1,4 +1,5 @@
 import * as SqlClient from "@effect/sql/SqlClient";
+import type * as Statement from "@effect/sql/Statement";
 import { Correlation, Metrics } from "@structure-ai/observability";
 import { Shutdown } from "@structure-ai/runtime";
 import {
@@ -151,6 +152,8 @@ interface QueueRow {
   readonly cron_timezone: string | null;
   readonly correlation_id: string | null;
   readonly run_at: Date | string;
+  /** The token minted by the claim that produced this row; the fence for every write to it. */
+  readonly lease_owner: string;
 }
 
 export interface SchedulerService {
@@ -239,6 +242,37 @@ export const makeScheduler = (
 
     const maxAttemptsFor = (jobName: string): number => handlers.get(jobName)?.maxAttempts ?? 5;
 
+    /**
+     * Runs a terminal write scoped to the row AND the lease this worker
+     * holds on it. A worker whose lease was reclaimed by another affects
+     * zero rows and logs that it lost the lease instead of destroying the
+     * row the other worker is running. The fence is the owner token, not
+     * the lease expiry: a late completion whose lease expired but was not
+     * reclaimed still lands, which is a job done once rather than twice.
+     */
+    const fenced = (
+      row: QueueRow,
+      operation: string,
+      statement: Statement.Fragment,
+    ): Effect.Effect<boolean, unknown> =>
+      Effect.gen(function* () {
+        const affected = yield* sql<{ readonly id: string }>`
+          ${statement}
+          WHERE id = ${row.id} AND status = 'running' AND lease_owner = ${row.lease_owner}
+          RETURNING id
+        `;
+        if (affected.length > 0) return true;
+        yield* Effect.logWarning("job lease lost; write skipped").pipe(
+          Effect.annotateLogs({
+            jobId: row.id,
+            jobName: row.job_name,
+            jobAttempt: row.attempt,
+            jobOperation: operation,
+          }),
+        );
+        return false;
+      });
+
     const deadLetter = (row: QueueRow, reason: string): Effect.Effect<void, JobQueueError> =>
       Effect.gen(function* () {
         yield* sql`
@@ -248,7 +282,8 @@ export const makeScheduler = (
             (${crypto.randomUUID()}, ${row.job_name}, ${row.payload}, ${row.attempt},
              ${reason.slice(0, 2_048)}, ${row.correlation_id}, ${now().toISOString()})
         `;
-        yield* sql`DELETE FROM ${sql(tables.queue)} WHERE id = ${row.id}`;
+        const owned = yield* fenced(row, "dead-letter", sql`DELETE FROM ${sql(tables.queue)}`);
+        if (!owned) return;
         yield* Metric.increment(deadLettered);
         yield* Effect.logError("job dead-lettered").pipe(
           Effect.annotateLogs({
@@ -263,7 +298,7 @@ export const makeScheduler = (
     const completeSuccess = (row: QueueRow): Effect.Effect<void, JobQueueError> =>
       Effect.gen(function* () {
         if (row.cron_expr === null) {
-          yield* sql`DELETE FROM ${sql(tables.queue)} WHERE id = ${row.id}`;
+          yield* fenced(row, "complete-success", sql`DELETE FROM ${sql(tables.queue)}`);
           return;
         }
         const fields = yield* parseCron(row.cron_expr);
@@ -276,27 +311,34 @@ export const makeScheduler = (
           timezone,
         );
         if (next === undefined) {
-          yield* sql`DELETE FROM ${sql(tables.queue)} WHERE id = ${row.id}`;
+          yield* fenced(row, "complete-success", sql`DELETE FROM ${sql(tables.queue)}`);
           return;
         }
-        yield* sql`
-          UPDATE ${sql(tables.queue)}
-          SET status = 'queued', run_at = ${next.toISOString()}, attempt = 0,
-              lease_expires_at = NULL, updated_at = ${now().toISOString()}
-          WHERE id = ${row.id}
-        `;
+        yield* fenced(
+          row,
+          "complete-success",
+          sql`
+            UPDATE ${sql(tables.queue)}
+            SET status = 'queued', run_at = ${next.toISOString()}, attempt = 0,
+                lease_expires_at = NULL, lease_owner = NULL, updated_at = ${now().toISOString()}
+          `,
+        );
       }).pipe(Effect.mapError((cause) => queueError("complete-success", cause)));
 
     const rescheduleRetry = (row: QueueRow, reason: string): Effect.Effect<void, JobQueueError> =>
       Effect.gen(function* () {
         const backoff = backoffMillis(row.attempt, random);
-        yield* sql`
-          UPDATE ${sql(tables.queue)}
-          SET status = 'queued', run_at = ${new Date(now().getTime() + backoff).toISOString()},
-              lease_expires_at = NULL, last_error = ${reason.slice(0, 2_048)},
-              updated_at = ${now().toISOString()}
-          WHERE id = ${row.id}
-        `;
+        const owned = yield* fenced(
+          row,
+          "reschedule-retry",
+          sql`
+            UPDATE ${sql(tables.queue)}
+            SET status = 'queued', run_at = ${new Date(now().getTime() + backoff).toISOString()},
+                lease_expires_at = NULL, lease_owner = NULL, last_error = ${reason.slice(0, 2_048)},
+                updated_at = ${now().toISOString()}
+          `,
+        );
+        if (!owned) return;
         yield* Metric.increment(retried);
         yield* Effect.logWarning("job attempt failed, retrying with backoff").pipe(
           Effect.annotateLogs({
@@ -315,6 +357,7 @@ export const makeScheduler = (
     ): Effect.Effect<ReadonlyArray<QueueRow>, JobQueueError> => {
       const timestamp = now();
       const leaseUntil = new Date(timestamp.getTime() + leaseMillis);
+      const owner = crypto.randomUUID();
       return sql<QueueRow>`
         WITH picked AS (
           SELECT id FROM ${sql(tables.queue)}
@@ -327,12 +370,13 @@ export const makeScheduler = (
         UPDATE ${sql(tables.queue)} queue
         SET status = 'running', attempt = queue.attempt + 1,
             lease_expires_at = ${leaseUntil.toISOString()},
+            lease_owner = ${owner},
             updated_at = ${timestamp.toISOString()}
         FROM picked
         WHERE queue.id = picked.id
         RETURNING queue.id, queue.job_name, queue.payload, queue.attempt,
                   queue.max_attempts, queue.cron_expr, queue.cron_timezone,
-                  queue.correlation_id, queue.run_at
+                  queue.correlation_id, queue.run_at, queue.lease_owner
       `.pipe(
         Effect.mapError((cause) => queueError("claim", cause)),
         Effect.tap((rows) =>
@@ -356,10 +400,12 @@ export const makeScheduler = (
 
       const heartbeat: Effect.Effect<void> = Effect.gen(function* () {
         const until = new Date(now().getTime() + leaseMillis);
+        // Fenced like every other write: an evicted worker must not keep
+        // extending the lease another worker now owns.
         yield* sql`
           UPDATE ${sql(tables.queue)}
           SET lease_expires_at = ${until.toISOString()}
-          WHERE id = ${row.id} AND status = 'running'
+          WHERE id = ${row.id} AND status = 'running' AND lease_owner = ${row.lease_owner}
         `.pipe(Effect.asVoid);
       }).pipe(
         Effect.asVoid,
