@@ -54,18 +54,31 @@ export interface SmtpOptions {
   readonly commandTimeoutMillis?: number;
 }
 
-/** Loopback relay hosts are exempt from the TLS requirement. */
+/**
+ * Loopback relay hosts are exempt from the TLS requirement: `localhost`,
+ * any `127.0.0.0/8` address, and the IPv6 loopback in every spelling
+ * (`::1`, `[::1]`, `0:0:0:0:0:0:0:1`, the IPv4-mapped `::ffff:127.x.x.x`).
+ */
 export const isLoopbackHost = (host: string): boolean => {
   const bare = host
     .trim()
     .toLowerCase()
     .replace(/^\[|\]$/gu, "");
-  return (
-    bare === "localhost" ||
-    bare === "localhost." ||
-    bare === "::1" ||
-    /^127(?:\.\d{1,3}){3}$/u.test(bare)
-  );
+  if (bare === "localhost" || bare === "localhost." || /^127(?:\.\d{1,3}){3}$/u.test(bare)) {
+    return true;
+  }
+  if (net.isIPv6(bare)) {
+    // The URL parser canonicalises an IPv6 literal (compressed form, an
+    // IPv4-mapped address in hex), so every spelling of ::1 and of
+    // ::ffff:127.x.x.x lands on the same two shapes.
+    try {
+      const canonical = new URL(`http://[${bare}]`).hostname;
+      return canonical === "[::1]" || canonical.startsWith("[::ffff:7f");
+    } catch {
+      return false;
+    }
+  }
+  return false;
 };
 
 const tlsModeOf = (options: SmtpOptions): SmtpTlsMode =>

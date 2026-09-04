@@ -5,6 +5,7 @@ import * as tls from "node:tls";
 import { Effect, Redacted, Schema } from "effect";
 import {
   EmailHeaders,
+  isLoopbackHost,
   MailDeliveryFailed,
   MailRejected,
   MailValidationError,
@@ -265,6 +266,35 @@ describe("smtp driver: transport security", () => {
       expect(plain.dataPayloads).toHaveLength(0);
     } finally {
       await plain.close();
+    }
+  });
+
+  test("isLoopbackHost accepts every loopback spelling and nothing that merely contains one", () => {
+    for (const host of [
+      "localhost",
+      "LOCALHOST",
+      "localhost.",
+      "127.0.0.1",
+      "127.1.2.3",
+      "::1",
+      "[::1]",
+      "0:0:0:0:0:0:0:1",
+      "[0:0:0:0:0:0:0:1]",
+      "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+    ]) {
+      expect(isLoopbackHost(host)).toBe(true);
+    }
+    for (const host of [
+      "relay.example.com",
+      "localhost.evil.com",
+      "127.0.0.1.evil.com",
+      "128.0.0.1",
+      "::2",
+      "::ffff:10.0.0.1",
+      "fe80::1",
+    ]) {
+      expect(isLoopbackHost(host)).toBe(false);
     }
   });
 
