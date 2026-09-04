@@ -126,6 +126,98 @@ describe("S3 storage driver (against a loopback stub)", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
+  const s3WithFetch = (
+    fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+    partSize: number,
+  ): Storage =>
+    makeS3Storage({
+      bucket: "b",
+      region: "us-east-1",
+      accessKeyId: "k",
+      secretAccessKey: Redacted.make("s"),
+      endpoint: "http://s3.local",
+      partSize,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+  test("a streamed put sends each part as it fills instead of buffering the whole blob first", async () => {
+    const partSize = 4;
+    const totalChunks = 10;
+    let chunksRead = 0;
+    let chunksReadBeforeFirstRequest = -1;
+    const chunksReadAtEachPart: Array<number> = [];
+    const requests: Array<string> = [];
+    const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      if (chunksReadBeforeFirstRequest < 0) chunksReadBeforeFirstRequest = chunksRead;
+      requests.push(`${init?.method ?? "GET"} ${url.search}`);
+      if (url.searchParams.has("uploads")) {
+        return new Response(
+          "<InitiateMultipartUploadResult><UploadId>u1</UploadId></InitiateMultipartUploadResult>",
+          { status: 200 },
+        );
+      }
+      if (url.searchParams.has("partNumber")) chunksReadAtEachPart.push(chunksRead);
+      return new Response("", { status: 200, headers: { etag: '"e"' } });
+    };
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (chunksRead >= totalChunks) {
+          controller.close();
+          return;
+        }
+        chunksRead += 1;
+        controller.enqueue(new Uint8Array(partSize).fill(chunksRead));
+      },
+    });
+    const key = await Effect.runPromise(objectKey("files/streamed.bin"));
+    const stored = await Effect.runPromise(
+      s3WithFetch(fetchImpl, partSize).put({
+        key,
+        body,
+        contentType: "application/octet-stream",
+      }),
+    );
+    expect(stored.size).toBe(partSize * totalChunks);
+    // Multipart began after the first full part, not after the whole stream.
+    expect(chunksReadBeforeFirstRequest).toBeLessThanOrEqual(2);
+    // Every part left as soon as it filled: part N went out with at most N+1 chunks read.
+    for (const [index, readAt] of chunksReadAtEachPart.entries()) {
+      expect(readAt).toBeLessThanOrEqual(index + 2);
+    }
+    expect(requests.filter((line) => line.includes("partNumber="))).toHaveLength(totalChunks);
+    expect(requests[requests.length - 1]).toBe("POST ?uploadId=u1");
+  });
+
+  test("a failed part upload aborts the multipart upload so no orphaned parts remain", async () => {
+    const requests: Array<string> = [];
+    const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      requests.push(`${init?.method ?? "GET"} ${url.search}`);
+      if (url.searchParams.has("uploads")) {
+        return new Response(
+          "<InitiateMultipartUploadResult><UploadId>u2</UploadId></InitiateMultipartUploadResult>",
+          { status: 200 },
+        );
+      }
+      if (url.searchParams.get("partNumber") === "2") return new Response("", { status: 500 });
+      return new Response("", { status: 200, headers: { etag: '"e"' } });
+    };
+    const key = await Effect.runPromise(objectKey("files/aborted.bin"));
+    const error = await Effect.runPromise(
+      Effect.flip(
+        s3WithFetch(fetchImpl, 4).put({
+          key,
+          body: streamOf(new Uint8Array(12)),
+          contentType: "application/octet-stream",
+        }),
+      ),
+    );
+    expect(error._tag).toBe("StorageUnavailable");
+    expect(requests).toContain("DELETE ?uploadId=u2");
+    expect(requests.indexOf("DELETE ?uploadId=u2")).toBe(requests.length - 1);
+  });
+
   test("maps a 403 from the provider to a permanent rejection", async () => {
     const storage = makeS3Storage({
       bucket: "stub-bucket",
