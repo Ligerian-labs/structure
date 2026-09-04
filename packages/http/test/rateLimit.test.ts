@@ -88,6 +88,23 @@ describe("in-memory rate limit store", () => {
     expect(denied.resetMillis).toBe(5_000);
   });
 
+  test("a zero-block rule denies with Retry-After counting down the window, never 0", async () => {
+    let now = 1_000_000;
+    const store = makeInMemoryStore({ now: () => now });
+    const rule = { points: 2, windowMillis: 60_000, blockMillis: 0 };
+    await Effect.runPromise(store.consume("k", rule));
+    now += 10_000;
+    await Effect.runPromise(store.consume("k", rule));
+    now += 10_000;
+    const denied = await Effect.runPromise(store.consume("k", rule));
+    expect(denied.allowed).toBe(false);
+    // The oldest hit leaves the window 40s from now.
+    expect(denied.retryAfterMillis).toBe(40_000);
+    expect(denied.resetMillis).toBe(50_000);
+    now += 40_001;
+    expect((await Effect.runPromise(store.consume("k", rule))).allowed).toBe(true);
+  });
+
   test("peek reports the budget without consuming it", async () => {
     let now = 1_000;
     const store = makeInMemoryStore({ now: () => now });

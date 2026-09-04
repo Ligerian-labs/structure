@@ -479,7 +479,14 @@ export const makeInMemoryStore = (
         if (hits.length >= rule.points) {
           const blockedFromNow = timestamp + rule.blockMillis;
           entries.set(key, { hits, blockedUntil: blockedFromNow });
-          return denied(rule, rule.blockMillis, resetOf(hits, blockedFromNow, rule, timestamp));
+          const oldest = hits[0];
+          const untilOldestLeaves =
+            oldest === undefined ? rule.windowMillis : oldest + rule.windowMillis - timestamp;
+          // Retry-After is the block when there is one; with a zero block it
+          // is the window counting down to the oldest hit leaving, never 0.
+          const retryAfterMillis =
+            rule.blockMillis > 0 ? rule.blockMillis : Math.max(1, untilOldestLeaves);
+          return denied(rule, retryAfterMillis, resetOf(hits, blockedFromNow, rule, timestamp));
         }
         hits.push(timestamp);
         entries.set(key, { hits, blockedUntil: 0 });

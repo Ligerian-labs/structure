@@ -115,3 +115,51 @@ gated("Redis rate limit store (needs REDIS_URL)", () => {
     expect(error._tag).toBe("RateLimitStoreError");
   });
 });
+
+gated("Redis rate limit store: zero-block rules (needs REDIS_URL)", () => {
+  test("a rule with blockMillis 0 denies an exhausted window without installing a block key", async () => {
+    const prefix = `rlz-${crypto.randomUUID()}`;
+    const store = makeRedisStore({ url: redisUrl as string, prefix });
+    // The shape every template wall uses: a window, no extra lockout.
+    const rule = { points: 2, windowMillis: 60_000, blockMillis: 0 };
+    const key = `zero-${crypto.randomUUID()}`;
+    expect((await Effect.runPromise(store.consume(key, rule))).allowed).toBe(true);
+    expect((await Effect.runPromise(store.consume(key, rule))).allowed).toBe(true);
+    const denied = await Effect.runPromise(store.consume(key, rule));
+    expect(denied.allowed).toBe(false);
+    expect(denied.remaining).toBe(0);
+    // Retry-After counts down the window: until the oldest hit leaves, never 0.
+    expect(denied.retryAfterMillis).toBeGreaterThan(0);
+    expect(denied.retryAfterMillis).toBeLessThanOrEqual(60_000);
+    expect(denied.resetMillis).toBeGreaterThanOrEqual(denied.retryAfterMillis);
+    // Denied stays denied: a further consume is a decision, never a store error.
+    const again = await Effect.runPromise(store.consume(key, rule));
+    expect(again.allowed).toBe(false);
+    expect((await Effect.runPromise(store.peek(key, rule))).allowed).toBe(false);
+    // No block key was written: a zero block means "no block", not "expire now".
+    const client = makeRedisClient({ url: redisUrl as string });
+    try {
+      const exists = await Effect.runPromise(
+        client.eval("return redis.call('EXISTS', KEYS[1])", [`${prefix}:b:${key}`], []),
+      );
+      expect(exists).toBe(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a zero-block window refills once its oldest hit ages out", async () => {
+    const store = makeRedisStore({
+      url: redisUrl as string,
+      prefix: `rlzw-${crypto.randomUUID()}`,
+    });
+    const rule = { points: 1, windowMillis: 150, blockMillis: 0 };
+    const key = `refill-${crypto.randomUUID()}`;
+    expect((await Effect.runPromise(store.consume(key, rule))).allowed).toBe(true);
+    const denied = await Effect.runPromise(store.consume(key, rule));
+    expect(denied.allowed).toBe(false);
+    expect(denied.retryAfterMillis).toBeLessThanOrEqual(150);
+    await sleep(200);
+    expect((await Effect.runPromise(store.consume(key, rule))).allowed).toBe(true);
+  });
+});
