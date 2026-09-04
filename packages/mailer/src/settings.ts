@@ -1,5 +1,5 @@
 import { Settings } from "@structure-ai/config";
-import { type Config, Effect, Layer, Option } from "effect";
+import { type Config, Effect, Layer, Option, Schema } from "effect";
 import type { EmailDriver } from "./driver.js";
 import { makeBrevoDriver } from "./drivers/brevo.js";
 import { makeCaptureDriver } from "./drivers/capture.js";
@@ -7,6 +7,12 @@ import { makeResendDriver } from "./drivers/resend.js";
 import { makeSmtpDriver } from "./drivers/smtp.js";
 import { MailValidationError } from "./errors.js";
 import { Mailer, type MailerOptions, makeMailer } from "./mailer.js";
+import {
+  defaultFromAddress,
+  EmailAddress,
+  type EmailAddressInput,
+  freeOfControlCharacters,
+} from "./message.js";
 
 /**
  * Standard mailer settings — flat, validated at load time. Secrets
@@ -21,8 +27,9 @@ export const mailerSettings = Settings.struct({
     default: "capture",
   }),
   from: Settings.string("MAIL_FROM", {
-    description: "default From address for template sends",
-    default: "no-reply@localhost",
+    description:
+      "default From address for template sends, as addr@example.com or Name <addr@example.com>",
+    default: defaultFromAddress.email,
   }),
   smtpHost: Settings.optional(
     Settings.string("MAIL_SMTP_HOST", { description: "SMTP relay host (required for smtp)" }),
@@ -61,6 +68,37 @@ export type MailerSettingsValue =
 
 const missing = (setting: string): MailValidationError =>
   new MailValidationError({ field: setting, reason: "is required for the selected driver" });
+
+const invalidFrom = (): MailValidationError =>
+  new MailValidationError({ field: "MAIL_FROM", reason: "must be an email or Name <email>" });
+
+const parseFrom = (value: string): Effect.Effect<EmailAddressInput, MailValidationError> => {
+  const input = value.trim();
+  const open = input.indexOf("<");
+  const close = input.lastIndexOf(">");
+  let candidate: EmailAddressInput;
+
+  if (open === -1 && close === -1) {
+    candidate = { email: input };
+  } else {
+    const name = input.slice(0, open).trim();
+    const email = input.slice(open + 1, close).trim();
+    const hasOneAddress =
+      open > 0 &&
+      close === input.length - 1 &&
+      input.lastIndexOf("<") === open &&
+      input.indexOf(">") === close;
+    const safeName =
+      name.length > 0 &&
+      freeOfControlCharacters(name) &&
+      !name.includes(",") &&
+      !name.includes(";");
+    if (!hasOneAddress || !safeName) return Effect.fail(invalidFrom());
+    candidate = { email, name };
+  }
+
+  return Schema.decodeUnknown(EmailAddress)(candidate).pipe(Effect.mapError(invalidFrom));
+};
 
 /**
  * Builds the driver a `mailerSettings` value selects, validating the
@@ -121,8 +159,8 @@ export const driverFromSettings = (
   });
 
 /**
- * `Mailer` layer from already-loaded settings: resolves and validates the
- * driver, applies the default `From`, and wires the standard retry policy.
+ * `Mailer` layer from already-loaded settings: parses and validates the
+ * default `From`, resolves the driver, and wires the standard retry policy.
  *
  * ```ts
  * const MailerLive = layerFromSettings(settings);
@@ -134,10 +172,12 @@ export const layerFromSettings = (
 ): Layer.Layer<Mailer, MailValidationError> =>
   Layer.effect(
     Mailer,
-    Effect.map(driverFromSettings(settings), (driver) =>
-      makeMailer(driver, {
-        defaultFrom: { email: settings.from },
+    Effect.gen(function* () {
+      const defaultFrom = yield* parseFrom(settings.from);
+      const driver = yield* driverFromSettings(settings);
+      return makeMailer(driver, {
+        defaultFrom,
         ...(options?.retry === undefined ? {} : { retry: options.retry }),
-      }),
-    ),
+      });
+    }),
   );

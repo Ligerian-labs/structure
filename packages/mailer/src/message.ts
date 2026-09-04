@@ -35,6 +35,10 @@ export const EmailAddress = Schema.Struct({
   ),
 }).annotations({ identifier: "EmailAddress" });
 
+export type EmailAddressInput = Schema.Schema.Type<typeof EmailAddress>;
+
+export const defaultFromAddress: EmailAddressInput = { email: "no-reply@localhost.invalid" };
+
 /** A validated MIME attachment: filename, content type, base64 payload. */
 export const EmailAttachment = Schema.Struct({
   filename: Schema.String.pipe(
@@ -103,7 +107,6 @@ export const EmailMessage = Schema.Struct({
   ),
 );
 
-export type EmailAddressInput = Schema.Schema.Type<typeof EmailAddress>;
 export type EmailAttachmentInput = Schema.Schema.Type<typeof EmailAttachment>;
 export type EmailMessageInput = Schema.Schema.Type<typeof EmailMessage>;
 export type EmailMessage = EmailMessageInput;
