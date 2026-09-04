@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as SqlClient from "@effect/sql/SqlClient";
 import { PgClient } from "@effect/sql-pg";
+import { generateSigningKey, makeAuthorizationServer } from "@structure-ai/auth";
 import { type Migration, makeSet, migrationChecksum, run } from "@structure-ai/migrations";
 import { SQL } from "bun";
 import { Effect, Redacted } from "effect";
@@ -212,3 +213,94 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
     }
   });
 });
+
+describe.skipIf(databaseUrl === undefined)(
+  "PostgreSQL refresh-token rotation (needs DATABASE_URL)",
+  () => {
+    test("two concurrent refreshes of one token: exactly one succeeds and the family ends revoked", async () => {
+      if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
+      const sql = new SQL(databaseUrl);
+      const options = { tablePrefix: uniquePrefix() };
+      await Effect.runPromise(migrate(sql, options));
+      const events: Array<string> = [];
+      try {
+        const key = await Effect.runPromise(generateSigningKey());
+        const server = makeAuthorizationServer({
+          store: makeOAuthServerStore(sql, options),
+          resolveTenant: () => Effect.succeed({ baseUrl: new URL("https://tenant.example.com") }),
+          signingKeys: { current: key },
+          registration: { signedIn: true },
+          audit: { record: (event) => Effect.sync(() => void events.push(event.action)) },
+        });
+        const minted = await Effect.runPromise(
+          server.registerClient(
+            "tenant-a",
+            {
+              clientType: "public",
+              redirectUris: ["https://agent.example.com/callback"],
+              scopes: ["mcp:tools"],
+            },
+            { kind: "signed-in", userId: "user-1" },
+          ),
+        );
+        const verifier = "b".repeat(64);
+        const challenge = Buffer.from(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+        ).toString("base64url");
+        await Effect.runPromise(
+          server.grantConsent({
+            tenantId: "tenant-a",
+            userId: "user-1",
+            clientId: minted.record.clientId,
+            scope: ["mcp:tools"],
+          }),
+        );
+        const decision = await Effect.runPromise(
+          server.authorize(
+            {
+              tenantId: "tenant-a",
+              clientId: minted.record.clientId,
+              redirectUri: "https://agent.example.com/callback",
+              scope: ["mcp:tools"],
+              codeChallenge: challenge,
+              codeChallengeMethod: "S256",
+            },
+            "user-1",
+          ),
+        );
+        if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+        const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+        const tokens = await Effect.runPromise(
+          server.exchangeCode({
+            tenantId: "tenant-a",
+            clientId: minted.record.clientId,
+            code: Redacted.make(code),
+            codeVerifier: verifier,
+            redirectUri: "https://agent.example.com/callback",
+          }),
+        );
+        const refresh = () =>
+          Effect.runPromiseExit(
+            server.refresh({
+              tenantId: "tenant-a",
+              clientId: minted.record.clientId,
+              refreshToken: Redacted.make(tokens.refreshToken ?? ""),
+            }),
+          );
+        const outcomes = await Promise.all([refresh(), refresh()]);
+        expect(outcomes.filter((exit) => exit._tag === "Success")).toHaveLength(1);
+        expect(events).toEqual(["oauth-refresh-reuse"]);
+        const live = await sql<Array<{ readonly live: number | string }>>`
+        SELECT count(*) AS live FROM ${sql(tableNames(options).oauthTokens)}
+        WHERE tenant_id = 'tenant-a' AND revoked_at IS NULL
+      `;
+        expect(Number(live[0]?.live)).toBe(0);
+      } finally {
+        for (const table of Object.values(tableNames(options)).reverse()) {
+          await sql`DROP TABLE IF EXISTS ${sql(table)} CASCADE`;
+        }
+        await sql.close();
+      }
+    });
+  },
+);

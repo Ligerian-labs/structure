@@ -9,6 +9,7 @@ import {
   InvalidCredentials,
   inMemoryOAuthServerStore,
   makeAuthorizationServer,
+  type OAuthServerStore,
   type OAuthSigningKeys,
 } from "../src/index.js";
 
@@ -1067,5 +1068,84 @@ describe("in-memory token store: family revocation", () => {
     expect((await run(store.findTokenById("tenant-a", "a-live")))?.revokedAt).toEqual(at);
     expect((await run(store.findTokenById("tenant-a", "a-dead")))?.revokedAt).toEqual(earlier);
     expect((await run(store.findTokenById("tenant-b", "b-live")))?.revokedAt).toBeUndefined();
+  });
+});
+
+describe("concurrent refresh of one token", () => {
+  test("a rotation that did not land is a lost race: refused, and reuse if the token was rotated away", async () => {
+    const events: Array<string> = [];
+    const real = inMemoryOAuthServerStore();
+    // The other presenter wins the compare-and-set: the token ends up rotated
+    // away, and OUR rotation lands nothing.
+    let raced = false;
+    const store: OAuthServerStore = {
+      ...real,
+      rotateToken: (tenantId, tokenId, now) =>
+        raced
+          ? real.rotateToken(tenantId, tokenId, now)
+          : real.rotateToken(tenantId, tokenId, now).pipe(
+              Effect.map(() => {
+                raced = true;
+                return false;
+              }),
+            ),
+    };
+    const key = await run(generateSigningKey());
+    const server = makeAuthorizationServer({
+      store,
+      resolveTenant: (tenantId) =>
+        Effect.succeed({ baseUrl: new URL(`https://${tenantId}.example.com`) }),
+      signingKeys: { current: key },
+      registration: { signedIn: true },
+      primitives: { now: () => clock.value },
+      audit: { record: (event) => Effect.sync(() => void events.push(event.action)) },
+    });
+    const minted = await registerClient(server);
+    const secret = minted.clientSecret ?? Redacted.make("");
+    const { verifier, challenge } = await pkce();
+    await run(
+      server.grantConsent({
+        tenantId: "tenant-a",
+        userId: "user-1",
+        clientId: minted.record.clientId,
+        scope: ["mcp:tools"],
+      }),
+    );
+    const decision = await run(
+      server.authorize(
+        {
+          tenantId: "tenant-a",
+          clientId: minted.record.clientId,
+          redirectUri: "https://agent.example.com/callback",
+          scope: ["mcp:tools"],
+          codeChallenge: challenge,
+          codeChallengeMethod: "S256",
+        },
+        "user-1",
+      ),
+    );
+    if (!("redirectUrl" in decision)) throw new Error("expected redirect");
+    const code = new URL(decision.redirectUrl).searchParams.get("code") ?? "";
+    const call = { tenantId: "tenant-a", clientId: minted.record.clientId, clientSecret: secret };
+    const first = await run(
+      server.exchangeCode({
+        ...call,
+        code: Redacted.make(code),
+        codeVerifier: verifier,
+        redirectUri: "https://agent.example.com/callback",
+      }),
+    );
+    expect(
+      await flip(
+        server.refresh({ ...call, refreshToken: Redacted.make(first.refreshToken ?? "") }),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    expect(raced).toBe(true);
+    // The loser of the race is treated as reuse: the family is gone, audited.
+    expect(events).toEqual(["oauth-refresh-reuse"]);
+    expect(
+      (await run(server.introspect({ ...call, token: Redacted.make(first.accessToken) }))).active,
+    ).toBe(false);
+    expect(real.snapshot().tokens.every((token) => token.revokedAt !== undefined)).toBe(true);
   });
 });

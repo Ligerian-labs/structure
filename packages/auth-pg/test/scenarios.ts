@@ -576,10 +576,16 @@ export const registerOAuthServerScenarios = (
           createdAt: at,
         }),
       );
-      await run(store.rotateToken("tenant-a", "token-2", later));
+      // Rotation is a conditional write: it lands once, on a live token only.
+      expect(await run(store.rotateToken("tenant-a", "token-2", later))).toBe(true);
       const rotated = await run(remake.findTokenById("tenant-a", "token-2"));
       expect(rotated?.revokedAt).toEqual(later);
       expect(rotated?.rotatedAt).toEqual(later);
+      expect(await run(store.rotateToken("tenant-a", "token-2", expired))).toBe(false);
+      expect((await run(remake.findTokenById("tenant-a", "token-2")))?.rotatedAt).toEqual(later);
+      // ...and never on a token revoked some other way.
+      expect(await run(store.rotateToken("tenant-a", "token-1", later))).toBe(false);
+      expect((await run(remake.findTokenById("tenant-a", "token-1")))?.rotatedAt).toBeUndefined();
 
       // Token families: the id round-trips, and revoking a family reaches
       // every live member (access and refresh) and nothing outside it.
