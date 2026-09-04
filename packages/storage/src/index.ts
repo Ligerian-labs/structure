@@ -30,7 +30,7 @@ export {
   servingHeaders,
   validContentType,
 } from "./policy.js";
-export { storageReadinessCheck } from "./readiness.js";
+export { READINESS_PROBE_KEY, storageReadinessCheck } from "./readiness.js";
 export {
   type StorageSettingsValue,
   storageFromSettings,
