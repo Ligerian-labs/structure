@@ -148,6 +148,23 @@ gated("Redis rate limit store: zero-block rules (needs REDIS_URL)", () => {
     }
   });
 
+  test("peek and consume never report a reset shorter than their retry-after, even with no points", async () => {
+    const store = makeRedisStore({
+      url: redisUrl as string,
+      prefix: `rlnp-${crypto.randomUUID()}`,
+    });
+    const rule = { points: 0, windowMillis: 60_000, blockMillis: 0 };
+    const key = `none-${crypto.randomUUID()}`;
+    for (const decision of [
+      await Effect.runPromise(store.peek(key, rule)),
+      await Effect.runPromise(store.consume(key, rule)),
+    ]) {
+      expect(decision.allowed).toBe(false);
+      expect(decision.retryAfterMillis).toBeGreaterThan(0);
+      expect(decision.resetMillis).toBeGreaterThanOrEqual(decision.retryAfterMillis);
+    }
+  });
+
   test("a zero-block window refills once its oldest hit ages out", async () => {
     const store = makeRedisStore({
       url: redisUrl as string,
