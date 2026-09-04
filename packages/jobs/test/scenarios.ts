@@ -42,7 +42,12 @@ export interface SchedulerHarness {
   readonly close: () => Promise<void>;
 }
 
-export type MakeHarness = () => Promise<SchedulerHarness>;
+export interface HarnessOptions {
+  /** The coordinator's per-finalizer budget. Default 10 s. */
+  readonly finalizerTimeoutMillis?: number;
+}
+
+export type MakeHarness = (options?: HarnessOptions) => Promise<SchedulerHarness>;
 
 const waitFor = async (
   predicate: () => boolean,
@@ -533,6 +538,44 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
       expect(row?.status).toBe("running");
       expect(row?.lease_owner).toBe("worker-b");
       gate.release();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("the coordinator's cut alone (no drain budget) returns in-flight jobs to the queue", async () => {
+    const harness = await make({ finalizerTimeoutMillis: 400 });
+    try {
+      let finished = false;
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: () =>
+            Effect.sleep("3 seconds").pipe(
+              Effect.zipRight(
+                Effect.sync(() => {
+                  finished = true;
+                }),
+              ),
+            ),
+        }),
+      );
+      const worker = await harness.startWorker({ pollMillis: 10 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "cut" }));
+      await settle(150);
+      const triggeredAt = Date.now();
+      await harness.stopWorker();
+      expect(Date.now() - triggeredAt).toBeLessThan(2_000);
+      expect(finished).toBe(false);
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(row?.status).toBe("queued");
+      expect(row?.lease_owner).toBeNull();
+      const abandoned = harness
+        .logRecords()
+        .find((record) => record.message === "jobs worker abandoned drain");
+      expect(String(abandoned?.annotations.jobIds ?? "")).toContain(jobId);
       await Effect.runPromise(Fiber.await(worker));
     } finally {
       await harness.close();
