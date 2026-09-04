@@ -71,6 +71,11 @@ export interface EventStoreService {
    * projections consume. `fromPosition` is inclusive and defaults to 1.
    * When `batchSize` is set the stream may end after `batchSize` events;
    * callers poll again from the last seen position to continue.
+   *
+   * Adapters make positions visible in commit order: once the feed has
+   * yielded position N, every committed event at a lower position was
+   * already visible, so a consumer may checkpoint at the last position it
+   * saw without losing an event whose append committed later.
    */
   readonly readAll: (options?: {
     readonly fromPosition?: bigint;

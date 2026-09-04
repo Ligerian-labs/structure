@@ -62,6 +62,7 @@ Durable `AuthStore` implementations preserve the package's atomic commands: iden
 - **Strong** inside one aggregate transaction: `append(stream, expectedVersion, events)` either wins or fails `ConcurrencyConflict` (retryable via `executeWithRetry`).
 - **Eventual** everywhere else: view models converge via checkpointed, at-least-once projections; integration effects converge via outbox relay + inbox dedup. Exactly-once *business effects* come from expected-version appends and idempotency keys, never from a transport guarantee.
 - Read-your-own-write: return the command ack (id + version) and poll the view for that version — nothing pretends projections are synchronous.
+- Global order is a store guarantee: `readAll` positions become visible in commit order (the Postgres adapter serializes the insert-and-commit phase of appends behind an advisory lock), so a projection checkpoints at the last position of a batch without losing a lower position that commits later.
 
 ## Error taxonomy
 
