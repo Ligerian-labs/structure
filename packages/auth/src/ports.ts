@@ -68,11 +68,14 @@ export interface AuthAuditEvent {
     | "apikey-mint"
     | "apikey-revoke"
     | "totp-locked"
+    | "totp-reset"
     | "oauth-unlink"
     | "oauth-refresh-reuse";
   readonly outcome: "succeeded";
   readonly userId?: string;
   readonly provider?: OAuthProviderId;
+  /** Who acted when it was not the user: the operator behind a `totp-reset`. */
+  readonly actor?: string;
 }
 
 export interface AuthAuditSink {

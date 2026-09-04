@@ -336,3 +336,57 @@ describe("one-time codes", () => {
     expect((await run(harness.totp.verify("tenant-a", second.token, next))).elevated).toBe(true);
   });
 });
+
+describe("lost authenticator", () => {
+  test("a recovery code unenrolls, is spent by it, and the operator can reset the factor", async () => {
+    const { harness, session } = await signedInUser("ada@example.com");
+    const { confirmation } = await enroll(harness, session.token);
+    const codes = confirmation.recoveryCodes.map((code) => Redacted.value(code));
+    const pending = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(
+      (await run(harness.totp.verify("tenant-a", pending.token, codes[0] ?? ""))).elevated,
+    ).toBe(true);
+    // The code that signed Ada in is spent for unenrollment too...
+    expect(
+      await fail(harness.totp.unenroll("tenant-a", pending.token, codes[0] ?? "")),
+    ).toBeInstanceOf(InvalidCredentials);
+    // ...and a fresh recovery code turns the factor off, exactly like a TOTP code would.
+    await run(harness.totp.unenroll("tenant-a", pending.token, codes[1] ?? ""));
+    expect(await run(harness.totp.isEnrolled("tenant-a", pending.user.id))).toBe(false);
+    const plain = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(await run(harness.totp.sessionRequiresElevation("tenant-a", plain.token))).toBe(false);
+    expect(harness.audit.some((event) => event.action === "totp-unenroll")).toBe(true);
+
+    // Re-enrolled, then the phone is gone and the recovery codes with it:
+    // the operator's reset removes the factor and leaves an audited trace.
+    await enroll(harness, plain.token);
+    expect(await run(harness.totp.isEnrolled("tenant-a", plain.user.id))).toBe(true);
+    const locked = await run(
+      harness.auth.signInPassword("tenant-a", "ada@example.com", "correct horse battery staple"),
+    );
+    expect(await run(harness.totp.sessionRequiresElevation("tenant-a", locked.token))).toBe(true);
+    await run(
+      harness.totp.resetSecondFactor("tenant-a", plain.user.id, { actor: "ops@example.com" }),
+    );
+    expect(await run(harness.totp.isEnrolled("tenant-a", plain.user.id))).toBe(false);
+    expect(await run(harness.totp.sessionRequiresElevation("tenant-a", locked.token))).toBe(false);
+    expect(harness.audit.at(-1)).toEqual(
+      expect.objectContaining({
+        action: "totp-reset",
+        outcome: "succeeded",
+        userId: plain.user.id,
+        actor: "ops@example.com",
+      }),
+    );
+    // Resetting a user without a factor is a no-op that still audits nothing new.
+    const before = harness.audit.length;
+    await run(
+      harness.totp.resetSecondFactor("tenant-a", plain.user.id, { actor: "ops@example.com" }),
+    );
+    expect(harness.audit.length).toBe(before);
+  });
+});
