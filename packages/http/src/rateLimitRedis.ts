@@ -80,7 +80,8 @@ if used >= points then
   local oldest = redis.call('ZRANGE', windowKey, 0, 0, 'WITHSCORES')
   local retry = window
   if oldest[2] then retry = tonumber(oldest[2]) + window - now end
-  return {0, math.max(1, retry), 0, windowReset}
+  retry = math.max(1, retry)
+  return {0, retry, 0, math.max(retry, windowReset)}
 end
 return {1, 0, points - used, windowReset}
 `;
