@@ -268,6 +268,38 @@ describe("smtp driver: transport security", () => {
     }
   });
 
+  test("implicit mode defaults the port to 465 when none is given; starttls keeps 587", async () => {
+    const relay = await startFakeSmtp({ implicit: true });
+    const requested: Array<number> = [];
+    const spy = (_host: string, port: number): net.Socket => {
+      requested.push(port);
+      return net.connect({ host: "127.0.0.1", port: relay.port });
+    };
+    try {
+      await run(
+        makeSmtpDriver({
+          host: "relay.test",
+          user: "mailer",
+          password: Redacted.make("hunter2"),
+          connect: spy,
+          tls: { mode: "implicit", ca: TEST_CERT },
+        }).send({ ...message, subject: "port-465" }),
+      );
+      expect(requested).toEqual([465]);
+      await run(
+        Effect.flip(
+          makeSmtpDriver({ host: "relay.test", connect: spy, connectTimeoutMillis: 200 }).send({
+            ...message,
+            subject: "port-587",
+          }),
+        ),
+      );
+      expect(requested).toEqual([465, 587]);
+    } finally {
+      await relay.close();
+    }
+  });
+
   test("upgrades with STARTTLS and only then authenticates and sends", async () => {
     const relay = await startFakeSmtp({ starttls: true });
     try {

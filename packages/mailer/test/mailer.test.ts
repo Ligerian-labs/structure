@@ -299,6 +299,30 @@ describe("mailer settings", () => {
     }
   });
 
+  test("MAIL_SMTP_PORT is optional: unset, the driver picks 587 or 465 by TLS mode", async () => {
+    const unset = await run(
+      load(mailerSettings, {
+        overrides: {
+          MAIL_DRIVER: "smtp",
+          MAIL_SMTP_HOST: "relay.example.com",
+          MAIL_SMTP_TLS: "implicit",
+        },
+      }),
+    );
+    expect(unset.smtpPort).toEqual(Option.none());
+    expect((await run(driverFromSettings(unset))).name).toBe("smtp");
+    const explicit = await run(
+      load(mailerSettings, {
+        overrides: {
+          MAIL_DRIVER: "smtp",
+          MAIL_SMTP_HOST: "relay.example.com",
+          MAIL_SMTP_PORT: "2525",
+        },
+      }),
+    );
+    expect(explicit.smtpPort).toEqual(Option.some(2525));
+  });
+
 test("layerFromSettings resolves a capture driver with a schema-valid sender by default", async () => {
     const settings = await run(load(mailerSettings, { overrides: {} }));
     const service = await run(Effect.provide(Mailer, layerFromSettings(settings)));
