@@ -68,3 +68,5 @@ Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_t
 | `STORAGE_S3_ACCESS_KEY_ID` | string | driver=s3 | — | |
 | `STORAGE_S3_SECRET_ACCESS_KEY` | secret | driver=s3 | — | yes |
 | `STORAGE_INLINE_CONTENT_TYPES` | string (csv) | no | — | |
+
+`STORAGE_S3_ENDPOINT` is used as configured minus any trailing slash (`http://minio:9000` and `http://minio:9000/` are the same endpoint; a path prefix such as `https://gateway/s3` is kept): the path-style driver appends `/<bucket>/<key>` itself, so a doubled slash never reaches the signature. A query string or fragment on the value is refused at composition (`StorageValidationError`), since the bucket and key appended after it would be swallowed.
