@@ -22,6 +22,14 @@ import { Context, Effect, Layer, Stream } from "effect";
 import { conflictIdentity, jsonText, toBigInt, toNumber } from "./internal.js";
 import { type AdapterOptions, type TableNames, tableNames } from "./schema.js";
 
+/**
+ * First key of the two-key advisory lock that serializes the commit order
+ * of appends (`serializeCommitOrder`); the second key is the hash of the
+ * events table name. Pick another namespace for any other advisory lock in
+ * the same database.
+ */
+const ADVISORY_NAMESPACE = 0x5f_45_56_54; // "_EVT"
+
 interface EventRow {
   readonly position: number | bigint | string;
   readonly stream_name: string;
@@ -158,12 +166,35 @@ const make = (
       );
 
     /**
+     * Serializes the position-taking phase of concurrent appends so that
+     * positions become visible in the order they were drawn.
+     *
+     * `position` comes from a sequence at INSERT time, inside the append
+     * transaction; without this lock two appends can commit in the opposite
+     * order of their positions, and a projection that polled in between
+     * checkpoints past a position whose transaction had not committed yet —
+     * that event is then never delivered to it. A transaction-scoped
+     * advisory lock, taken after the version check and before the first
+     * insert, is released as part of commit, after the transaction has
+     * become visible to new snapshots: whoever draws the next position
+     * therefore commits after every lower position is already visible, and
+     * a reader that saw position N has seen every committed position below
+     * N. Keyed per events table (namespace, hash of the table name) so
+     * prefixed table sets never contend with each other or with other
+     * advisory-lock users.
+     */
+    const serializeCommitOrder: Effect.Effect<void, SqlError> = sql`
+      SELECT pg_advisory_xact_lock(${ADVISORY_NAMESPACE}, hashtext(${tables.events}))
+    `.pipe(Effect.asVoid);
+
+    /**
      * The transactional append: version check, event inserts, and outbox
      * inserts all inside one transaction. Under READ COMMITTED two
      * concurrent appends can both pass the version check; the
      * `UNIQUE(stream_name, version)` constraint then kills the loser, and
      * its violation is re-mapped to `ConcurrencyConflict` (with the actual
-     * version re-read after rollback).
+     * version re-read after rollback). Appends that insert events hold
+     * `serializeCommitOrder` from their first insert to their commit.
      */
     const appendTransaction = (
       streamName: string,
@@ -179,6 +210,7 @@ const make = (
               return yield* conflict(streamName, expectedVersion, actualVersion);
             }
             if (events.length > 0) {
+              yield* serializeCommitOrder;
               yield* insertEvents(streamName, expectedVersion, events);
             }
             if (messages.length > 0) {
