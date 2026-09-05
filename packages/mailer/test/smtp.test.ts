@@ -1,13 +1,19 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import * as net from "node:net";
-import { Effect, Redacted } from "effect";
+import * as tls from "node:tls";
+import { Effect, Redacted, Schema } from "effect";
 import {
+  EmailHeaders,
+  isLoopbackHost,
   MailDeliveryFailed,
   MailRejected,
+  MailValidationError,
   makeSmtpDriver,
   renderSmtpMessage,
   type SmtpOptions,
   stuffDots,
+  validateSmtpOptions,
 } from "../src/index.js";
 import type { EmailMessage } from "../src/message.js";
 
@@ -15,7 +21,11 @@ const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise
 
 interface FakeSmtpServer {
   readonly port: number;
+  /** Client connections the relay still holds open. */
+  readonly openSockets: () => number;
   readonly commands: Array<string>;
+  /** Commands received over an encrypted socket (after STARTTLS or on implicit TLS). */
+  readonly secureCommands: Array<string>;
   readonly dataPayloads: Array<string>;
   readonly authPlainTokens: Array<string>;
   readonly close: () => Promise<void>;
@@ -23,19 +33,32 @@ interface FakeSmtpServer {
   readonly setMailResponse: (line: string) => void;
 }
 
-const startFakeSmtp = async (): Promise<FakeSmtpServer> => {
+interface FakeSmtpOptions {
+  /** Advertise STARTTLS in EHLO and upgrade on request. */
+  readonly starttls?: boolean;
+  /** Listen with TLS from the first byte (port-465 style). */
+  readonly implicit?: boolean;
+}
+
+const fixture = (name: string): string =>
+  readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+const TEST_CERT = fixture("smtp-test-cert.pem");
+const TEST_KEY = fixture("smtp-test-key.pem");
+
+const startFakeSmtp = async (options: FakeSmtpOptions = {}): Promise<FakeSmtpServer> => {
   const commands: Array<string> = [];
+  const secureCommands: Array<string> = [];
   const dataPayloads: Array<string> = [];
   const authPlainTokens: Array<string> = [];
   const sockets = new Set<net.Socket>();
   let mailResponse = "250 ok";
-  const server = net.createServer((socket) => {
+  const attach = (socket: net.Socket, secure: boolean): void => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => undefined);
     let inData = false;
     let buffer = "";
     let payloadLines: Array<string> = [];
-    socket.write("220 fake ESMTP ready\r\n");
     socket.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       if (inData) {
@@ -59,9 +82,22 @@ const startFakeSmtp = async (): Promise<FakeSmtpServer> => {
       for (const rawLine of text.split("\r\n")) {
         if (rawLine.length === 0) continue;
         commands.push(rawLine);
+        if (secure) secureCommands.push(rawLine);
         const upper = rawLine.toUpperCase();
         if (upper.startsWith("EHLO")) {
-          socket.write("250-fake greets you\r\n250-AUTH PLAIN LOGIN\r\n250 SIZE 10485760\r\n");
+          const advertise = options.starttls === true && !secure ? "250-STARTTLS\r\n" : "";
+          socket.write(
+            `250-fake greets you\r\n${advertise}250-AUTH PLAIN LOGIN\r\n250 SIZE 10485760\r\n`,
+          );
+        } else if (upper === "STARTTLS") {
+          socket.write("220 go ahead\r\n");
+          socket.removeAllListeners("data");
+          const upgraded = new tls.TLSSocket(socket, {
+            isServer: true,
+            key: TEST_KEY,
+            cert: TEST_CERT,
+          });
+          attach(upgraded, true);
         } else if (upper.startsWith("AUTH PLAIN")) {
           authPlainTokens.push(rawLine.slice("AUTH PLAIN ".length));
           socket.write("235 ok\r\n");
@@ -85,7 +121,12 @@ const startFakeSmtp = async (): Promise<FakeSmtpServer> => {
         }
       }
     });
-  });
+    if (!secure || options.implicit === true) socket.write("220 fake ESMTP ready\r\n");
+  };
+  const server =
+    options.implicit === true
+      ? tls.createServer({ key: TEST_KEY, cert: TEST_CERT }, (socket) => attach(socket, true))
+      : net.createServer((socket) => attach(socket, false));
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", () => resolve());
   });
@@ -93,7 +134,9 @@ const startFakeSmtp = async (): Promise<FakeSmtpServer> => {
   if (address === null || typeof address === "string") throw new Error("no listen address");
   return {
     port: address.port,
+    openSockets: () => sockets.size,
     commands,
+    secureCommands,
     dataPayloads,
     authPlainTokens,
     close: () =>
@@ -106,6 +149,10 @@ const startFakeSmtp = async (): Promise<FakeSmtpServer> => {
     },
   };
 };
+
+/** Connects every host to the loopback fake, so a non-loopback host name can be tested offline. */
+const toLoopback = (_host: string, port: number): net.Socket =>
+  net.connect({ host: "127.0.0.1", port });
 
 const fake: FakeSmtpServer = await startFakeSmtp();
 afterAll(async () => {
@@ -195,6 +242,249 @@ describe("smtp driver", () => {
     );
     expect(error).toBeInstanceOf(MailDeliveryFailed);
     if (error instanceof MailDeliveryFailed) expect(error.reason).toBe("smtp-transport");
+  });
+});
+
+describe("smtp driver: transport security", () => {
+  test("refuses to authenticate over cleartext when a remote relay offers no STARTTLS", async () => {
+    const plain = await startFakeSmtp();
+    try {
+      const error = await run(
+        Effect.flip(
+          makeSmtpDriver({
+            host: "relay.test",
+            port: plain.port,
+            user: "mailer",
+            password: Redacted.make("hunter2"),
+            connect: toLoopback,
+          }).send({ ...message, subject: "tls-required" }),
+        ),
+      );
+      expect(error).toBeInstanceOf(MailRejected);
+      if (error instanceof MailRejected) expect(error.reason).toBe("smtp-tls-required");
+      // The relay saw the greeting exchange and nothing that carries a secret or a body.
+      expect(plain.commands.some((line) => line.startsWith("EHLO "))).toBe(true);
+      expect(plain.commands.some((line) => line.toUpperCase().startsWith("AUTH"))).toBe(false);
+      expect(plain.commands.some((line) => line.toUpperCase().startsWith("MAIL FROM"))).toBe(false);
+      expect(plain.authPlainTokens).toHaveLength(0);
+      expect(plain.dataPayloads).toHaveLength(0);
+    } finally {
+      await plain.close();
+    }
+  });
+
+  test("a refused cleartext session is closed, not left half-open on the relay", async () => {
+    const plain = await startFakeSmtp();
+    try {
+      await run(
+        Effect.flip(
+          makeSmtpDriver({
+            host: "relay.test",
+            port: plain.port,
+            user: "mailer",
+            password: Redacted.make("hunter2"),
+            connect: toLoopback,
+          }).send({ ...message, subject: "closed" }),
+        ),
+      );
+      const deadline = Date.now() + 1_000;
+      while (plain.openSockets() > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(plain.openSockets()).toBe(0);
+    } finally {
+      await plain.close();
+    }
+  });
+
+  test("isLoopbackHost accepts every loopback spelling and nothing that merely contains one", () => {
+    for (const host of [
+      "localhost",
+      "LOCALHOST",
+      "localhost.",
+      "127.0.0.1",
+      "127.1.2.3",
+      "::1",
+      "[::1]",
+      "0:0:0:0:0:0:0:1",
+      "[0:0:0:0:0:0:0:1]",
+      "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+    ]) {
+      expect(isLoopbackHost(host)).toBe(true);
+    }
+    for (const host of [
+      "relay.example.com",
+      "localhost.evil.com",
+      "127.0.0.1.evil.com",
+      "128.0.0.1",
+      "::2",
+      "::ffff:10.0.0.1",
+      "fe80::1",
+    ]) {
+      expect(isLoopbackHost(host)).toBe(false);
+    }
+  });
+
+  test("implicit mode defaults the port to 465 when none is given; starttls keeps 587", async () => {
+    const relay = await startFakeSmtp({ implicit: true });
+    const requested: Array<number> = [];
+    const spy = (_host: string, port: number): net.Socket => {
+      requested.push(port);
+      return net.connect({ host: "127.0.0.1", port: relay.port });
+    };
+    try {
+      await run(
+        makeSmtpDriver({
+          host: "relay.test",
+          user: "mailer",
+          password: Redacted.make("hunter2"),
+          connect: spy,
+          tls: { mode: "implicit", ca: TEST_CERT },
+        }).send({ ...message, subject: "port-465" }),
+      );
+      expect(requested).toEqual([465]);
+      await run(
+        Effect.flip(
+          makeSmtpDriver({ host: "relay.test", connect: spy, connectTimeoutMillis: 200 }).send({
+            ...message,
+            subject: "port-587",
+          }),
+        ),
+      );
+      expect(requested).toEqual([465, 587]);
+    } finally {
+      await relay.close();
+    }
+  });
+
+  test("upgrades with STARTTLS and only then authenticates and sends", async () => {
+    const relay = await startFakeSmtp({ starttls: true });
+    try {
+      await run(
+        makeSmtpDriver({
+          host: "relay.test",
+          port: relay.port,
+          user: "mailer",
+          password: Redacted.make("hunter2"),
+          connect: toLoopback,
+          tls: { ca: TEST_CERT },
+        }).send({ ...message, subject: "starttls" }),
+      );
+      expect(relay.commands).toContain("STARTTLS");
+      const auth = relay.commands.find((line) => line.startsWith("AUTH PLAIN"));
+      expect(auth).toBeDefined();
+      expect(relay.secureCommands).toContain(auth ?? "");
+      expect(relay.secureCommands).toContain("MAIL FROM:<app@example.com>");
+      expect(relay.secureCommands).toContain("DATA");
+      expect(relay.dataPayloads).toHaveLength(1);
+    } finally {
+      await relay.close();
+    }
+  });
+
+  test("a certificate the client does not trust fails the send before any credential is written", async () => {
+    const relay = await startFakeSmtp({ starttls: true });
+    try {
+      const error = await run(
+        Effect.flip(
+          makeSmtpDriver({
+            host: "relay.test",
+            port: relay.port,
+            user: "mailer",
+            password: Redacted.make("hunter2"),
+            connect: toLoopback,
+          }).send({ ...message, subject: "untrusted" }),
+        ),
+      );
+      expect(error).toBeInstanceOf(MailDeliveryFailed);
+      expect(relay.authPlainTokens).toHaveLength(0);
+    } finally {
+      await relay.close();
+    }
+  });
+
+  test("implicit TLS (port 465 style) is encrypted from the first byte", async () => {
+    const relay = await startFakeSmtp({ implicit: true });
+    try {
+      await run(
+        makeSmtpDriver({
+          host: "relay.test",
+          port: relay.port,
+          user: "mailer",
+          password: Redacted.make("hunter2"),
+          connect: toLoopback,
+          tls: { mode: "implicit", ca: TEST_CERT },
+        }).send({ ...message, subject: "implicit" }),
+      );
+      expect(relay.commands.length).toBeGreaterThan(0);
+      expect(relay.secureCommands).toEqual(relay.commands);
+      expect(relay.dataPayloads).toHaveLength(1);
+    } finally {
+      await relay.close();
+    }
+  });
+
+  test("disabling STARTTLS towards a remote relay is a typed validation failure, and never a throw", async () => {
+    expect(validateSmtpOptions({ host: "relay.test", startTls: false })).toBeInstanceOf(
+      MailValidationError,
+    );
+    expect(validateSmtpOptions({ host: "relay.test", tls: { mode: "none" } })).toBeInstanceOf(
+      MailValidationError,
+    );
+    expect(validateSmtpOptions({ host: "relay.test" })).toBeUndefined();
+    expect(validateSmtpOptions({ host: "localhost", startTls: false })).toBeUndefined();
+    // Construction is total: a misconfigured driver is built without throwing
+    // and refuses at the first send, before anything sensitive is written.
+    const plain = await startFakeSmtp();
+    try {
+      const error = await run(
+        Effect.flip(
+          makeSmtpDriver({
+            host: "relay.test",
+            port: plain.port,
+            user: "mailer",
+            password: Redacted.make("hunter2"),
+            startTls: false,
+            connect: toLoopback,
+          }).send({ ...message, subject: "misconfigured" }),
+        ),
+      );
+      expect(error).toBeInstanceOf(MailRejected);
+      if (error instanceof MailRejected) expect(error.reason).toBe("smtp-tls-required");
+      expect(plain.authPlainTokens).toHaveLength(0);
+      await run(
+        makeSmtpDriver({
+          host: "relay.test",
+          port: plain.port,
+          user: "mailer",
+          password: Redacted.make("hunter2"),
+          startTls: false,
+          allowPlaintext: true,
+          connect: toLoopback,
+        }).send({ ...message, subject: "opted-in" }),
+      );
+      expect(plain.authPlainTokens).toHaveLength(1);
+    } finally {
+      await plain.close();
+    }
+  });
+
+  test("a loopback relay is exempt: plaintext to localhost needs no opt-in", async () => {
+    const plain = await startFakeSmtp();
+    try {
+      await run(
+        makeSmtpDriver({
+          host: "localhost",
+          port: plain.port,
+          user: "mailer",
+          password: Redacted.make("hunter2"),
+        }).send({ ...message, subject: "loopback" }),
+      );
+      expect(plain.authPlainTokens).toHaveLength(1);
+    } finally {
+      await plain.close();
+    }
   });
 });
 
@@ -293,5 +583,61 @@ describe("smtp message rendering", () => {
       "structure-mailer",
     );
     expect(rendered).toContain("x-tenant: acme");
+  });
+
+  test("custom headers are emitted exactly once", () => {
+    const { headerBlock } = splitAtBody(
+      renderSmtpMessage({ ...message, headers: { "X-Thing": "v" } }, "structure-mailer"),
+    );
+    expect(headerBlock.split("\r\n").filter((line) => line.startsWith("X-Thing:"))).toHaveLength(1);
+  });
+
+  test("a custom header can never displace a generated MIME or envelope header", () => {
+    const { headerBlock } = splitAtBody(
+      renderSmtpMessage(
+        {
+          ...message,
+          html: undefined,
+          headers: {
+            "Content-Type": "text/html",
+            "content-transfer-encoding": "8bit",
+            BCC: "spy@example.net",
+            "Message-Id": "<forged@example.net>",
+          },
+        },
+        "structure-mailer",
+      ),
+    );
+    const lines = headerBlock.split("\r\n");
+    const contentTypes = lines.filter((line) => line.toLowerCase().startsWith("content-type:"));
+    expect(contentTypes).toEqual(["Content-Type: text/plain; charset=utf-8"]);
+    expect(lines.filter((line) => /^content-transfer-encoding:/iu.test(line))).toEqual([
+      "Content-Transfer-Encoding: base64",
+    ]);
+    expect(lines.some((line) => /^bcc:/iu.test(line))).toBe(false);
+    expect(lines.filter((line) => /^message-id:/iu.test(line))).toHaveLength(1);
+    expect(headerBlock).not.toContain("forged@example.net");
+  });
+});
+
+describe("email headers schema", () => {
+  test("rejects the generated MIME and envelope header names, case-insensitively", () => {
+    for (const name of [
+      "Content-Type",
+      "content-transfer-encoding",
+      "MIME-Version",
+      "Bcc",
+      "To",
+      "Subject",
+      "Message-ID",
+      "Date",
+      "From",
+      "Reply-To",
+      "cc",
+    ]) {
+      const decoded = Schema.decodeUnknownEither(EmailHeaders)({ [name]: "x" });
+      expect(decoded._tag).toBe("Left");
+    }
+    expect(Schema.decodeUnknownEither(EmailHeaders)({ "X-Tenant": "acme" })._tag).toBe("Right");
   });
 });

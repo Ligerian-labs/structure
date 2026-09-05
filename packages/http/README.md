@@ -77,7 +77,7 @@ Static serving is bounded on purpose: decoded path segments only (no `.`/`..`, n
 
 ## Rate limiting
 
-`rateLimitLayer` (or the `rateLimit` HttpApp middleware) enforces per-route-group budgets with `points` per sliding `windowMillis` and a `blockMillis` lockout:
+`rateLimitLayer` (or the `rateLimit` HttpApp middleware) enforces per-route-group budgets with `points` per sliding `windowMillis` and a `blockMillis` lockout (`blockMillis: 0` means no lockout: a full window is denied until its oldest hit ages out, and `Retry-After` counts down to that moment):
 
 ```ts
 import { makeInMemoryStore, rateLimitLayer, clientIp } from "@structure-ai/http";

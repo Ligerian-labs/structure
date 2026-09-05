@@ -433,23 +433,47 @@ const resetOf = (
 };
 
 /**
- * In-memory sliding-window store for a single replica: bounded key map with
- * lazy sweep of expired entries on every consume, atomic within one event
- * loop turn. Pass `now` for deterministic tests.
+ * In-memory sliding-window store for a single replica, atomic within one
+ * event loop turn. The key map is bounded: entries are kept in
+ * least-recently-used order and the oldest is evicted when a new key would
+ * exceed `maxKeys`, so a flood of distinct keys costs O(1) per consume and
+ * never more than `maxKeys` entries. Stale entries (every hit older than the
+ * longest window seen, no block) are swept at most once per
+ * `sweepIntervalMillis` (default one minute), never on every consume. Only
+ * `consume` refreshes a key's recency: `peek` spends nothing and moves
+ * nothing, so a key that is only ever peeked ages out like an idle one. Pass
+ * `now` for deterministic tests; `size()` exposes the entry count.
  */
 export const makeInMemoryStore = (
-  options: { readonly maxKeys?: number; readonly now?: () => number } = {},
-): RateLimitStore => {
-  const maxKeys = options.maxKeys ?? 100_000;
+  options: {
+    readonly maxKeys?: number;
+    readonly now?: () => number;
+    readonly sweepIntervalMillis?: number;
+  } = {},
+): RateLimitStore & { readonly size: () => number } => {
+  const maxKeys = Math.max(1, options.maxKeys ?? 100_000);
   const now = options.now ?? (() => Date.now());
+  const sweepInterval = Math.max(1, options.sweepIntervalMillis ?? 60_000);
   const entries = new Map<string, MemoryEntry>();
+  let longestWindow = 0;
+  let lastSweep = Number.NEGATIVE_INFINITY;
 
   const sweep = (timestamp: number): void => {
+    lastSweep = timestamp;
+    const horizon = timestamp - longestWindow;
     for (const [key, entry] of entries) {
-      const windowStart = timestamp - 60 * 60 * 1_000;
-      const stale = entry.blockedUntil <= timestamp && entry.hits.every((hit) => hit < windowStart);
+      const stale = entry.blockedUntil <= timestamp && entry.hits.every((hit) => hit <= horizon);
       if (stale) entries.delete(key);
     }
+  };
+
+  /** Re-inserts `key` as the most recent entry, evicting the oldest past the cap. */
+  const remember = (key: string, entry: MemoryEntry): void => {
+    if (!entries.delete(key) && entries.size >= maxKeys) {
+      const oldest = entries.keys().next();
+      if (!oldest.done) entries.delete(oldest.value);
+    }
+    entries.set(key, entry);
   };
 
   const windowOf = (key: string, rule: RateLimitRule, timestamp: number) => {
@@ -463,13 +487,15 @@ export const makeInMemoryStore = (
 
   return {
     name: "memory",
+    size: () => entries.size,
     consume: (key, rule) =>
       Effect.sync((): RateLimitDecision => {
         const timestamp = now();
-        if (entries.size > maxKeys) sweep(timestamp);
+        longestWindow = Math.max(longestWindow, rule.windowMillis);
+        if (timestamp - lastSweep >= sweepInterval) sweep(timestamp);
         const { hits, blockedUntil } = windowOf(key, rule, timestamp);
         if (blockedUntil > timestamp) {
-          entries.set(key, { hits, blockedUntil });
+          remember(key, { hits, blockedUntil });
           return denied(
             rule,
             blockedUntil - timestamp,
@@ -478,11 +504,24 @@ export const makeInMemoryStore = (
         }
         if (hits.length >= rule.points) {
           const blockedFromNow = timestamp + rule.blockMillis;
-          entries.set(key, { hits, blockedUntil: blockedFromNow });
-          return denied(rule, rule.blockMillis, resetOf(hits, blockedFromNow, rule, timestamp));
+          remember(key, { hits, blockedUntil: blockedFromNow });
+          const oldest = hits[0];
+          const untilOldestLeaves =
+            oldest === undefined ? rule.windowMillis : oldest + rule.windowMillis - timestamp;
+          // Retry-After is the block when there is one; with a zero block it
+          // is the window counting down to the oldest hit leaving, never 0.
+          const retryAfterMillis =
+            rule.blockMillis > 0 ? rule.blockMillis : Math.max(1, untilOldestLeaves);
+          // The documented invariant: when denied, retryAfterMillis <= resetMillis
+          // (matters only for a rule with no points, where no hit is recorded).
+          return denied(
+            rule,
+            retryAfterMillis,
+            Math.max(retryAfterMillis, resetOf(hits, blockedFromNow, rule, timestamp)),
+          );
         }
         hits.push(timestamp);
-        entries.set(key, { hits, blockedUntil: 0 });
+        remember(key, { hits, blockedUntil: 0 });
         return {
           allowed: true,
           retryAfterMillis: 0,
@@ -501,7 +540,9 @@ export const makeInMemoryStore = (
           const oldest = hits[0];
           const untilOldestLeaves =
             oldest === undefined ? rule.windowMillis : oldest + rule.windowMillis - timestamp;
-          return denied(rule, Math.max(1, untilOldestLeaves), resetMillis);
+          const retryAfterMillis = Math.max(1, untilOldestLeaves);
+          // Same invariant as consume: a denial's reset is never below its retry-after.
+          return denied(rule, retryAfterMillis, Math.max(retryAfterMillis, resetMillis));
         }
         return {
           allowed: true,

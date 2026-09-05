@@ -22,10 +22,13 @@ export {
   type ResendOptions,
 } from "./drivers/resend.js";
 export {
+  isLoopbackHost,
   makeSmtpDriver,
   renderSmtpMessage,
   type SmtpOptions,
+  type SmtpTlsMode,
   stuffDots,
+  validateSmtpOptions,
 } from "./drivers/smtp.js";
 export {
   MailDeliveryFailed,
@@ -52,6 +55,8 @@ export {
   EmailHeaders,
   EmailMessage,
   type EmailMessageInput,
+  isReservedHeaderName,
+  RESERVED_HEADER_NAMES,
 } from "./message.js";
 export {
   driverFromSettings,

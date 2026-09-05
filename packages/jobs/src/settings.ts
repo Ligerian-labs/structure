@@ -16,13 +16,24 @@ export const jobsSettings = Settings.struct({
     default: Duration.seconds(1),
   }),
   batchSize: Settings.int("JOBS_BATCH_SIZE", {
-    description: "jobs claimed per poll",
+    description: "jobs claimed per poll (never more than the free concurrency)",
     default: 10,
   }),
+  concurrency: Settings.optional(
+    Settings.int("JOBS_CONCURRENCY", {
+      description: "ceiling on jobs executing at once per worker (default: JOBS_BATCH_SIZE)",
+    }),
+  ),
   lease: Settings.duration("JOBS_LEASE", {
     description: "dispatch lease duration before a running job becomes reclaimable",
     default: Duration.seconds(60),
   }),
+  drainTimeout: Settings.optional(
+    Settings.duration("JOBS_DRAIN_TIMEOUT", {
+      description:
+        "how long the shutdown drain waits for in-flight jobs before returning them to the queue (keep below the coordinator's finalizer timeout; default: until the coordinator cuts)",
+    }),
+  ),
   tablePrefix: Settings.string("JOBS_TABLE_PREFIX", {
     description: "jobs table name prefix",
     default: "jobs_",

@@ -15,6 +15,9 @@ import { makeRedisClient, RedisError } from "./redis.js";
  *
  * `consume`: denied while blocked (remaining block time returned), denied and
  * newly blocked when the window is full, otherwise one point is recorded.
+ * A rule with `blockMillis` 0 installs no block key at all (Redis refuses a
+ * zero expiry): a full window is simply denied until its oldest hit ages
+ * out, and `retryAfterMillis` counts down to that moment.
  */
 const CONSUME_SCRIPT = `
 local windowKey = KEYS[1]
@@ -36,8 +39,15 @@ if blockedUntil > now then
   return {0, retry, 0, math.max(retry, windowReset)}
 end
 if used >= points then
-  redis.call('SET', blockKey, now + block, 'PX', block)
-  return {0, block, 0, math.max(block, windowReset)}
+  local oldest = redis.call('ZRANGE', windowKey, 0, 0, 'WITHSCORES')
+  local untilOldestLeaves = window
+  if oldest[2] then untilOldestLeaves = tonumber(oldest[2]) + window - now end
+  local retry = math.max(1, untilOldestLeaves)
+  if block > 0 then
+    redis.call('SET', blockKey, now + block, 'PX', block)
+    retry = block
+  end
+  return {0, retry, 0, math.max(retry, windowReset)}
 end
 redis.call('ZADD', windowKey, now, member)
 redis.call('PEXPIRE', windowKey, window)
@@ -70,7 +80,8 @@ if used >= points then
   local oldest = redis.call('ZRANGE', windowKey, 0, 0, 'WITHSCORES')
   local retry = window
   if oldest[2] then retry = tonumber(oldest[2]) + window - now end
-  return {0, math.max(1, retry), 0, windowReset}
+  retry = math.max(1, retry)
+  return {0, retry, 0, math.max(retry, windowReset)}
 end
 return {1, 0, points - used, windowReset}
 `;

@@ -1,5 +1,5 @@
 import { Settings } from "@structure-ai/config";
-import { type Config, Effect, Option } from "effect";
+import { type Config, Duration, Effect, Option } from "effect";
 import { makeLocalStorage } from "./drivers/local.js";
 import { makeS3Storage } from "./drivers/s3.js";
 import { StorageValidationError } from "./errors.js";
@@ -43,6 +43,11 @@ export const storageSettings = Settings.struct({
       description: "S3 secret access key (required when driver=s3)",
     }),
   ),
+  s3Timeout: Settings.duration("STORAGE_S3_TIMEOUT", {
+    description:
+      "S3 request deadline up to the response headers, and the idle timeout between chunks of a streamed download",
+    default: Duration.seconds(30),
+  }),
   inlineContentTypes: Settings.optional(
     Settings.string("STORAGE_INLINE_CONTENT_TYPES", {
       description:
@@ -138,6 +143,7 @@ export const storageFromSettings = (
                     ...(Option.isSome(settings.s3Endpoint)
                       ? { endpoint: s3Endpoint(Option.getOrThrow(settings.s3Endpoint)) }
                       : {}),
+                    timeoutMillis: Duration.toMillis(settings.s3Timeout),
                     policy,
                   }),
                 ),

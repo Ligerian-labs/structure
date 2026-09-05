@@ -217,6 +217,112 @@ describe("mailer settings", () => {
     expect(driver.name).toBe("brevo");
   });
 
+  test("MAIL_SMTP_TLS=none towards a non-loopback relay is refused at composition", async () => {
+    const settings = await run(
+      load(mailerSettings, {
+        overrides: {
+          MAIL_DRIVER: "smtp",
+          MAIL_SMTP_HOST: "relay.example.com",
+          MAIL_SMTP_TLS: "none",
+        },
+      }),
+    );
+    const error = await run(Effect.flip(driverFromSettings(settings)));
+    expect(error._tag).toBe("MailValidationError");
+    if (error._tag === "MailValidationError") expect(error.field).toBe("MAIL_SMTP_TLS");
+  });
+
+  test("MAIL_SMTP_ALLOW_PLAINTEXT=true or a loopback relay accepts MAIL_SMTP_TLS=none", async () => {
+    const optedIn = await run(
+      load(mailerSettings, {
+        overrides: {
+          MAIL_DRIVER: "smtp",
+          MAIL_SMTP_HOST: "relay.example.com",
+          MAIL_SMTP_TLS: "none",
+          MAIL_SMTP_ALLOW_PLAINTEXT: "true",
+        },
+      }),
+    );
+    expect((await run(driverFromSettings(optedIn))).name).toBe("smtp");
+    const loopback = await run(
+      load(mailerSettings, {
+        overrides: { MAIL_DRIVER: "smtp", MAIL_SMTP_HOST: "localhost", MAIL_SMTP_TLS: "none" },
+      }),
+    );
+    expect((await run(driverFromSettings(loopback))).name).toBe("smtp");
+  });
+
+  test("smtp settings default to STARTTLS with certificate verification and no plaintext", async () => {
+    const settings = await run(
+      load(mailerSettings, {
+        overrides: { MAIL_DRIVER: "smtp", MAIL_SMTP_HOST: "relay.example.com" },
+      }),
+    );
+    expect(settings.smtpTls).toBe("starttls");
+    expect(settings.smtpAllowPlaintext).toBe(false);
+    expect(settings.smtpTlsRejectUnauthorized).toBe(true);
+  });
+
+  test("provider base URLs must be https unless loopback: a plaintext host is refused at composition", async () => {
+    for (const [driver, key, url] of [
+      ["brevo", "MAIL_BREVO_API_KEY", "MAIL_BREVO_BASE_URL"],
+      ["resend", "MAIL_RESEND_API_KEY", "MAIL_RESEND_BASE_URL"],
+    ] as const) {
+      const plaintext = await run(
+        load(mailerSettings, {
+          overrides: {
+            MAIL_DRIVER: driver,
+            [key]: "secret-key",
+            [url]: "http://attacker.example.net",
+          },
+        }),
+      );
+      const error = await run(Effect.flip(driverFromSettings(plaintext)));
+      expect(error._tag).toBe("MailValidationError");
+      if (error._tag === "MailValidationError") expect(error.field).toBe(url);
+      const secure = await run(
+        load(mailerSettings, {
+          overrides: {
+            MAIL_DRIVER: driver,
+            [key]: "secret-key",
+            [url]: "https://proxy.example.com",
+          },
+        }),
+      );
+      expect((await run(driverFromSettings(secure))).name).toBe(driver);
+      const loopback = await run(
+        load(mailerSettings, {
+          overrides: { MAIL_DRIVER: driver, [key]: "secret-key", [url]: "http://localhost:9999" },
+        }),
+      );
+      expect((await run(driverFromSettings(loopback))).name).toBe(driver);
+    }
+  });
+
+  test("MAIL_SMTP_PORT is optional: unset, the driver picks 587 or 465 by TLS mode", async () => {
+    const unset = await run(
+      load(mailerSettings, {
+        overrides: {
+          MAIL_DRIVER: "smtp",
+          MAIL_SMTP_HOST: "relay.example.com",
+          MAIL_SMTP_TLS: "implicit",
+        },
+      }),
+    );
+    expect(unset.smtpPort).toEqual(Option.none());
+    expect((await run(driverFromSettings(unset))).name).toBe("smtp");
+    const explicit = await run(
+      load(mailerSettings, {
+        overrides: {
+          MAIL_DRIVER: "smtp",
+          MAIL_SMTP_HOST: "relay.example.com",
+          MAIL_SMTP_PORT: "2525",
+        },
+      }),
+    );
+    expect(explicit.smtpPort).toEqual(Option.some(2525));
+  });
+
   test("layerFromSettings resolves a capture driver with a schema-valid sender by default", async () => {
     const settings = await run(load(mailerSettings, { overrides: {} }));
     const service = await run(Effect.provide(Mailer, layerFromSettings(settings)));

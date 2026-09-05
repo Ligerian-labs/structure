@@ -52,7 +52,7 @@ interface Storage {
 
 ## Observability & readiness
 
-Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_total` / `_errors_total` / `_duration_ms`) and a structured log line carrying driver, operation, key, and size — never body or metadata content. `ObjectNotFound` is not counted as a driver failure. `storageReadinessCheck(storage)` registers a `@structure-ai/runtime` readiness check (ready when a root `list` answers).
+Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_total` / `_errors_total` / `_duration_ms`) and a structured log line carrying driver, operation, key, and size — never body or metadata content. `ObjectNotFound` is not counted as a driver failure. `storageReadinessCheck(storage)` registers a `@structure-ai/runtime` readiness check (ready when a `head` of one fixed probe key answers, found or not; it never lists the store).
 
 ## Settings
 
@@ -67,6 +67,7 @@ Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_t
 | `STORAGE_S3_ENDPOINT` | url | no | AWS | |
 | `STORAGE_S3_ACCESS_KEY_ID` | string | driver=s3 | — | |
 | `STORAGE_S3_SECRET_ACCESS_KEY` | secret | driver=s3 | — | yes |
+| `STORAGE_S3_TIMEOUT` | duration | no | 30 seconds | |
 | `STORAGE_INLINE_CONTENT_TYPES` | string (csv) | no | — | |
 
 `STORAGE_S3_ENDPOINT` is used as configured minus any trailing slash (`http://minio:9000` and `http://minio:9000/` are the same endpoint; a path prefix such as `https://gateway/s3` is kept): the path-style driver appends `/<bucket>/<key>` itself, so a doubled slash never reaches the signature. A query string or fragment on the value is refused at composition (`StorageValidationError`), since the bucket and key appended after it would be swallowed.

@@ -15,15 +15,39 @@ export interface SchedulerHarness {
   readonly clock: { value: Date };
   readonly startWorker: (options?: {
     readonly batchSize?: number;
+    readonly concurrency?: number;
     readonly pollMillis?: number;
     readonly leaseMillis?: number;
+    readonly drainTimeoutMillis?: number;
   }) => Promise<Fiber.RuntimeFiber<void, never>>;
+  /** Log records emitted through the harness logger (message + annotations). */
+  readonly logRecords: () => ReadonlyArray<{
+    message: string;
+    annotations: Record<string, unknown>;
+  }>;
   readonly stopWorker: () => Promise<void>;
   readonly deadLetters: () => Promise<ReadonlyArray<{ job_name: string; attempts: number }>>;
+  /** Raw queue rows, for lease and status assertions. */
+  readonly queueRows: () => Promise<
+    ReadonlyArray<{
+      id: string;
+      status: string;
+      attempt: number;
+      lease_owner: string | null;
+      lease_expires_at: Date | null;
+    }>
+  >;
+  /** Simulates another worker reclaiming the row: a new owner and a fresh lease. */
+  readonly reclaim: (jobId: string, owner: string, leaseMillis: number) => Promise<void>;
   readonly close: () => Promise<void>;
 }
 
-export type MakeHarness = () => Promise<SchedulerHarness>;
+export interface HarnessOptions {
+  /** The coordinator's per-finalizer budget. Default 10 s. */
+  readonly finalizerTimeoutMillis?: number;
+}
+
+export type MakeHarness = (options?: HarnessOptions) => Promise<SchedulerHarness>;
 
 const waitFor = async (
   predicate: () => boolean,
@@ -137,10 +161,95 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
         15_000,
       );
       expect(executed.size).toBe(12);
-      expect(await run(harness.scheduler.depth)).toBe(0);
+      // The last completion writes land just after the last handler returned.
+      let depth = await run(harness.scheduler.depth);
+      const deadline = Date.now() + 5_000;
+      while (depth > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        depth = await run(harness.scheduler.depth);
+      }
+      expect(depth).toBe(0);
       await harness.stopWorker();
       await Effect.runPromise(Fiber.await(workerA));
       await Effect.runPromise(Fiber.await(workerB));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("the concurrency bound caps simultaneously running handlers, whatever the backlog", async () => {
+    const harness = await make();
+    try {
+      let running = 0;
+      let peak = 0;
+      const executed = new Set<string>();
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: (payload) =>
+            Effect.gen(function* () {
+              running += 1;
+              peak = Math.max(peak, running);
+              yield* Effect.sleep("60 millis");
+              running -= 1;
+              executed.add(payload.message);
+            }),
+        }),
+      );
+      // A backlog far larger than the bound: 40 due jobs, batches of 5.
+      for (let index = 0; index < 40; index++) {
+        await run(harness.scheduler.schedule(testJob, { message: `bulk-${index}` }));
+      }
+      const worker = await harness.startWorker({ pollMillis: 5, batchSize: 5 });
+      await waitFor(
+        () => executed.size >= 40,
+        () => undefined,
+        15_000,
+      );
+      expect(executed.size).toBe(40);
+      expect(peak).toBeLessThanOrEqual(5);
+      expect(peak).toBeGreaterThan(1);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("an explicit concurrency lower than the batch size is the ceiling", async () => {
+    const harness = await make();
+    try {
+      let running = 0;
+      let peak = 0;
+      const executed = new Set<string>();
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: (payload) =>
+            Effect.gen(function* () {
+              running += 1;
+              peak = Math.max(peak, running);
+              yield* Effect.sleep("40 millis");
+              running -= 1;
+              executed.add(payload.message);
+            }),
+        }),
+      );
+      for (let index = 0; index < 12; index++) {
+        await run(harness.scheduler.schedule(testJob, { message: `narrow-${index}` }));
+      }
+      const worker = await harness.startWorker({ pollMillis: 5, batchSize: 10, concurrency: 2 });
+      await waitFor(
+        () => executed.size >= 12,
+        () => undefined,
+        15_000,
+      );
+      expect(executed.size).toBe(12);
+      expect(peak).toBeLessThanOrEqual(2);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
     } finally {
       await harness.close();
     }
@@ -172,8 +281,9 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
 
       let dead: ReadonlyArray<{ job_name: string; attempts: number }> = [];
       // Advance the fake clock in the wait loop so retry backoffs come due.
+      // Wait for both outcomes: the dead letter, and the flaky job's retry.
       const deadline = Date.now() + 15_000;
-      while (dead.length < 1 && Date.now() < deadline) {
+      while ((dead.length < 1 || attempts < 3) && Date.now() < deadline) {
         harness.clock.value = new Date(harness.clock.value.getTime() + 2_000);
         dead = await harness.deadLetters();
         await new Promise((resolve) => setTimeout(resolve, 30));
@@ -182,6 +292,56 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
       expect(dead[0]?.attempts).toBe(1);
       // flaky failed once transiently, succeeded on retry; doomed failed once permanently.
       expect(attempts).toBe(3);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("a worker that lost its lease cannot complete, retry or heartbeat the row another worker owns", async () => {
+    const harness = await make();
+    try {
+      let release: () => void = () => undefined;
+      const started = new Promise<void>((resolveStarted) => {
+        const gate = new Promise<void>((resolveGate) => {
+          release = resolveGate;
+        });
+        void harness.scheduler
+          .register({
+            name: "test.ping",
+            payloadSchema: pingPayload,
+            handle: () =>
+              Effect.promise(async () => {
+                resolveStarted();
+                await gate;
+              }),
+          })
+          .pipe(Effect.runPromise);
+      });
+      const worker = await harness.startWorker({ pollMillis: 10, leaseMillis: 300 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "slow" }));
+      await started;
+      // Another worker reclaims the row (as it would after the lease expired).
+      await harness.reclaim(jobId, "worker-b", 60_000);
+      const reclaimed = (await harness.queueRows()).find((row) => row.id === jobId);
+      const leaseAfterReclaim = reclaimed?.lease_expires_at?.getTime();
+      // Long enough for the first worker's heartbeat (lease / 3) to fire several times.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const stillReclaimed = (await harness.queueRows()).find((row) => row.id === jobId);
+      expect(stillReclaimed?.lease_owner).toBe("worker-b");
+      expect(stillReclaimed?.lease_expires_at?.getTime()).toBe(leaseAfterReclaim);
+      // The first worker finishes late: its completion must not touch worker-b's row.
+      release();
+      await waitFor(
+        () => false,
+        () => undefined,
+        200,
+      );
+      const survivor = (await harness.queueRows()).find((row) => row.id === jobId);
+      expect(survivor).toBeDefined();
+      expect(survivor?.status).toBe("running");
+      expect(survivor?.lease_owner).toBe("worker-b");
       await harness.stopWorker();
       await Effect.runPromise(Fiber.await(worker));
     } finally {
@@ -226,13 +386,17 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
   test("graceful drain: shutdown waits for in-flight jobs", async () => {
     const harness = await make();
     try {
+      let started = false;
       let finished = false;
       await run(
         harness.scheduler.register({
           name: "test.ping",
           payloadSchema: pingPayload,
           handle: () =>
-            Effect.sleep("400 millis").pipe(
+            Effect.sync(() => {
+              started = true;
+            }).pipe(
+              Effect.zipRight(Effect.sleep("400 millis")),
               Effect.zipRight(
                 Effect.sync(() => {
                   finished = true;
@@ -243,11 +407,11 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
       );
       const worker = await harness.startWorker({ pollMillis: 10 });
       await run(harness.scheduler.schedule(testJob, { message: "slow" }));
+      // Gate on the handler having started, not on a fixed wait for the claim.
       await waitFor(
-        () => false,
+        () => started,
         () => undefined,
-        100,
-      ); // let the claim land
+      );
       const triggeredAt = Date.now();
       await harness.stopWorker();
       const exit = await Effect.runPromise(Fiber.await(worker));
@@ -255,6 +419,260 @@ export const registerSchedulerScenarios = (make: MakeHarness): void => {
       expect(exit._tag === "Success" ? true : exit._tag).toBe(true);
       expect(finished).toBe(true);
       expect(drainMillis).toBeGreaterThanOrEqual(300);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("a drain that outlives its budget returns the in-flight job to the queue and names it", async () => {
+    const harness = await make();
+    try {
+      let finished = false;
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: () =>
+            Effect.sleep("3 seconds").pipe(
+              Effect.zipRight(
+                Effect.sync(() => {
+                  finished = true;
+                }),
+              ),
+            ),
+        }),
+      );
+      const worker = await harness.startWorker({ pollMillis: 10, drainTimeoutMillis: 300 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "long" }));
+      await waitFor(
+        () => false,
+        () => undefined,
+        150,
+      ); // let the claim land
+      const triggeredAt = Date.now();
+      await harness.stopWorker();
+      const drainMillis = Date.now() - triggeredAt;
+      // The drain gave up at its budget, well before the handler's 3 s.
+      expect(drainMillis).toBeLessThan(2_000);
+      expect(finished).toBe(false);
+      // The job is back in the queue, claimable at once, with its lease released.
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(row?.status).toBe("queued");
+      expect(row?.lease_owner).toBeNull();
+      expect(row?.lease_expires_at).toBeNull();
+      // And the abandonment is loud: a record naming the job.
+      const abandoned = harness
+        .logRecords()
+        .find((record) => record.message === "jobs worker abandoned drain");
+      expect(abandoned).toBeDefined();
+      expect(String(abandoned?.annotations.jobIds ?? "")).toContain(jobId);
+      await Effect.runPromise(Fiber.await(worker));
+      // The late handler completion must not touch the requeued row.
+      await waitFor(
+        () => finished,
+        () => undefined,
+        5_000,
+      );
+      const after = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(after?.status).toBe("queued");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  /** A handler that signals when it started and waits to be released, then returns `outcome`. */
+  const gatedHandler = (
+    harness: SchedulerHarness,
+    outcome: () => Effect.Effect<void, JobFailure>,
+  ): { started: Promise<void>; release: () => void } => {
+    let release: () => void = () => undefined;
+    let markStarted: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    void run(
+      harness.scheduler.register({
+        name: "test.ping",
+        payloadSchema: pingPayload,
+        handle: () =>
+          Effect.promise(async () => {
+            markStarted();
+            await gate;
+          }).pipe(Effect.zipRight(Effect.suspend(outcome))),
+      }),
+    );
+    return { started, release };
+  };
+
+  const settle = (millis: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, millis));
+
+  test("a permanent failure after a lost lease writes no dead letter for the row another worker runs", async () => {
+    const harness = await make();
+    try {
+      const gate = gatedHandler(harness, () =>
+        Effect.fail({ reason: "bad-input", classification: "permanent" }),
+      );
+      const worker = await harness.startWorker({ pollMillis: 10 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "doomed-late" }));
+      await gate.started;
+      await harness.reclaim(jobId, "worker-b", 60_000);
+      gate.release();
+      await settle(300);
+      expect(await harness.deadLetters()).toEqual([]);
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(row?.status).toBe("running");
+      expect(row?.lease_owner).toBe("worker-b");
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("a cron job whose lease was lost is not rescheduled over the other worker's run", async () => {
+    const harness = await make();
+    try {
+      const gate = gatedHandler(harness, () => Effect.void);
+      const worker = await harness.startWorker({ pollMillis: 10 });
+      await run(
+        harness.scheduler.recur(
+          testJob,
+          { message: "tick" },
+          { cron: "*/5 * * * *", scheduleKey: "tick-fence" },
+        ),
+      );
+      harness.clock.value = new Date(harness.clock.value.getTime() + 5 * 60_001);
+      await gate.started;
+      await harness.reclaim("tick-fence", "worker-b", 60_000);
+      gate.release();
+      await settle(300);
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === "tick-fence");
+      expect(row?.status).toBe("running");
+      expect(row?.lease_owner).toBe("worker-b");
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("an abandoned drain never requeues a row another worker reclaimed meanwhile", async () => {
+    const harness = await make();
+    try {
+      const gate = gatedHandler(harness, () => Effect.void);
+      const worker = await harness.startWorker({ pollMillis: 10, drainTimeoutMillis: 200 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "reclaimed" }));
+      await gate.started;
+      await harness.reclaim(jobId, "worker-b", 60_000);
+      await harness.stopWorker();
+      const abandoned = harness
+        .logRecords()
+        .find((record) => record.message === "jobs worker abandoned drain");
+      expect(abandoned).toBeDefined();
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(row?.status).toBe("running");
+      expect(row?.lease_owner).toBe("worker-b");
+      gate.release();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("the coordinator's cut alone (no drain budget) returns in-flight jobs to the queue", async () => {
+    const harness = await make({ finalizerTimeoutMillis: 400 });
+    try {
+      let finished = false;
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: () =>
+            Effect.sleep("3 seconds").pipe(
+              Effect.zipRight(
+                Effect.sync(() => {
+                  finished = true;
+                }),
+              ),
+            ),
+        }),
+      );
+      const worker = await harness.startWorker({ pollMillis: 10 });
+      const jobId = await run(harness.scheduler.schedule(testJob, { message: "cut" }));
+      await settle(150);
+      const triggeredAt = Date.now();
+      await harness.stopWorker();
+      expect(Date.now() - triggeredAt).toBeLessThan(2_000);
+      expect(finished).toBe(false);
+      const row = (await harness.queueRows()).find((candidate) => candidate.id === jobId);
+      expect(row?.status).toBe("queued");
+      expect(row?.lease_owner).toBeNull();
+      const abandoned = harness
+        .logRecords()
+        .find((record) => record.message === "jobs worker abandoned drain");
+      expect(String(abandoned?.annotations.jobIds ?? "")).toContain(jobId);
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("the claim never takes more rows than free slots: running rows stay within the bound", async () => {
+    const harness = await make();
+    try {
+      const executed = new Set<string>();
+      await run(
+        harness.scheduler.register({
+          name: "test.ping",
+          payloadSchema: pingPayload,
+          handle: (payload) =>
+            Effect.sleep("40 millis").pipe(
+              Effect.zipRight(
+                Effect.sync(() => {
+                  executed.add(payload.message);
+                }),
+              ),
+            ),
+        }),
+      );
+      for (let index = 0; index < 30; index++) {
+        await run(harness.scheduler.schedule(testJob, { message: `claim-${index}` }));
+      }
+      const worker = await harness.startWorker({ pollMillis: 5, batchSize: 10, concurrency: 2 });
+      let peakRunning = 0;
+      const deadline = Date.now() + 15_000;
+      while (executed.size < 30 && Date.now() < deadline) {
+        const running = (await harness.queueRows()).filter((row) => row.status === "running");
+        peakRunning = Math.max(peakRunning, running.length);
+        await settle(5);
+      }
+      expect(executed.size).toBe(30);
+      expect(peakRunning).toBeLessThanOrEqual(2);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("a concurrency or batch size of zero is floored to one, never a silent stall", async () => {
+    const harness = await make();
+    try {
+      const calls: Array<string> = [];
+      await run(harness.scheduler.register(recorderJob((payload) => calls.push(payload.message))));
+      const worker = await harness.startWorker({ pollMillis: 10, batchSize: 0, concurrency: 0 });
+      await run(harness.scheduler.schedule(testJob, { message: "floored" }));
+      await waitFor(
+        () => calls.length > 0,
+        () => undefined,
+      );
+      expect(calls).toEqual(["floored"]);
+      await harness.stopWorker();
+      await Effect.runPromise(Fiber.await(worker));
     } finally {
       await harness.close();
     }

@@ -37,7 +37,7 @@ Calling `BunRuntime.runMain` yourself instead of `launch`? Then nothing routes s
 | Export | What it is |
 | --- | --- |
 | `Readiness` / `Readiness.layer` | Ready flag + named checks; `checkAll` is ready only when the flag is set and every registered check passes; check defects report `ok: false`, never crash. Starts **not** ready. |
-| `Shutdown` / `Shutdown.layer(options?)` | Coordinator: `onShutdown(name, finalizer)`, idempotent `trigger(reason)`, `awaitShutdown`. Finalizers run in reverse registration order, each bounded by a timeout (default 5s); a slow/failing finalizer is logged and skipped. Triggering flips `Readiness` unready first. |
+| `Shutdown` / `Shutdown.layer(options?)` | Coordinator: `onShutdown(name, finalizer)`, idempotent `trigger(reason)`, `awaitShutdown`. Finalizers run in reverse registration order, each bounded by a timeout (default 5s); a finalizer that exceeds it is cut and logged at error level by name with its budget, a failing one is logged at warning level, and the rest still run. Triggering flips `Readiness` unready first. |
 | `launch(program, { layers, gracePeriod? })` | Bun entrypoint (`BunRuntime.runMain` with `disablePrettyLogger`); `ConfigLoadError` prints every issue and exits 1; a hard deadline (default 30s) prevents hung teardown from blocking exit. |
 | `runToCompletion(program, layers)` | Testable variant returning `{ _tag: "Success" \| "ConfigInvalid" \| "Failed", ... }` instead of exiting the process. |
 

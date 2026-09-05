@@ -1,4 +1,4 @@
-import { Context, Deferred, Duration, Effect, Layer, Ref } from "effect";
+import { Context, Deferred, Duration, Effect, Layer, Option, Ref } from "effect";
 import { Readiness } from "./Readiness.js";
 
 interface RegisteredFinalizer {
@@ -64,12 +64,24 @@ const make = (
         // interrupting it, which must work even when the drain was started
         // from an uninterruptible region (an `onInterrupt` handler).
         Effect.interruptible,
-        Effect.timeout(finalizerTimeout),
+        Effect.timeoutOption(finalizerTimeout),
+        // An overrun is the finalizer's own failure to fit the budget, and
+        // it usually means work was cut mid-flight: an error naming it, not
+        // a warning that reads like the coordinator shrugging.
+        Effect.flatMap((completed) =>
+          Option.isNone(completed)
+            ? Effect.logError(
+                `shutdown finalizer "${registered.name}" exceeded its ${Duration.toMillis(finalizerTimeout)} ms budget and was cut`,
+              ).pipe(
+                Effect.annotateLogs({
+                  finalizer: registered.name,
+                  finalizerTimeoutMillis: Duration.toMillis(finalizerTimeout),
+                }),
+              )
+            : Effect.void,
+        ),
         Effect.catchAllCause((cause) =>
-          Effect.logWarning(
-            `shutdown finalizer "${registered.name}" failed or timed out; skipping`,
-            cause,
-          ),
+          Effect.logWarning(`shutdown finalizer "${registered.name}" failed; skipping`, cause),
         ),
       );
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Redacted } from "effect";
+import { Cause, Effect, Exit, Option, Redacted } from "effect";
 import {
   makeS3Storage,
   ObjectNotFound,
@@ -65,6 +65,249 @@ describe("S3 storage driver (against a loopback stub)", () => {
     }
     const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
     expect(total).toBe(payload.byteLength);
+  });
+
+  test("a download slower than the timeout still delivers every byte (the timeout bounds the headers, not the body)", async () => {
+    await make();
+    const storage = makeS3Storage({
+      bucket: "stub-bucket",
+      region: "us-east-1",
+      accessKeyId: "test-access-key",
+      secretAccessKey: Redacted.make("test-secret-key"),
+      endpoint: stub.url,
+      // Headers arrive at once; the eight-chunk body takes ~1 s at 120 ms per chunk.
+      timeoutMillis: 300,
+    });
+    const key = await Effect.runPromise(objectKey("slow/export.bin"));
+    const payload = new Uint8Array(8 * 1_024);
+    for (let index = 0; index < payload.length; index++) payload[index] = index % 251;
+    await Effect.runPromise(
+      storage.put({ key, body: payload, contentType: "application/octet-stream" }),
+    );
+    const got = await Effect.runPromise(storage.get(key));
+    const reader = got.body.getReader();
+    let received = 0;
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      received += next.value?.byteLength ?? 0;
+    }
+    expect(received).toBe(payload.byteLength);
+  });
+
+  test("a body that stops arriving fails the stream after the idle timeout instead of hanging", async () => {
+    await make();
+    const storage = makeS3Storage({
+      bucket: "stub-bucket",
+      region: "us-east-1",
+      accessKeyId: "test-access-key",
+      secretAccessKey: Redacted.make("test-secret-key"),
+      endpoint: stub.url,
+      timeoutMillis: 5_000,
+      bodyIdleTimeoutMillis: 200,
+    });
+    const key = await Effect.runPromise(objectKey("stall/export.bin"));
+    await Effect.runPromise(
+      storage.put({ key, body: new Uint8Array(4_096), contentType: "application/octet-stream" }),
+    );
+    const got = await Effect.runPromise(storage.get(key));
+    const reader = got.body.getReader();
+    const started = Date.now();
+    let failure: unknown;
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+      }
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure).toBeDefined();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  const s3WithFetch = (
+    fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+    partSize: number,
+  ): Storage =>
+    makeS3Storage({
+      bucket: "b",
+      region: "us-east-1",
+      accessKeyId: "k",
+      secretAccessKey: Redacted.make("s"),
+      endpoint: "http://s3.local",
+      partSize,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+  test("a streamed put sends each part as it fills instead of buffering the whole blob first", async () => {
+    const partSize = 4;
+    const totalChunks = 10;
+    let chunksRead = 0;
+    let chunksReadBeforeFirstRequest = -1;
+    const chunksReadAtEachPart: Array<number> = [];
+    const requests: Array<string> = [];
+    const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      if (chunksReadBeforeFirstRequest < 0) chunksReadBeforeFirstRequest = chunksRead;
+      requests.push(`${init?.method ?? "GET"} ${url.search}`);
+      if (url.searchParams.has("uploads")) {
+        return new Response(
+          "<InitiateMultipartUploadResult><UploadId>u1</UploadId></InitiateMultipartUploadResult>",
+          { status: 200 },
+        );
+      }
+      if (url.searchParams.has("partNumber")) chunksReadAtEachPart.push(chunksRead);
+      return new Response("", { status: 200, headers: { etag: '"e"' } });
+    };
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (chunksRead >= totalChunks) {
+          controller.close();
+          return;
+        }
+        chunksRead += 1;
+        controller.enqueue(new Uint8Array(partSize).fill(chunksRead));
+      },
+    });
+    const key = await Effect.runPromise(objectKey("files/streamed.bin"));
+    const stored = await Effect.runPromise(
+      s3WithFetch(fetchImpl, partSize).put({
+        key,
+        body,
+        contentType: "application/octet-stream",
+      }),
+    );
+    expect(stored.size).toBe(partSize * totalChunks);
+    // Multipart began after the first full part, not after the whole stream.
+    expect(chunksReadBeforeFirstRequest).toBeLessThanOrEqual(2);
+    // Every part left as soon as it filled: part N went out with at most N+1 chunks read.
+    for (const [index, readAt] of chunksReadAtEachPart.entries()) {
+      expect(readAt).toBeLessThanOrEqual(index + 2);
+    }
+    expect(requests.filter((line) => line.includes("partNumber="))).toHaveLength(totalChunks);
+    expect(requests[requests.length - 1]).toBe("POST ?uploadId=u1");
+  });
+
+  test("a failed part upload aborts the multipart upload so no orphaned parts remain", async () => {
+    const requests: Array<string> = [];
+    const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      requests.push(`${init?.method ?? "GET"} ${url.search}`);
+      if (url.searchParams.has("uploads")) {
+        return new Response(
+          "<InitiateMultipartUploadResult><UploadId>u2</UploadId></InitiateMultipartUploadResult>",
+          { status: 200 },
+        );
+      }
+      if (url.searchParams.get("partNumber") === "2") return new Response("", { status: 500 });
+      return new Response("", { status: 200, headers: { etag: '"e"' } });
+    };
+    const key = await Effect.runPromise(objectKey("files/aborted.bin"));
+    const error = await Effect.runPromise(
+      Effect.flip(
+        s3WithFetch(fetchImpl, 4).put({
+          key,
+          body: streamOf(new Uint8Array(12)),
+          contentType: "application/octet-stream",
+        }),
+      ),
+    );
+    expect(error._tag).toBe("StorageUnavailable");
+    expect(requests).toContain("DELETE ?uploadId=u2");
+    expect(requests.indexOf("DELETE ?uploadId=u2")).toBe(requests.length - 1);
+  });
+
+  test("a stalled XML reply body fails within the request deadline instead of hanging", async () => {
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      if (url.searchParams.get("list-type") === "2") {
+        // Headers arrive; the body never does.
+        return new Response(
+          new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }),
+          {
+            status: 200,
+            headers: { "content-type": "application/xml" },
+          },
+        );
+      }
+      return new Response("", { status: 200 });
+    };
+    const storage = makeS3Storage({
+      bucket: "b",
+      region: "us-east-1",
+      accessKeyId: "k",
+      secretAccessKey: Redacted.make("s"),
+      endpoint: "http://s3.local",
+      timeoutMillis: 300,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const started = Date.now();
+    const error = await Effect.runPromise(Effect.flip(storage.list("")));
+    expect(error._tag).toBe("StorageUnavailable");
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test("cancelling a guarded download cancels the upstream S3 body", async () => {
+    let upstreamCancelled = false;
+    const fetchImpl = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(new Uint8Array(1_024));
+          },
+          cancel() {
+            upstreamCancelled = true;
+          },
+        }),
+        { status: 200, headers: { "content-length": "1048576" } },
+      );
+    const storage = makeS3Storage({
+      bucket: "b",
+      region: "us-east-1",
+      accessKeyId: "k",
+      secretAccessKey: Redacted.make("s"),
+      endpoint: "http://s3.local",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const key = await Effect.runPromise(objectKey("files/cancelled.bin"));
+    const got = await Effect.runPromise(storage.get(key));
+    const reader = got.body.getReader();
+    await reader.read();
+    await reader.cancel("client went away");
+    expect(upstreamCancelled).toBe(true);
+  });
+
+  test("an unexpected throw inside a streamed put surfaces as a typed StorageUnavailable, never a defect", async () => {
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      if (url.searchParams.has("uploads")) {
+        return new Response(
+          "<InitiateMultipartUploadResult><UploadId>u3</UploadId></InitiateMultipartUploadResult>",
+          { status: 200 },
+        );
+      }
+      if (url.searchParams.has("partNumber")) throw new Error("socket hang up");
+      return new Response("", { status: 200 });
+    };
+    const key = await Effect.runPromise(objectKey("files/thrown.bin"));
+    const exit = await Effect.runPromiseExit(
+      s3WithFetch(fetchImpl, 4).put({
+        key,
+        body: streamOf(new Uint8Array(12)),
+        contentType: "application/octet-stream",
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const failure = Cause.failureOption(exit.cause);
+      expect(Option.isSome(failure)).toBe(true);
+      if (Option.isSome(failure)) {
+        expect(failure.value._tag).toBe("StorageUnavailable");
+        if (failure.value._tag === "StorageUnavailable")
+          expect(failure.value.reason).toBe("s3-stream");
+      }
+    }
   });
 
   test("maps a 403 from the provider to a permanent rejection", async () => {
