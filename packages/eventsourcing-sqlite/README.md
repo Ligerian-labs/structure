@@ -27,7 +27,7 @@ On an existing `SqlClient`: `storesLayer(options)` merges every adapter; run `mi
 
 ## Partition filter
 
-`readAll({ partition })` filters on `json_extract(metadata, '$.partition')`, the exact expression the index in `migrate` covers, so the planner uses it (`EXPLAIN QUERY PLAN` shows the covering index for a single value). The envelope stays the single source of truth; there is no stored column, because SQLite cannot add a stored generated column to an existing table and has no idempotent add-column form. Events without a partition never match. See [ADR-0018](../../docs/decisions/0018-partition-on-the-event-envelope.md).
+`readAll({ partition })` filters on `json_extract(metadata, '$.partition')`, the exact expression the index in `migrate` covers, so the planner uses it (`EXPLAIN QUERY PLAN` shows the index for a single value). The envelope stays the single source of truth; there is no stored column, because SQLite cannot add a stored generated column to an existing table and has no idempotent add-column form. Events without a partition never match. See [ADR-0018](../../docs/decisions/0018-partition-on-the-event-envelope.md).
 
 ## Notes
 
