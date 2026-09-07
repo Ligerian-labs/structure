@@ -11,6 +11,8 @@ export {
   type AppendResult,
   EventStore,
   type EventStoreService,
+  type ReadAllOptions,
+  readAllPartitions,
   type StoredEvent,
   type StoredEventMetadata,
 } from "./EventStore.js";

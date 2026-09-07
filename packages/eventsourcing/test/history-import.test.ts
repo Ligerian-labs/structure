@@ -64,7 +64,78 @@ const batch = (events: ReadonlyArray<StoredEvent>, checksum: string) => ({
   complete: true,
 });
 
+/**
+ * SHA-256 of `history` computed on the envelope BEFORE partition, origin
+ * and extensions existed: a fixture without them must checksum the same
+ * after the fields were added.
+ */
+const historyChecksumBeforePartition =
+  "01cc422befc90f49633d9a87f28847fb9095ddfea2da4047ea3544180f839a5e";
+
+const partitionedHistory: ReadonlyArray<StoredEvent> = [
+  {
+    ...importedEvent(1n, "Counter-a", 1, "event-p1"),
+    metadata: {
+      ...importedEvent(1n, "Counter-a", 1, "event-p1").metadata,
+      partition: "agency-42",
+      origin: { node: "hub", position: "9007199254740993" },
+      extensions: { delegatedBy: "user-7", nested: { flag: true } },
+    },
+  },
+  importedEvent(2n, "Order-b", 1, "event-p2", "OrderPlaced"),
+];
+
 describe("InMemoryHistoryImporter", () => {
+  test("a history without partition, origin, or extensions checksums exactly as before", async () => {
+    expect(await Effect.runPromise(HistoryImport.checksum(history))).toBe(
+      historyChecksumBeforePartition,
+    );
+  });
+
+  test("round-trips partition, origin, and extensions at equal checksum", async () => {
+    const program = Effect.gen(function* () {
+      const importer = yield* HistoryImporter;
+      const store = yield* EventStore;
+      const checksum = yield* HistoryImport.checksum(partitionedHistory);
+      yield* importer.importBatch(batch(partitionedHistory, checksum), historyRegistry);
+      const stored = Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()));
+      expect(stored).toEqual(partitionedHistory);
+      expect(stored[0]?.metadata.partition).toBe("agency-42");
+      expect(stored[0]?.metadata.origin).toEqual({ node: "hub", position: "9007199254740993" });
+      expect(stored[0]?.metadata.extensions).toEqual({
+        delegatedBy: "user-7",
+        nested: { flag: true },
+      });
+      expect(yield* HistoryImport.checksum(stored)).toBe(checksum);
+      const filtered = Chunk.toReadonlyArray(
+        yield* Stream.runCollect(store.readAll({ partition: "agency-42" })),
+      );
+      expect(filtered.map((event) => event.position)).toEqual([1n]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryAll)));
+  });
+
+  test("rejects an envelope whose partition is not a string as invalid metadata", async () => {
+    const program = Effect.gen(function* () {
+      const importer = yield* HistoryImporter;
+      const store = yield* EventStore;
+      const first = importedEvent(1n, "Counter-a", 1, "event-bad");
+      const events: ReadonlyArray<StoredEvent> = [
+        { ...first, metadata: { ...first.metadata, partition: 42 as unknown as string } },
+      ];
+      const checksum = yield* HistoryImport.checksum(events);
+      const result = yield* Effect.either(
+        importer.importBatch(batch(events, checksum), historyRegistry),
+      );
+      expect(Either.isLeft(result)).toBe(true);
+      if (Either.isLeft(result) && result.left._tag === "HistoryImportError") {
+        expect(result.left.reason).toBe("invalid-metadata");
+      }
+      expect(Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()))).toEqual([]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryAll)));
+  });
+
   test("preserves cross-context order, stream versions, and source metadata", async () => {
     const program = Effect.gen(function* () {
       const importer = yield* HistoryImporter;

@@ -1,7 +1,12 @@
 import { ConcurrencyConflict } from "@structure-ai/domain";
 import { Context, Effect, Either, Layer, Option, Ref, Stream, SynchronizedRef } from "effect";
 import { CheckpointStore } from "./CheckpointStore.js";
-import { type AppendResult, EventStore, type StoredEvent } from "./EventStore.js";
+import {
+  type AppendResult,
+  EventStore,
+  readAllPartitions,
+  type StoredEvent,
+} from "./EventStore.js";
 import {
   type HistoryImportBatch,
   HistoryImporter,
@@ -123,7 +128,14 @@ export const InMemoryEventStore: Layer.Layer<EventStore | HistoryImporter> = Lay
         Stream.unwrap(
           Effect.map(Ref.get(ref), (state) => {
             const fromPosition = options?.fromPosition ?? 1n;
-            let events = state.all.filter((event) => event.position >= fromPosition);
+            const partitions = readAllPartitions(options?.partition);
+            let events = state.all.filter(
+              (event) =>
+                event.position >= fromPosition &&
+                (partitions === undefined ||
+                  (event.metadata.partition !== undefined &&
+                    partitions.includes(event.metadata.partition))),
+            );
             if (options?.batchSize !== undefined) {
               events = events.slice(0, options.batchSize);
             }
