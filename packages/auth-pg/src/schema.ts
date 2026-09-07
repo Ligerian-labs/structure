@@ -247,6 +247,15 @@ export const schemaStatements = (options: AdapterOptions = {}): ReadonlyArray<st
   ];
 };
 
+/** Additive passkey display metadata upgrade for an existing auth schema. */
+export const passkeyMetadataStatements = (options: AdapterOptions = {}): ReadonlyArray<string> => {
+  const passkeys = tableNames(options).passkeys;
+  return [
+    `ALTER TABLE ${ident(passkeys)} ADD COLUMN IF NOT EXISTS label TEXT`,
+    `ALTER TABLE ${ident(passkeys)} ADD COLUMN IF NOT EXISTS aaguid TEXT`,
+  ];
+};
+
 /**
  * Additive columns since the base schema, as idempotent DDL: the second
  * step of the auth schema (v2). Kept apart from `schemaStatements` so the
@@ -330,11 +339,22 @@ export const upgradeMigration = (id: number, options: AdapterOptions = {}): Auth
   );
 
 /**
+ * Forward-only upgrade that adds nullable passkey display metadata. Place it
+ * after `upgradeMigration` in the application's migration set.
+ */
+export const passkeyMetadataMigration = (id: number, options: AdapterOptions = {}): AuthMigration =>
+  migrationOf(
+    id,
+    `add_${options.tablePrefix ?? DEFAULT_PREFIX}passkey_metadata`,
+    passkeyMetadataStatements(options),
+  );
+
+/**
  * Creates the complete auth schema in one transaction over a Bun `SQL`
  * handle — the all-in-one path for apps without a `@structure-ai/migrations`
  * set (and for tests). Same DDL as `migration` followed by
- * `upgradeMigration`. Run from the designated migrator; the stores never
- * migrate implicitly.
+ * `upgradeMigration` and `passkeyMetadataMigration`. Run from the designated
+ * migrator; the stores never migrate implicitly.
  */
 export const migrate = (
   sql: SQL,
@@ -343,7 +363,12 @@ export const migrate = (
   Effect.tryPromise({
     try: async () => {
       await sql.begin(async (tx) => {
-        for (const statement of [...schemaStatements(options), ...upgradeStatements(options)]) {
+        const statements = [
+          ...schemaStatements(options),
+          ...upgradeStatements(options),
+          ...passkeyMetadataStatements(options),
+        ];
+        for (const statement of statements) {
           await tx.unsafe(statement);
         }
       });

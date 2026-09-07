@@ -30,6 +30,7 @@ export interface VerifiedPasskeyRegistration {
   readonly algorithm: PasskeyAlgorithm;
   readonly counter: number;
   readonly transports: ReadonlyArray<string>;
+  readonly aaguid?: string;
 }
 
 export interface VerifiedPasskeyAuthentication {
@@ -83,6 +84,7 @@ interface ParsedAuthenticatorData {
   readonly counter: number;
   readonly credentialId?: Uint8Array;
   readonly credentialPublicKey?: Uint8Array;
+  readonly aaguid?: string;
 }
 
 interface ParsedCoseKey {
@@ -91,6 +93,12 @@ interface ParsedCoseKey {
 }
 
 const passkeyFailure = (reason: string): UnsupportedPasskey => new UnsupportedPasskey({ reason });
+
+const formatAaguid = (bytes: Uint8Array): string | undefined => {
+  if (bytes.every((byte) => byte === 0)) return undefined;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
 
 const safeBytes = (value: string, field: string): Effect.Effect<Uint8Array, UnsupportedPasskey> =>
   !/^[A-Za-z0-9_-]*$/u.test(value) || value.length > 1_398_102
@@ -216,10 +224,12 @@ const parseAuthenticatorData = (
       if (decodedKey.offset !== bytes.length) {
         throw new Error("attested credential data has trailing bytes");
       }
+      const aaguid = formatAaguid(bytes.slice(37, 53));
       return {
         bytes,
         flags,
         counter,
+        ...(aaguid === undefined ? {} : { aaguid }),
         credentialId: bytes.slice(credentialStart, credentialEnd),
         credentialPublicKey: bytes.slice(credentialEnd, decodedKey.offset),
       };
@@ -469,6 +479,7 @@ export const verifyPasskeyRegistration = (
       algorithm: cose.algorithm,
       counter: authData.counter,
       transports: input.response.transports ?? [],
+      ...(authData.aaguid === undefined ? {} : { aaguid: authData.aaguid }),
     };
   });
 

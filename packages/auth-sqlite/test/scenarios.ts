@@ -257,15 +257,37 @@ export const registerStoreScenarios = (makeHarness: MakeHarness): void => {
         algorithm: "ES256",
         counter: 1,
         transports: ["internal", "hybrid"],
+        label: "Work laptop",
+        aaguid: "00112233-4455-6677-8899-aabbccddeeff",
         createdAt: now,
       };
       await run(store.addPasskey(passkey));
+      expect(
+        await run(store.renamePasskey("tenant-b", "passkey-user", "credential-id", "Other")),
+      ).toBe(false);
+      expect(
+        await run(store.renamePasskey("tenant-a", "passkey-user", "credential-id", "Security key")),
+      ).toBe(true);
       await run(store.updatePasskeyCounter("tenant-a", "credential-id", 1, 2));
-      expect((await run(store.findPasskey("tenant-a", "credential-id")))?.counter).toBe(2);
+      expect(await run(store.findPasskey("tenant-a", "credential-id"))).toEqual(
+        expect.objectContaining({
+          counter: 2,
+          label: "Security key",
+          aaguid: "00112233-4455-6677-8899-aabbccddeeff",
+        }),
+      );
       expect(
         await fail(store.updatePasskeyCounter("tenant-a", "credential-id", 1, 3)),
       ).toBeInstanceOf(IdentityConflict);
       expect(await run(store.listPasskeys("tenant-a", "passkey-user"))).toHaveLength(1);
+      expect(await run(store.removePasskey("tenant-a", "other-user", "credential-id"))).toBe(false);
+      expect(await run(store.removePasskey("tenant-a", "passkey-user", "credential-id"))).toBe(
+        true,
+      );
+      expect(await run(store.removePasskey("tenant-a", "passkey-user", "credential-id"))).toBe(
+        false,
+      );
+      expect(await run(store.findPasskey("tenant-a", "credential-id"))).toBeUndefined();
     }));
 };
 

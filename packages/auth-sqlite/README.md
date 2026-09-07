@@ -34,7 +34,7 @@ const store = makeAuthStore(sql, options);
 - User/password and user/OAuth creation use database transactions and tenant-scoped uniqueness.
 - One-time tokens, OAuth states, and passkey challenges use atomic `DELETE ... RETURNING` consumption.
 - Password replacement and all-session revocation commit in one transaction.
-- Passkey counter updates compare the expected stored value and fail with `IdentityConflict` on races.
+- Passkey labels and AAGUIDs survive round trips. Rename and removal match tenant, user, and credential id; counter updates compare the expected stored value and fail with `IdentityConflict` on races.
 - Sessions and tokens contain only hashes supplied by `@structure-ai/auth`; raw bearer values never enter these tables.
 - Foreign keys cascade user deletion into credentials and sessions.
 
@@ -42,6 +42,6 @@ The adapter stores UTC timestamps as ISO text so lexical expiry comparisons rema
 
 ## Operations
 
-`migrate` creates the schema idempotently in one transaction and carries the additive upgrades (`oauth2_tokens.family_id` and `rotated_at` for refresh-token families, `totp.last_used_step` for one-time TOTP codes, `sessions.elevated_at`) as `ALTER TABLE ... ADD COLUMN` steps that are no-ops once present, so a database created by an older release is upgraded in place. Invoke it from one deploy job or designated migrator, not every serving instance. Future schema changes remain forward-only under the application's migration process.
+`migrate` creates the schema idempotently in one transaction and carries the additive upgrades (`oauth2_tokens.family_id` and `rotated_at` for refresh-token families, `totp.last_used_step` for one-time TOTP codes, `sessions.elevated_at`, and the passkey `label`/`aaguid` metadata columns) as `ALTER TABLE ... ADD COLUMN` steps that are no-ops once present, so a database created by an older release is upgraded in place. Invoke it from one deploy job or designated migrator, not every serving instance. Future schema changes remain forward-only under the application's migration process.
 
 Applications must schedule tenant-aware deletion of expired rows from tokens, sessions, OAuth states, passkey challenges, and OAuth server tokens (revoked pairs left by refused concurrent refreshes included; they expire with the refresh-token TTL). Close the Bun `SQL` connection during bounded application shutdown.

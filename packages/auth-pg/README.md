@@ -32,7 +32,7 @@ const store = makeAuthStore(sql, options);
 
 ## Schema migration
 
-`makeAuthStore`, `makeApiKeyStore`, and `makeOAuthServerStore` assume the schema exists and never migrate implicitly. Two entry points create it, generated from the same DDL statements so they cannot drift; pick one per deployment and run it only in the designated migration process (see `docs/operations.md`, "Migrations policy").
+`makeAuthStore`, `makeApiKeyStore`, and `makeOAuthServerStore` assume the schema exists and never migrate implicitly. Pick one migration workflow per deployment and run it only in the designated migration process (see `docs/operations.md`, "Migrations policy").
 
 The `Migration` value carries a `checksum` computed like `defineMigration` with declared `sql` (sha-256 over id, name, and the DDL statements), so the migrator's drift detection covers the auth schema itself.
 
@@ -42,6 +42,7 @@ The `Migration` value carries a `checksum` computed like `defineMigration` with 
 import {
   migration as authMigration,
   upgradeMigration as authUpgradeMigration,
+  passkeyMetadataMigration,
 } from "@structure-ai/auth-pg";
 import { migrate as eventStoreMigrate } from "@structure-ai/eventsourcing-pg";
 import { defineMigration, makeSet, run } from "@structure-ai/migrations";
@@ -51,6 +52,7 @@ const migrations = makeSet([
   defineMigration(1, "create_event_store", eventStoreMigrate()),
   authMigration(2), // or authMigration(2, { tablePrefix: "application_auth_" })
   authUpgradeMigration(3), // the v2 columns, right after the base schema
+  passkeyMetadataMigration(3),
   ViewModel.migration(OrderSummary, 4),
 ]);
 
@@ -58,7 +60,7 @@ const migrations = makeSet([
 await Effect.runPromise(run(migrations).pipe(Effect.provide(PgClient.layer({ url }))));
 ```
 
-`migration(id, options?)` returns `{ id, name: "create_<prefix>schema", up }` where `up` is an `Effect<void, SqlError, SqlClient>`, the same shape as a `Migration` from `@structure-ai/migrations`. The package does not depend on `@structure-ai/migrations`; the value is assignable structurally (a type-level test in `test/pg.test.ts` keeps it that way).
+`migration(id, options?)` is the frozen initial schema. `passkeyMetadataMigration(id, options?)` is the forward-only nullable `label` and `aaguid` upgrade. Existing applications add it under their next unused id and do not change the id of their applied `migration`. Both return an `Effect<void, SqlError, SqlClient>` in the same shape as a `Migration` from `@structure-ai/migrations`. The package does not depend on `@structure-ai/migrations`; a type-level test in `test/pg.test.ts` keeps the values structurally assignable.
 
 **Schema upgrades are their own migrations.** The base statements behind `migration` are frozen, so the checksum an install recorded for it never drifts. Additive columns since then live in `upgradeStatements` / `upgradeMigration(id, options?)` (named `upgrade_<prefix>schema_v2`: `oauth2_tokens.family_id` and `rotated_at` for refresh-token families, `totp.last_used_step` for one-time TOTP codes). Append it to the set right after the base migration; an existing install applies it as one more pending migration, a fresh install runs both in order.
 
@@ -71,6 +73,7 @@ await Effect.runPromise(migrate(sql)); // one transaction, idempotent
 ```
 
 Both entry points are idempotent (`CREATE ... IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`): a re-run is a no-op. `migrate` runs the base statements and the upgrade in one transaction. The `DATABASE_URL`-gated suite asserts that `migrate` and `migration` + `upgradeMigration` produce byte-identical column, constraint, and index definitions.
+Both workflows are idempotent (`CREATE ... IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`): a re-run is a no-op. The `DATABASE_URL`-gated suite asserts that `migrate` and the ordered migration pair produce byte-identical column, constraint, and index definitions.
 
 ## Exports
 
@@ -82,6 +85,9 @@ Both entry points are idempotent (`CREATE ... IF NOT EXISTS`, `ADD COLUMN IF NOT
 | `migration(id, options?)` | The base schema as a `@structure-ai/migrations`-compatible `AuthMigration` over `SqlClient` (frozen). |
 | `upgradeMigration(id, options?)`, `upgradeStatements(options?)` | The v2 columns as their own migration, appended after `migration`. |
 | `migrate(sql, options?)` | Base schema plus upgrade over a Bun `SQL` handle, one transaction. |
+| `migration(id, options?)` | The schema as a `@structure-ai/migrations`-compatible `AuthMigration` over `SqlClient`. |
+| `passkeyMetadataMigration(id, options?)` | Forward-only nullable passkey metadata upgrade over `SqlClient`. |
+| `migrate(sql, options?)` | Create and upgrade the schema over a Bun `SQL` handle, in one transaction. |
 | `tableNames(options?)` | Resolved table names for a prefix (tests drop them after a run). |
 | `AdapterOptions`, `TableNames`, `AuthMigration` | Types. |
 
@@ -93,6 +99,8 @@ Both entry points are idempotent (`CREATE ... IF NOT EXISTS`, `ADD COLUMN IF NOT
 - Passkey counter updates compare the expected stored value and fail with `IdentityConflict` on races.
 - Sessions and tokens contain only hashes supplied by `@structure-ai/auth`; raw bearer values never enter these tables. The second factor arrives sealed (`makeTotp` encrypts the secret and salts the recovery codes) and is stored as given.
 - TOTP time steps are claimed with a conditional `UPDATE ... RETURNING` (a step at or below the recorded one is refused); recovery codes are consumed by compare-and-delete on the stored list; `revokeFamily` revokes every live token of a family in one statement.
+- Passkey labels and AAGUIDs survive round trips. Rename and removal match tenant, user, and credential id.
+- Sessions and tokens contain only hashes supplied by `@structure-ai/auth`; raw bearer values never enter these tables.
 - Foreign keys cascade user deletion into credentials and sessions.
 
 PostgreSQL timestamps use `TIMESTAMPTZ`; passkey counters use `BIGINT` to hold the complete unsigned 32-bit WebAuthn counter range.
@@ -100,6 +108,7 @@ PostgreSQL timestamps use `TIMESTAMPTZ`; passkey counters use `BIGINT` to hold t
 ## Operations
 
 Run the schema migration from one deploy job or designated migrator, not every serving instance. Future schema changes are new forward-only migrations in the application's set; `migration(id)` stays the frozen initial schema and `upgradeMigration(id)` the frozen v2 step.
+Run schema migrations from one deploy job or designated migrator, not every serving instance. `passkeyMetadataMigration` adds nullable columns without rewriting credentials or changing the checksum of the initial auth migration. Future application-owned schema changes remain new forward-only migrations in the application's set.
 
 Applications own pool sizing, connection timeouts, TLS, least-privilege database credentials, backups, and tenant-aware cleanup of expired rows (revoked token pairs left by refused concurrent refreshes included; they expire with the refresh-token TTL). Close the Bun `SQL` pool during bounded application shutdown.
 

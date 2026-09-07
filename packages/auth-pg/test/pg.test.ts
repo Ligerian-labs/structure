@@ -11,6 +11,7 @@ import {
   makeOAuthServerStore,
   migrate,
   migration,
+  passkeyMetadataMigration,
   tableNames,
   upgradeMigration,
 } from "../src/index.js";
@@ -66,6 +67,10 @@ describe("migration definition", () => {
     expect(migration(1).checksum).toBe(
       migrationChecksum(1, "create_auth_schema", schemaStatements()),
     );
+    // Applied initial migrations are immutable. Add a new migration instead.
+    expect(migration(1).checksum).toBe(
+      "b34cc9b67c766b0a86e4721619ae1346d312b13be818916dd9af392b11d45291",
+    );
     expect(migration(1, { tablePrefix: "x_" }).checksum).not.toBe(migration(1).checksum);
     // The base schema's statements are frozen: the v2 columns live in their
     // own migration so a recorded base checksum never drifts.
@@ -74,6 +79,14 @@ describe("migration definition", () => {
     expect(upgradeMigration(2).name).toBe("upgrade_auth_schema_v2");
     expect(upgradeMigration(2).checksum).toBe(
       migrationChecksum(2, "upgrade_auth_schema_v2", upgradeStatements()),
+    );
+    const metadata = passkeyMetadataMigration(4, { tablePrefix: "x_" });
+    expect(metadata.name).toBe("add_x_passkey_metadata");
+    expect(metadata.checksum).toBe(
+      migrationChecksum(4, metadata.name, [
+        'ALTER TABLE "x_passkeys" ADD COLUMN IF NOT EXISTS label TEXT',
+        'ALTER TABLE "x_passkeys" ADD COLUMN IF NOT EXISTS aaguid TEXT',
+      ]),
     );
   });
 });
@@ -137,7 +150,11 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
     if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
     const options = { tablePrefix: uniquePrefix() };
     const bookkeeping = `${options.tablePrefix}migrations`;
-    const set = makeSet([migration(1, options), upgradeMigration(2, options)]);
+    const set = makeSet([
+      migration(1, options),
+      upgradeMigration(2, options),
+      passkeyMetadataMigration(3, options),
+    ]);
     const sql = new SQL(databaseUrl);
     const dropTables = Effect.gen(function* () {
       const client = yield* SqlClient.SqlClient;
@@ -152,12 +169,14 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
         expect(applied).toEqual([
           [1, `create_${options.tablePrefix}schema`],
           [2, `upgrade_${options.tablePrefix}schema_v2`],
+          [3, `add_${options.tablePrefix}passkey_metadata`],
         ]);
         const again = yield* run(set, { table: bookkeeping });
         expect(again).toHaveLength(0);
         // Re-running the DDL itself (outside the migrator's bookkeeping) is a no-op too.
         yield* migration(1, options).up;
         yield* upgradeMigration(2, options).up;
+        yield* passkeyMetadataMigration(3, options).up;
       }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })));
       await Effect.runPromise(program);
 
@@ -183,6 +202,80 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
     }
   });
 
+  test("adds nullable passkey metadata columns without losing existing credentials", async () => {
+    if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
+    const options = { tablePrefix: uniquePrefix() };
+    const tables = tableNames(options);
+    const sql = new SQL(databaseUrl);
+    try {
+      await sql`
+        CREATE TABLE ${sql(tables.users)} (
+          tenant_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          email TEXT,
+          email_verified BOOLEAN NOT NULL,
+          display_name TEXT,
+          created_at TIMESTAMPTZ NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (tenant_id, id),
+          UNIQUE (tenant_id, email)
+        )
+      `;
+      await sql`
+        CREATE TABLE ${sql(tables.passkeys)} (
+          tenant_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          credential_id TEXT NOT NULL,
+          public_key TEXT NOT NULL,
+          algorithm TEXT NOT NULL,
+          counter BIGINT NOT NULL,
+          transports TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (tenant_id, credential_id)
+        )
+      `;
+      await sql`
+        INSERT INTO ${sql(tables.users)}
+          (tenant_id, id, email, email_verified, created_at, updated_at)
+        VALUES ('tenant-a', 'user-1', 'ada@example.com', TRUE, NOW(), NOW())
+      `;
+      await sql`
+        INSERT INTO ${sql(tables.passkeys)}
+          (tenant_id, user_id, credential_id, public_key, algorithm, counter, transports, created_at)
+        VALUES ('tenant-a', 'user-1', 'credential-1', 'public-key', 'ES256', 0, '[]', NOW())
+      `;
+
+      await Effect.runPromise(
+        passkeyMetadataMigration(2, options).up.pipe(
+          Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })),
+        ),
+      );
+      await Effect.runPromise(
+        passkeyMetadataMigration(2, options).up.pipe(
+          Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })),
+        ),
+      );
+
+      expect(
+        await Effect.runPromise(
+          makeAuthStore(sql, options).findPasskey("tenant-a", "credential-1"),
+        ),
+      ).toEqual(expect.objectContaining({ credentialId: "credential-1" }));
+      const columns = await sql<{ readonly column_name: string }[]>`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = ${tables.passkeys}
+      `;
+      expect(columns.map((column) => column.column_name)).toContain("label");
+      expect(columns.map((column) => column.column_name)).toContain("aaguid");
+    } finally {
+      for (const table of Object.values(tables).reverse()) {
+        await sql`DROP TABLE IF EXISTS ${sql(table)} CASCADE`;
+      }
+      await sql.close();
+    }
+  });
+
   test("produces the same schema as the Bun SQL migrate", async () => {
     if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
     const bunOptions = { tablePrefix: uniquePrefix() };
@@ -191,10 +284,11 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
     try {
       await Effect.runPromise(migrate(sql, bunOptions));
       await Effect.runPromise(
-        migration(1, clientOptions).up.pipe(
-          Effect.andThen(upgradeMigration(2, clientOptions).up),
-          Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })),
-        ),
+        Effect.gen(function* () {
+          yield* migration(1, clientOptions).up;
+          yield* upgradeMigration(2, clientOptions).up;
+          yield* passkeyMetadataMigration(3, clientOptions).up;
+        }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) }))),
       );
       const viaBun = await snapshotSchema(sql, bunOptions.tablePrefix);
       const viaClient = await snapshotSchema(sql, clientOptions.tablePrefix);
