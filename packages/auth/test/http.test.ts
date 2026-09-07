@@ -102,6 +102,7 @@ describe("auth HTTP handler", () => {
 
     const signedOut = await http.handler(request("/auth/sign-out", {}, { cookie: cookieValue }));
     expect(signedOut.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(signedOut.headers.get("set-cookie")).toContain("Secure");
   });
 
   test("rejects cross-origin mutations and malformed passkey bodies safely", async () => {

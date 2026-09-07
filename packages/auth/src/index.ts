@@ -133,6 +133,7 @@ export {
   type AuthPrimitives,
   type AuthService,
   type AuthServiceError,
+  type BeginOAuthOptions,
   type EmailSender,
   type IdentityProvisionRequest,
   type MakeAuthOptions,
