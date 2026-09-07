@@ -21,3 +21,4 @@ Numbered, immutable once accepted; reversing a decision means a new ADR marking 
 | [0015](0015-nisshi-event-store.md) | Nisshi (Kafka-API) event store: single-partition total order, SQL sidecar for optimistic concurrency, no outbox — the topic is the publication |
 | [0016](0016-idempotency-scoped-per-actor-with-payload-identity.md) | Idempotency keys scoped per actor with payload identity |
 | [0017](0017-dotenv-as-a-package-above-config.md) | `.env` support is a package above `config`; environment wins over files unless overridden; no encryption |
+| [0018](0018-partition-on-the-event-envelope.md) | An optional partition on the event envelope: the store filters on it and enforces its immutability per stream; meaning and ownership stay with the application |
