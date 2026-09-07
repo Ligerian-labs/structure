@@ -22,6 +22,7 @@ interface ColumnRow {
 
 interface IndexRow {
   readonly indexname: string;
+  readonly indexdef: string;
 }
 
 interface PartitionRow {
@@ -54,7 +55,7 @@ const partitionIndex = (events: string) =>
   Effect.flatMap(
     SqlClient.SqlClient,
     (sql) => sql<IndexRow>`
-      SELECT indexname FROM pg_indexes
+      SELECT indexname, indexdef FROM pg_indexes
       WHERE tablename = ${events} AND indexname = ${`${events}_partition_position_idx`}
     `,
   );
@@ -116,7 +117,11 @@ describe.skipIf(databaseUrl === undefined)("pg schema migration steps (needs DAT
         expect(columns.length).toBe(1);
         expect(columns[0]?.is_generated).toBe("ALWAYS");
         expect(columns[0]?.generation_expression).toContain("'partition'");
-        expect((yield* partitionIndex(tables.events)).length).toBe(1);
+        const indexes = yield* partitionIndex(tables.events);
+        expect(indexes.length).toBe(1);
+        // partition must LEAD the index: an equality on the filter column
+        // then a range on position is what serves readAll({ partition })
+        expect(indexes[0]?.indexdef).toMatch(/\(partition, "?position"?\)/);
 
         yield* insertEvent(tables.events, "Counter-new", 1, "agency-42");
         yield* insertEvent(tables.events, "Counter-new", 2);
