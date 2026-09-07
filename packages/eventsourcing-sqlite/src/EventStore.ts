@@ -7,6 +7,7 @@ import {
   EventStore,
   type EventStoreService,
   type OutboxMessage,
+  readAllPartitions,
   type StoredEvent,
   type StoredEventMetadata,
 } from "@structure-ai/eventsourcing";
@@ -190,18 +191,28 @@ const make = (
       readAll: (options) => {
         const fromPosition = options?.fromPosition ?? 1n;
         const batchSize = options?.batchSize;
+        const partitions = readAllPartitions(options?.partition);
+        // Same expression as the index in `migrate`, so the planner uses
+        // it; `IN ()` matches nothing and NULL never matches, so
+        // unpartitioned events stay out.
+        const partitionFilter =
+          partitions === undefined
+            ? sql``
+            : partitions.length === 0
+              ? sql`AND 0`
+              : sql`AND json_extract(metadata, '$.partition') IN ${sql.in(partitions)}`;
         const query =
           batchSize === undefined
             ? sql<EventRow>`
                 ${selectEvents}
                 FROM ${sql(tables.events)}
-                WHERE position >= ${fromPosition}
+                WHERE position >= ${fromPosition} ${partitionFilter}
                 ORDER BY position ASC
               `
             : sql<EventRow>`
                 ${selectEvents}
                 FROM ${sql(tables.events)}
-                WHERE position >= ${fromPosition}
+                WHERE position >= ${fromPosition} ${partitionFilter}
                 ORDER BY position ASC
                 LIMIT ${batchSize}
               `;
