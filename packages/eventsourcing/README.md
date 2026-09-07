@@ -27,9 +27,9 @@ const program = Effect.gen(function* () {
 | Export | What it is |
 | --- | --- |
 | `EventRegistry.make(entries)` | Schema-based codec: `{ schema, schemaVersion, upcasters? }` per event; decode applies upcasters from the stored version up before validating. |
-| `EventStore` | `append(stream, expectedVersion, events)` failing `ConcurrencyConflict` (version 0 = stream must not exist); `read` per stream; `readAll` in global order for projections. |
-| `HistoryImporter` + `HistoryImport.checksum` | Imports a frozen history with source positions, stream versions, ids, timestamps, correlation/causation and actor intact. Batches are atomic, checksum-verified, resumable, and idempotent. |
-| `AggregateStore.make(aggregate, registry, opts?)` | `load` (fold history), `execute` (load → decide → append with expected version), `executeWithRetry` (reload+retry on conflict only, default 3); stamps `EventMetadata` including correlation, causation, and optional actor. Stream naming: `<AggregateName>-<id>` (aggregate names must not contain `-`). |
+| `EventStore` | `append(stream, expectedVersion, events)` failing `ConcurrencyConflict` (version 0 = stream must not exist); `read` per stream; `readAll` in global order for projections, optionally narrowed to one or several envelope partitions (`readAll({ partition })`: same positions, same order, same checkpoint guarantee; events without a partition never match, so an unpartitioned store filtered by partition yields nothing). |
+| `HistoryImporter` + `HistoryImport.checksum` | Imports a frozen history with source positions, stream versions, ids, timestamps, correlation/causation, actor, partition, origin and extensions intact. Batches are atomic, checksum-verified, resumable, and idempotent. |
+| `AggregateStore.make(aggregate, registry, opts?)` | `load` (fold history), `execute` (load → decide → append with expected version), `executeWithRetry` (reload+retry on conflict only, default 3); stamps `EventMetadata` including correlation, causation, optional actor, and the command's `partition` and `extensions` (never `origin`). Stream naming: `<AggregateName>-<id>` (aggregate names must not contain `-`). |
 | `SnapshotStore` | Optional; picked up from context when provided, written every `snapshotEvery` events. |
 | `Projection.make/catchup/run/rebuild` + `CheckpointStore` | Named projections, at-least-once, checkpoint per batch, unknown event types skipped and counted, `rebuild` replays with `live: false`. |
 | `Outbox` + `OutboxRelay.run/drain` | Pending → publish → mark; exponential backoff with jitter; after `maxAttempts` (default 5) entries dead-letter with the last error kept for diagnosis. |
@@ -37,6 +37,10 @@ const program = Effect.gen(function* () {
 | `InMemory*` layers, `InMemoryAll` | In-memory implementations of every port. |
 
 Exactly-once business effects come from expected-version appends plus inbox dedup — not from any transport guarantee.
+
+## Partitions
+
+`CommandMetadata.partition` places every event of the command on a named subset of the store (an agency, a tenant, a shard); the framework enforces one rule — a stream's partition never changes — and decides nothing about what the key means or who may write to it (see [ADR-0018](../../docs/decisions/0018-partition-on-the-event-envelope.md)). `readAll({ partition: "agency-42" })` (or a list) feeds a projection or an exporter with that subset only, in global order. Adapters that cannot honour the filter fail instead of ignoring it; `readAllPartitions` is the helper they normalise the option with.
 
 ## Importing frozen history
 

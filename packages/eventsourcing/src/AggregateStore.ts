@@ -9,11 +9,19 @@ import { SnapshotStore } from "./SnapshotStore.js";
  * resulting events to the workflow that caused them, `causationId` to the
  * direct trigger (usually the id of the message being handled), and `actor`
  * records the authenticated principal without granting authority.
+ *
+ * `partition` and `extensions` are stamped verbatim on every emitted
+ * event's `EventMetadata` (see that class for their meaning). A stream's
+ * partition never changes, so pass the same value for every command on
+ * one aggregate instance. `origin` is not a command concern: only an
+ * import path sets it.
  */
 export interface CommandMetadata {
   readonly correlationId?: string;
   readonly causationId?: string;
   readonly actor?: string;
+  readonly partition?: string;
+  readonly extensions?: Readonly<Record<string, unknown>>;
 }
 
 /** State and stream version after loading or executing. */
@@ -47,7 +55,8 @@ export interface AggregateStoreService<S, C, E, Err> {
    * writer surfaces as `ConcurrencyConflict` and nothing is written.
    * Each event is stamped with `EventMetadata` (fresh eventId, occurredAt
    * from the Effect clock, aggregate identity/version, and the caller's
-   * correlation/causation ids and optional actor).
+   * correlation/causation ids, optional actor, partition and extensions;
+   * never `origin`).
    */
   readonly execute: (
     id: string,
@@ -150,6 +159,10 @@ export const make = <S, C, E extends { readonly _tag: string }, Err>(
                     ? { causationId: metadata.causationId }
                     : {}),
                   ...(metadata?.actor !== undefined ? { actor: metadata.actor } : {}),
+                  ...(metadata?.partition !== undefined ? { partition: metadata.partition } : {}),
+                  ...(metadata?.extensions !== undefined
+                    ? { extensions: metadata.extensions }
+                    : {}),
                 }),
               ),
             };

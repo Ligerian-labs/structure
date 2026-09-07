@@ -10,6 +10,14 @@ const event = (version: number, type = "Incremented") => ({
   metadata: testMetadata(version),
 });
 
+const partitioned = (version: number, partition: string) => ({
+  ...event(version),
+  metadata: { ...testMetadata(version), partition },
+});
+
+const collect = <A>(stream: Stream.Stream<A>) =>
+  Effect.map(Stream.runCollect(stream), Chunk.toReadonlyArray);
+
 describe("InMemoryEventStore", () => {
   test("append/read roundtrip numbers versions from 1 and positions from 1", async () => {
     const program = Effect.gen(function* () {
@@ -87,6 +95,47 @@ describe("InMemoryEventStore", () => {
         yield* Stream.runCollect(store.readAll({ fromPosition: 2n, batchSize: 1 })),
       );
       expect(tail.map((entry) => entry.position)).toEqual([2n]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
+  });
+
+  test("readAll filters by envelope partition, keeping global order and paging", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* EventStore;
+      yield* store.append("Counter-a1", 0, [partitioned(1, "a")]);
+      yield* store.append("Counter-b1", 0, [partitioned(1, "b")]);
+      yield* store.append("Counter-a1", 1, [partitioned(2, "a")]);
+      yield* store.append("Counter-none", 0, [event(1)]);
+      yield* store.append("Counter-b1", 1, [partitioned(2, "b")]);
+
+      const onlyA = yield* collect(store.readAll({ partition: "a" }));
+      expect(onlyA.map((entry) => [entry.streamName, entry.position])).toEqual([
+        ["Counter-a1", 1n],
+        ["Counter-a1", 3n],
+      ]);
+      const both = yield* collect(store.readAll({ partition: ["a", "b"] }));
+      expect(both.map((entry) => entry.position)).toEqual([1n, 2n, 3n, 5n]);
+      const all = yield* collect(store.readAll());
+      expect(all.map((entry) => entry.position)).toEqual([1n, 2n, 3n, 4n, 5n]);
+      const unknown = yield* collect(store.readAll({ partition: "zzz" }));
+      expect(unknown).toEqual([]);
+      const none = yield* collect(store.readAll({ partition: [] }));
+      expect(none).toEqual([]);
+      // paging composes with the filter: positions stay the global ones
+      const page = yield* collect(
+        store.readAll({ partition: "b", fromPosition: 3n, batchSize: 1 }),
+      );
+      expect(page.map((entry) => entry.position)).toEqual([5n]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
+  });
+
+  test("readAll filtered by partition on an unpartitioned store yields nothing", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* EventStore;
+      yield* store.append("Counter-p", 0, [event(1), event(2)]);
+      expect(yield* collect(store.readAll({ partition: "a" }))).toEqual([]);
+      expect((yield* collect(store.readAll())).length).toBe(2);
     });
     await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
   });

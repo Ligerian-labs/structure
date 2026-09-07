@@ -30,6 +30,35 @@ export interface StoredEvent {
   readonly metadata: StoredEventMetadata;
 }
 
+/** Options of `EventStoreService.readAll`. */
+export interface ReadAllOptions {
+  /** Inclusive lower bound on the global position (default 1). */
+  readonly fromPosition?: bigint;
+  /** When set, the stream may end after this many events. */
+  readonly batchSize?: number;
+  /**
+   * Keep only events whose envelope `partition` is this value (or one of
+   * these values). Events without a partition never match, so an
+   * unpartitioned store filtered by partition yields nothing; an empty
+   * array matches nothing. Positions, order, and the checkpoint guarantee
+   * are those of the unfiltered feed.
+   */
+  readonly partition?: string | ReadonlyArray<string>;
+}
+
+/**
+ * Adapter helper: the distinct partitions a `readAll` call asked to keep,
+ * or `undefined` when it asked for no filter.
+ */
+export const readAllPartitions = (
+  partition: ReadAllOptions["partition"],
+): ReadonlyArray<string> | undefined =>
+  partition === undefined
+    ? undefined
+    : typeof partition === "string"
+      ? [partition]
+      : [...new Set(partition)];
+
 /** Version range assigned to an accepted append. */
 export interface AppendResult {
   readonly firstVersion: number;
@@ -76,11 +105,14 @@ export interface EventStoreService {
    * yielded position N, every committed event at a lower position was
    * already visible, so a consumer may checkpoint at the last position it
    * saw without losing an event whose append committed later.
+   *
+   * `partition` narrows the feed to the events of one or several envelope
+   * partitions (see `ReadAllOptions`); the surviving events keep their
+   * global positions and order, so the checkpoint guarantee holds within
+   * the filtered feed. An adapter that cannot honour the filter must fail,
+   * never silently return the unfiltered feed.
    */
-  readonly readAll: (options?: {
-    readonly fromPosition?: bigint;
-    readonly batchSize?: number;
-  }) => Stream.Stream<StoredEvent>;
+  readonly readAll: (options?: ReadAllOptions) => Stream.Stream<StoredEvent>;
 }
 
 /** Service tag for the event store port. */

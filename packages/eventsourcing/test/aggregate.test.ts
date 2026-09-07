@@ -56,6 +56,33 @@ describe("AggregateStore", () => {
     await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
   });
 
+  test("execute stamps partition and extensions from the command metadata, never origin", async () => {
+    const program = Effect.gen(function* () {
+      const counters = yield* AggregateStore.make(Counter, counterRegistry);
+      yield* counters.execute(
+        "c3",
+        { _tag: "Increment", amount: 1 },
+        { partition: "agency-42", extensions: { delegatedBy: "user-7" } },
+      );
+      yield* counters.execute("c4", { _tag: "Increment", amount: 1 });
+      const store = yield* EventStore;
+      const stamped = Chunk.toReadonlyArray(yield* Stream.runCollect(store.read("Counter-c3")));
+      const bare = Chunk.toReadonlyArray(yield* Stream.runCollect(store.read("Counter-c4")));
+      const first = stamped[0];
+      const second = bare[0];
+      if (first === undefined || second === undefined) {
+        throw new Error("expected a stored event on both streams");
+      }
+      expect(first.metadata.partition).toBe("agency-42");
+      expect(first.metadata.extensions).toEqual({ delegatedBy: "user-7" });
+      expect("origin" in first.metadata).toBe(false);
+      expect("partition" in second.metadata).toBe(false);
+      expect("extensions" in second.metadata).toBe(false);
+      expect("origin" in second.metadata).toBe(false);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
+  });
+
   test("executeWithRetry survives injected concurrency conflicts", async () => {
     // Decorates the in-memory store so the first `failures` appends conflict.
     const flakyEventStore = (failures: number) =>
