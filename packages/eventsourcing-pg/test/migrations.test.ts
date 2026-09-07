@@ -121,7 +121,7 @@ describe.skipIf(databaseUrl === undefined)("pg schema migration steps (needs DAT
         expect(indexes.length).toBe(1);
         // partition must LEAD the index: an equality on the filter column
         // then a range on position is what serves readAll({ partition })
-        expect(indexes[0]?.indexdef).toMatch(/\(partition, "?position"?\)/);
+        expect(indexes[0]?.indexdef).toMatch(/\(partition, "?position"?\)$/);
 
         yield* insertEvent(tables.events, "Counter-new", 1, "agency-42");
         yield* insertEvent(tables.events, "Counter-new", 2);

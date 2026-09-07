@@ -22,7 +22,7 @@ describe("readAllPartitions", () => {
   test("no filter stays undefined; one value becomes a list; a list is deduplicated in order", () => {
     expect(readAllPartitions(undefined)).toBeUndefined();
     expect(readAllPartitions("a")).toEqual(["a"]);
-    expect(readAllPartitions(["a", "a", "b", "a"])).toEqual(["a", "b"]);
+    expect(readAllPartitions(["b", "a", "b", "a"])).toEqual(["b", "a"]);
     expect(readAllPartitions([])).toEqual([]);
   });
 });
