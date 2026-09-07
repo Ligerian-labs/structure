@@ -158,6 +158,12 @@ const createTables = (
  * Adding a STORED generated column rewrites the table once, under an
  * exclusive lock for the duration; on a large store, run this step in a
  * maintenance window before deploying the version that calls it.
+ *
+ * `->>` stringifies any JSON scalar, so an envelope written outside the
+ * typed API with a non-string `partition` would still match its text
+ * form here, where the memory and SQLite adapters compare the raw value;
+ * `EventMetadata` types the field as a string, and every framework
+ * writer (the aggregate runtime, the history import) enforces that.
  */
 const addPartitionColumn = (
   options?: AdapterOptions,
