@@ -40,7 +40,7 @@ Exactly-once business effects come from expected-version appends plus inbox dedu
 
 ## Partitions
 
-`CommandMetadata.partition` places every event of the command on a named subset of the store (an agency, a tenant, a shard); the framework enforces one rule — a stream's partition never changes — and decides nothing about what the key means or who may write to it (see [ADR-0018](../../docs/decisions/0018-partition-on-the-event-envelope.md)). `readAll({ partition: "agency-42" })` (or a list) feeds a projection or an exporter with that subset only, in global order. Adapters that cannot honour the filter fail instead of ignoring it; `readAllPartitions` is the helper they normalise the option with.
+`CommandMetadata.partition` places every event of the command on a named subset of the store (an agency, a tenant, a shard); the framework enforces one rule — a stream's partition never changes — and decides nothing about what the key means or who may write to it (see [ADR-0018](../../docs/decisions/0018-partition-on-the-event-envelope.md)). `readAll({ partition: "agency-42" })` (or a list) gives an exporter, a replica, or any caller driving `readAll` itself that subset only, in global order with the global positions. `Projection` is not partition-aware yet: `catchup`, `run` and `rebuild` read the whole feed (a partition-scoped projection is a follow-up, not part of this contract). Adapters that cannot honour the filter fail instead of ignoring it; `readAllPartitions` is the helper they normalise the option with.
 
 ## Importing frozen history
 
