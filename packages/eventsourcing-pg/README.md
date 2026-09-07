@@ -27,10 +27,17 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 | `migrate(options?)` | Idempotent `CREATE TABLE IF NOT EXISTS` for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency tables, all prefixed by `tablePrefix`. |
 | `tableNames(options?)` | Resolved table names for a prefix — use it for test isolation and cleanup. |
 | `appendWithOutbox(stream, expectedVersion, events, messages)` | Events and outbox rows committed in one transaction. |
+| `withUnitOfWork(effect)` | Application unit of work: every write `effect` performs through the ambient `SqlClient` — appends, `appendWithOutbox`, outbox/inbox/idempotency/snapshot writes, and application-owned SQL — commits as one transaction; any failure rolls it all back. Nested calls become SAVEPOINTs, so an inner unit can fail while the outer one continues. |
 | `HistoryImporter` from `eventStoreLayer`/`storesLayer` | Preserves frozen source positions and versions in atomic, resumable batches. Import bookkeeping makes identical retries no-ops and rejects divergence. |
 | `idempotencyStoreLayer(options?)` | `@structure-ai/cqrs` `IdempotencyStore` over the `idempotency` table. |
 | `purgeExpiredIdempotency(options?)` | Deletes idempotency records past their TTL; returns the count. |
 | `AdapterOptions` | `tablePrefix` (default none) and `idempotencyTtl` (default 24 hours). |
+
+## Unit of work
+
+`withUnitOfWork(effect)` binds all writes of one command handler to a single PostgreSQL transaction: aggregate appends, outbox enqueue, inbox dedupe, idempotency claims, snapshots, and any application SQL issued through the same `SqlClient` commit together or not at all. Concurrency conflicts stay typed (`ConcurrencyConflict`), and because a rolled-back unit never committed, a retry after a conflict starts from a clean slate. Staged outbox rows become visible to the relay only after the unit commits, so a rolled-back unit never publishes.
+
+Nesting is re-entrant: a `withUnitOfWork` (or any `sql.withTransaction`, including the adapters' own appends) started inside an open unit becomes a SAVEPOINT rather than a second transaction. An inner unit that fails rolls back only its own writes; the outer unit may catch the failure and keep going, while an uncaught inner failure rolls back the whole outer unit. Keep units short — every lock the unit took (row locks, and any advisory locks appends acquire) is held until the outermost unit commits.
 
 ## Idempotency store
 

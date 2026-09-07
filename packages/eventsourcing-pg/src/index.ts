@@ -9,3 +9,4 @@ export { layer, type PgAdaptersConfig, type StoreServices, storesLayer } from ".
 export { inboxLayer, outboxLayer } from "./Outbox.js";
 export { snapshotStoreLayer } from "./SnapshotStore.js";
 export { type AdapterOptions, migrate, type TableNames, tableNames } from "./schema.js";
+export { withUnitOfWork } from "./UnitOfWork.js";

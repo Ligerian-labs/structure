@@ -21,6 +21,15 @@ yield* appendWithOutbox(streamName, expectedVersion, events, [
 // in-memory wiring: outbox.enqueue([{ messageId, topic, payload }])
 ```
 
+   When one command must write SEVERAL streams plus application SQL and have
+   them all commit together, wrap the handler in the application unit of
+   work (pg only, `packages/eventsourcing-pg`):
+   `withUnitOfWork(Effect.gen(...))` — every write through the ambient
+   `SqlClient` (appends, `appendWithOutbox`, outbox/inbox/idempotency/
+   snapshots, app SQL) joins one transaction; nested units become
+   SAVEPOINTs. On sqlite/in-memory, writes are serialized anyway; combine
+   per-write transactions as the approximation.
+
 3. **Run the relay** in a worker process: `OutboxRelay.run` polls pending → publishes → marks; exponential backoff with jitter; after `maxAttempts` (default 5) entries dead-letter and keep the last error. `OutboxRelay.drain` empties the queue once (tests, shutdown).
 4. **Consume idempotently** — dedupe every side effect:
 
