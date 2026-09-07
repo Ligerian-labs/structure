@@ -154,6 +154,39 @@ maybe("nisshi event store", () => {
     );
   });
 
+  test("readAll filters by envelope partition, keeping positions and paging", async () => {
+    const config = env();
+    await runWith(
+      config,
+      Effect.gen(function* () {
+        const store = yield* EventStore;
+        const partitioned = (version: number, partition: string) => ({
+          ...event(version),
+          metadata: { ...testMetadata(version), partition },
+        });
+        yield* store.append("Counter-a1", 0, [partitioned(1, "a")]);
+        yield* store.append("Counter-b1", 0, [partitioned(1, "b")]);
+        yield* store.append("Counter-a1", 1, [partitioned(2, "a")]);
+        yield* store.append("Counter-none", 0, [event(1)]);
+        yield* store.append("Counter-b1", 1, [partitioned(2, "b")]);
+        const onlyA = yield* Stream.runCollect(store.readAll({ partition: "a" }));
+        expect(Chunk.toReadonlyArray(onlyA).map((e) => [e.streamName, e.position])).toEqual([
+          ["Counter-a1", 1n],
+          ["Counter-a1", 3n],
+        ]);
+        const both = yield* Stream.runCollect(store.readAll({ partition: ["a", "b"] }));
+        expect(Chunk.toReadonlyArray(both).map((e) => e.position)).toEqual([1n, 2n, 3n, 5n]);
+        const page = yield* Stream.runCollect(
+          store.readAll({ partition: "b", fromPosition: 3n, batchSize: 1 }),
+        );
+        expect(Chunk.toReadonlyArray(page).map((e) => e.position)).toEqual([5n]);
+        const none = yield* Stream.runCollect(store.readAll({ partition: "zzz" }));
+        expect(Chunk.size(none)).toBe(0);
+        expect(Chunk.size(yield* Stream.runCollect(store.readAll()))).toBe(5);
+      }),
+    );
+  });
+
   test("AggregateStore executes commands and rehydrates from the topic", async () => {
     const config = env();
     await runWith(

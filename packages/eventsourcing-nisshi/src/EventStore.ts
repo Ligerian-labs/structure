@@ -6,6 +6,7 @@ import {
   type AppendResult,
   EventStore,
   type EventStoreService,
+  readAllPartitions,
   type StoredEvent,
   type StoredEventMetadata,
 } from "@structure-ai/eventsourcing";
@@ -302,6 +303,14 @@ const make = (
             const events: StoredEvent[] = [];
             let offset = (readOptions?.fromPosition ?? 1n) - 1n;
             const limit = readOptions?.batchSize;
+            // The topic has no index on the envelope: the filter runs on
+            // every fetched record, and paging keeps fetching until
+            // `limit` MATCHING events were collected or the topic ends.
+            const partitions = readAllPartitions(readOptions?.partition);
+            const keep = (event: StoredEvent): boolean =>
+              partitions === undefined ||
+              (event.metadata.partition !== undefined &&
+                partitions.includes(event.metadata.partition));
             for (;;) {
               if (limit !== undefined && events.length >= limit) {
                 break;
@@ -312,9 +321,14 @@ const make = (
               }
               for (const record of page.records) {
                 const streamName = record.key === null ? "" : new TextDecoder().decode(record.key);
-                events.push(
-                  storedEvent(record.offset, streamName, decodeWireEvent(record.value, streamName)),
+                const event = storedEvent(
+                  record.offset,
+                  streamName,
+                  decodeWireEvent(record.value, streamName),
                 );
+                if (keep(event)) {
+                  events.push(event);
+                }
               }
               const last = page.records[page.records.length - 1];
               if (last === undefined || last.offset + 1n >= page.highWatermark) {

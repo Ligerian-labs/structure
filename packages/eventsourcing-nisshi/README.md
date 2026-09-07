@@ -7,7 +7,7 @@ Implements **four** ports: `EventStore`, `SnapshotStore`, `CheckpointStore`, `In
 ## How it works
 
 - **Events** live in one single-partition topic (default `events`), key = stream name, value = a JSON envelope `{type, schemaVersion, version, payload, metadata}`. Infinite retention, no compaction — the topic *is* the raw history.
-- **Positions** are Kafka offsets + 1 — a true global total order (single partition).
+- **Positions** are Kafka offsets + 1 — a true global total order (single Kafka partition; unrelated to the envelope's optional `partition` key, which `readAll({ partition })` filters on record by record, since the topic has no index on it).
 - **Optimistic concurrency** via the sidecar ledger: `append(stream, expectedVersion, events)` reserves `expectedVersion+1..n` in one SQL transaction (conditional UPDATE / unique INSERT), produces with `acks=all`, then confirms. A lost race fails with `ConcurrencyConflict` before anything is written. A crash between reservation and produce leaves pending rows that `drainPending` re-produces (at-least-once; readers dedupe by `(stream, version)`).
 - **Snapshots / checkpoints / inbox** are sidecar tables (pure cache and dedupe state; losing them costs performance, never correctness).
 - **Protocol**: an in-package minimal Kafka wire client (no runtime dependencies) pinned to non-flexible API versions — `Produce` v3, `Fetch` v4, `Metadata` v0, `CreateTopics` v4 — negotiated and verified at connect. No consumer groups, no transactions: reads are positioned fetches, progress tracking is the sidecar checkpoint.
