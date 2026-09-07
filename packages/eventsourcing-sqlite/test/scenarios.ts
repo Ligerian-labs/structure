@@ -166,6 +166,60 @@ export const registerScenarios = (run: RunTest): void => {
       }),
     ));
 
+  test("readAll filters by envelope partition, keeping global order and paging", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const store = yield* EventStore;
+        const partitioned = (version: number, partition: string) => ({
+          ...event(version),
+          metadata: { ...testMetadata(version), partition },
+        });
+        yield* store.append("Counter-a1", 0, [partitioned(1, "a")]);
+        yield* store.append("Counter-b1", 0, [partitioned(1, "b")]);
+        yield* store.append("Counter-a1", 1, [partitioned(2, "a")]);
+        yield* store.append("Counter-none", 0, [event(1)]);
+        yield* store.append("Counter-b1", 1, [partitioned(2, "b")]);
+
+        const onlyA = Chunk.toReadonlyArray(
+          yield* Stream.runCollect(store.readAll({ partition: "a" })),
+        );
+        expect(onlyA.map((entry) => [entry.streamName, entry.position])).toEqual([
+          ["Counter-a1", 1n],
+          ["Counter-a1", 3n],
+        ]);
+        const both = Chunk.toReadonlyArray(
+          yield* Stream.runCollect(store.readAll({ partition: ["a", "b"] })),
+        );
+        expect(both.map((entry) => entry.position)).toEqual([1n, 2n, 3n, 5n]);
+        const all = Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()));
+        expect(all.map((entry) => entry.position)).toEqual([1n, 2n, 3n, 4n, 5n]);
+        expect(
+          Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll({ partition: "zzz" }))),
+        ).toEqual([]);
+        expect(
+          Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll({ partition: [] }))),
+        ).toEqual([]);
+        const page = Chunk.toReadonlyArray(
+          yield* Stream.runCollect(
+            store.readAll({ partition: "b", fromPosition: 3n, batchSize: 1 }),
+          ),
+        );
+        expect(page.map((entry) => entry.position)).toEqual([5n]);
+      }),
+    ));
+
+  test("readAll filtered by partition on an unpartitioned store yields nothing", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const store = yield* EventStore;
+        yield* store.append("Counter-p", 0, [event(1), event(2)]);
+        expect(
+          Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll({ partition: "a" }))),
+        ).toEqual([]);
+        expect(Chunk.size(yield* Stream.runCollect(store.readAll()))).toBe(2);
+      }),
+    ));
+
   test("snapshot save/load roundtrip replaces previous snapshots", () =>
     run(() =>
       Effect.gen(function* () {

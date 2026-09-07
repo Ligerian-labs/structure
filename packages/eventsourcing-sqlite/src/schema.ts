@@ -31,8 +31,11 @@ export const tableNames = (options?: AdapterOptions): TableNames => {
 
 /**
  * Creates every table this package needs, in order, with idempotent
- * `CREATE TABLE IF NOT EXISTS` statements. Run it once at startup (the
- * package-level `layer` does so automatically).
+ * `CREATE TABLE IF NOT EXISTS` statements, plus the expression index on
+ * the envelope's partition (`json_extract(metadata, '$.partition')`) that
+ * serves `readAll({ partition })`. Run it once at startup (the
+ * package-level `layer` does so automatically); on a database created by
+ * an earlier version the index is simply added.
  */
 export const migrate = (
   options?: AdapterOptions,
@@ -51,6 +54,10 @@ export const migrate = (
         metadata TEXT NOT NULL,
         UNIQUE (stream_name, version)
       )
+    `;
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS ${sql(`${tables.events}_partition_position_idx`)}
+      ON ${sql(tables.events)} (json_extract(metadata, '$.partition'), position)
     `;
     yield* sql`
       CREATE TABLE IF NOT EXISTS ${sql(tables.snapshots)} (
