@@ -38,7 +38,7 @@ const Invoice = Aggregate.define({
 | `ValueObject.define(name, schema)` | Self-validating immutable value: `from(unknown)` → `Either<A, ValidationFailed>` (all issues), `make`, `is`. |
 | `Aggregate.define / rehydrate / execute` | Decider definition; fold history; run one command returning `{ state, events }`. |
 | `DomainEvent.define(tag, fields)` | Past-tense event schema (`Schema.TaggedStruct`). |
-| `EventMetadata` / `Envelope<E>` | Persisted/published event envelope: eventId, occurredAt, aggregate identity + version, correlation/causation, optional actor. |
+| `EventMetadata` / `Envelope<E>` | Persisted/published event envelope: eventId, occurredAt, aggregate identity + version, correlation/causation, optional actor; optional `partition` (a locality key, immutable per stream — what it means is the application's), `origin` (`{ node, position }`, set only on a replicated copy by an import path), and `extensions` (an application-owned JSON record the framework never interprets). |
 | `Repository` | Load/save port with `Versioned<A>` and optimistic version checks. |
 | `InvariantViolation`, `NotFound`, `ConcurrencyConflict`, `ValidationFailed` | Tagged errors with `classification: FailureClass` (`transient`/`permanent`/`conflict`). |
 

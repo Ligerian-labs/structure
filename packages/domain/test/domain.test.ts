@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Either, Exit, Schema } from "effect";
-import { Aggregate, DomainEvent, EntityId, InvariantViolation, ValueObject } from "../src/index.js";
+import {
+  Aggregate,
+  DomainEvent,
+  EntityId,
+  EventMetadata,
+  InvariantViolation,
+  ValueObject,
+} from "../src/index.js";
 
 const InvoiceId = EntityId.define("InvoiceId");
 
@@ -116,5 +123,48 @@ describe("Aggregate", () => {
       InvoiceRejected.make({ invoiceId: id, reason: "duplicate" }),
     ]);
     expect(state.status).toBe("rejected");
+  });
+});
+
+describe("EventMetadata", () => {
+  const base = {
+    eventId: "evt-1",
+    occurredAt: "2026-01-01T00:00:00.000Z",
+    aggregateName: "Invoice",
+    aggregateId: "inv-1",
+    aggregateVersion: 1,
+  };
+
+  test("decodes without partition, origin, or extensions (an unpartitioned envelope is unchanged)", () => {
+    const decoded = Schema.decodeUnknownSync(EventMetadata)(base);
+    expect(decoded.partition).toBeUndefined();
+    expect(decoded.origin).toBeUndefined();
+    expect(decoded.extensions).toBeUndefined();
+    expect(Schema.encodeSync(EventMetadata)(decoded)).toEqual(base);
+  });
+
+  test("carries partition, origin, and extensions through decode and encode", () => {
+    const encoded = {
+      ...base,
+      partition: "agency-42",
+      origin: { node: "hub", position: "9007199254740993" },
+      extensions: { delegatedBy: "user-7", nested: { flag: true } },
+    };
+    const decoded = Schema.decodeUnknownSync(EventMetadata)(encoded);
+    expect(decoded.partition).toBe("agency-42");
+    expect(decoded.origin).toEqual({ node: "hub", position: "9007199254740993" });
+    expect(decoded.extensions).toEqual({ delegatedBy: "user-7", nested: { flag: true } });
+    expect(Schema.encodeSync(EventMetadata)(decoded)).toEqual(encoded);
+  });
+
+  test("rejects a non-string partition and an origin without its position", () => {
+    expect(
+      Either.isLeft(Schema.decodeUnknownEither(EventMetadata)({ ...base, partition: 42 })),
+    ).toBe(true);
+    expect(
+      Either.isLeft(
+        Schema.decodeUnknownEither(EventMetadata)({ ...base, origin: { node: "hub" } }),
+      ),
+    ).toBe(true);
   });
 });
