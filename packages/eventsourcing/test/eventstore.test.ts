@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Chunk, Effect, Either, Stream } from "effect";
-import { EventStore, InMemoryEventStore } from "../src/index.js";
+import { EventStore, InMemoryEventStore, readAllPartitions } from "../src/index.js";
 import { testMetadata } from "./fixtures.js";
 
 const event = (version: number, type = "Incremented") => ({
@@ -17,6 +17,15 @@ const partitioned = (version: number, partition: string) => ({
 
 const collect = <A>(stream: Stream.Stream<A>) =>
   Effect.map(Stream.runCollect(stream), Chunk.toReadonlyArray);
+
+describe("readAllPartitions", () => {
+  test("no filter stays undefined; one value becomes a list; a list is deduplicated in order", () => {
+    expect(readAllPartitions(undefined)).toBeUndefined();
+    expect(readAllPartitions("a")).toEqual(["a"]);
+    expect(readAllPartitions(["a", "a", "b", "a"])).toEqual(["a", "b"]);
+    expect(readAllPartitions([])).toEqual([]);
+  });
+});
 
 describe("InMemoryEventStore", () => {
   test("append/read roundtrip numbers versions from 1 and positions from 1", async () => {
