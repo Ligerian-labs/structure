@@ -24,7 +24,8 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 | --- | --- |
 | `layer(config?)` | `PgClient` + `migrate` + every adapter, and the client itself. `config`: `url`, `maxConnections`, `applicationName`, plus the adapter options. |
 | `storesLayer(options?)` | Every adapter on top of an ambient `SqlClient` (no migration). |
-| `migrate(options?)` | Idempotent `CREATE TABLE IF NOT EXISTS` for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency tables, all prefixed by `tablePrefix`. |
+| `migrate(options?)` | Applies every step of `migrations` in order, idempotently: the tables for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency (rev 1), then the generated `partition` column and its index on `events` (rev 2), all prefixed by `tablePrefix`. |
+| `migrations` | The same schema as ordered `{ rev, name, apply(options?) }` steps, for consumers keeping their own migration ledger: record each `rev` as its own entry and append the next one on upgrade. |
 | `tableNames(options?)` | Resolved table names for a prefix — use it for test isolation and cleanup. |
 | `appendWithOutbox(stream, expectedVersion, events, messages)` | Events and outbox rows committed in one transaction. |
 | `withUnitOfWork(effect)` | Application unit of work: every write `effect` performs through the ambient `SqlClient` — appends, `appendWithOutbox`, outbox/inbox/idempotency/snapshot writes, and application-owned SQL — commits as one transaction; any failure rolls it all back. Nested calls become SAVEPOINTs, so an inner unit can fail while the outer one continues. |
@@ -32,6 +33,10 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 | `idempotencyStoreLayer(options?)` | `@structure-ai/cqrs` `IdempotencyStore` over the `idempotency` table. |
 | `purgeExpiredIdempotency(options?)` | Deletes idempotency records past their TTL; returns the count. |
 | `AdapterOptions` | `tablePrefix` (default none) and `idempotencyTtl` (default 24 hours). |
+
+## Partition column
+
+Rev 2 adds `partition TEXT GENERATED ALWAYS AS (metadata->>'partition') STORED` to `events` with an index on `(partition, position)`. The envelope stays the single source of truth (appends never write the column); `readAll({ partition })` filters on it before ordering by position. Upgrading a store that already holds events rewrites the table once, under an exclusive lock for the duration of the `ALTER TABLE` — plan it in a maintenance window on a large store, either by running `migrations[1].apply()` ahead of the deploy or by accepting the pause at the first `migrate()` of the new version. Rows written before the upgrade get `NULL` unless their envelope already carried a `partition`.
 
 ## Unit of work
 

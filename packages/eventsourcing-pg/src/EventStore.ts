@@ -14,6 +14,7 @@ import {
   historyImportResumeToken,
   type OutboxMessage,
   prepareHistoryImportBatch,
+  readAllPartitions,
   type StoredEvent,
   type StoredEventMetadata,
   validateHistoryImportContinuation,
@@ -263,18 +264,24 @@ const make = (
       readAll: (options) => {
         const fromPosition = String(options?.fromPosition ?? 1n);
         const batchSize = options?.batchSize;
+        const partitions = readAllPartitions(options?.partition);
+        // The generated `partition` column (schema rev 2) carries the
+        // envelope's value; `sql.in` renders `1=0` for an empty list, and
+        // NULL never matches, so unpartitioned events stay out.
+        const partitionFilter =
+          partitions === undefined ? sql`` : sql`AND ${sql.in("partition", partitions)}`;
         const query =
           batchSize === undefined
             ? sql<EventRow>`
                 ${selectEvents}
                 FROM ${sql(tables.events)}
-                WHERE position >= ${fromPosition}
+                WHERE position >= ${fromPosition} ${partitionFilter}
                 ORDER BY position ASC
               `
             : sql<EventRow>`
                 ${selectEvents}
                 FROM ${sql(tables.events)}
-                WHERE position >= ${fromPosition}
+                WHERE position >= ${fromPosition} ${partitionFilter}
                 ORDER BY position ASC
                 LIMIT ${batchSize}
               `;
