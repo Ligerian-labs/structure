@@ -71,3 +71,5 @@ Every operation is wrapped with boundary metrics (`storage_<driver>_<op>_calls_t
 | `STORAGE_INLINE_CONTENT_TYPES` | string (csv) | no | — | |
 
 `STORAGE_S3_ENDPOINT` is used as configured minus any trailing slash (`http://minio:9000` and `http://minio:9000/` are the same endpoint; a path prefix such as `https://gateway/s3` is kept): the path-style driver appends `/<bucket>/<key>` itself, so a doubled slash never reaches the signature. A query string or fragment on the value is refused at composition (`StorageValidationError`), since the bucket and key appended after it would be swallowed.
+
+The object path is encoded the way the SigV4 canonical URI is: each segment of `<keyPrefix>/<key>` RFC 3986 percent-encoded, the slashes between segments kept (`/bucket/readiness/probe`, never `/bucket/readiness%2Fprobe`), so the path the store receives is the path the signature covers on every backend. AWS S3 and MinIO decode the request path before verifying and tolerate either form; GCS's S3-interoperability endpoint verifies the raw path and refuses a key whose slash was sent encoded (`SignatureDoesNotMatch` on every key with a slash, the readiness probe included).

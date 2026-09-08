@@ -8,7 +8,7 @@ import {
 } from "../errors.js";
 import { keyToString, type ObjectKey } from "../key.js";
 import { type DispositionPolicy, dispositionPolicy, validContentType } from "../policy.js";
-import { type RequestBody, sha256Hex, signRequest } from "../sigv4.js";
+import { type RequestBody, sha256Hex, signRequest, uriEncode } from "../sigv4.js";
 import {
   instrumented,
   type PutInput,
@@ -90,9 +90,28 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
     service: "s3",
   } as const;
 
+  /**
+   * The object's path, encoded exactly as the SigV4 canonical URI encodes
+   * it: each segment RFC 3986 percent-encoded, the slashes between them
+   * left as separators. What is sent must equal what is signed on every
+   * backend. AWS S3 and MinIO decode the request path before canonicalising
+   * it, so a key sent as `readiness%2Fprobe` and signed as `readiness/probe`
+   * happens to verify there; GCS's S3-interoperability endpoint canonicalises
+   * the raw request path, and the two never agree (403 SignatureDoesNotMatch
+   * on every key with a slash). Encoding per segment removes the disagreement
+   * instead of relying on the store to decode.
+   */
+  const objectPath = (key: ObjectKey): string =>
+    (options.keyPrefix === undefined
+      ? keyToString(key)
+      : `${options.keyPrefix}/${keyToString(key)}`
+    )
+      .split("/")
+      .map((segment) => uriEncode(segment))
+      .join("/");
+
   const objectUrl = (key: ObjectKey, query?: string): URL => {
-    const prefix = options.keyPrefix === undefined ? "" : `${options.keyPrefix}/`;
-    const base = `${endpoint}/${options.bucket}/${prefix}${encodeURIComponent(keyToString(key))}`;
+    const base = `${endpoint}/${options.bucket}/${objectPath(key)}`;
     return new URL(query === undefined ? base : `${base}?${query}`);
   };
 
