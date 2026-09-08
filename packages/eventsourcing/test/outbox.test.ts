@@ -65,6 +65,65 @@ describe("OutboxRelay", () => {
     });
     await Effect.runPromise(program.pipe(Effect.provide(InMemoryOutbox)));
   });
+
+  test("a failed attempt persists a due time the next relay pass respects", async () => {
+    const program = Effect.gen(function* () {
+      const outbox = yield* Outbox;
+      yield* outbox.enqueue([message("m4")]);
+      yield* outbox.markFailed("m4", "broker down", 1, Date.now() + 60_000);
+      const published = yield* Ref.make(0);
+      const publish = () => Ref.update(published, (n) => n + 1);
+      // The retry schedule is durable: a fresh relay pass sees nothing due.
+      yield* OutboxRelay.drain({ publish });
+      expect(yield* Ref.get(published)).toBe(0);
+      // Once the schedule elapses, the entry is delivered again.
+      yield* outbox.markFailed("m4", "broker down", 1, Date.now() - 1);
+      yield* OutboxRelay.drain({ publish });
+      expect(yield* Ref.get(published)).toBe(1);
+      expect(yield* outbox.pending(10)).toEqual([]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryOutbox)));
+  });
+
+  test("a scheduled enqueue is not offered to the publisher until due", async () => {
+    const program = Effect.gen(function* () {
+      const outbox = yield* Outbox;
+      yield* outbox.enqueue([{ ...message("m5"), availableAt: Date.now() + 60_000 }]);
+      const published = yield* Ref.make(0);
+      const publish = () => Ref.update(published, (n) => n + 1);
+      yield* OutboxRelay.drain({ publish });
+      expect(yield* Ref.get(published)).toBe(0);
+      yield* outbox.enqueue([{ ...message("m6"), availableAt: Date.now() - 1 }]);
+      yield* OutboxRelay.drain({ publish });
+      expect(yield* Ref.get(published)).toBe(1);
+      // m5 is still staged, just not due: pending never offers it.
+      expect(yield* outbox.pending(10)).toEqual([]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryOutbox)));
+  });
+
+  test("replay requeues dead letters with a clean slate", async () => {
+    const program = Effect.gen(function* () {
+      const outbox = yield* Outbox;
+      yield* outbox.enqueue([message("m7"), { ...message("m8"), availableAt: Date.now() + 60_000 }]);
+      yield* outbox.markFailed("m8", "broker down", 2, Date.now() + 60_000);
+      yield* outbox.markDead("m7", "gave up");
+      yield* outbox.markDead("m8", "gave up again");
+      // Replaying unknown ids and non-dead entries changes nothing.
+      yield* outbox.replay(["nope"]);
+      expect((yield* outbox.deadLetters()).length).toBe(2);
+      yield* outbox.replay(["m7", "m8"]);
+      expect(yield* outbox.deadLetters()).toEqual([]);
+      const pending = yield* outbox.pending(10);
+      expect(pending.map((entry) => entry.message.id)).toEqual(["m7", "m8"]);
+      for (const entry of pending) {
+        expect(entry.attempts).toBe(0);
+        expect(entry.lastError).toBeUndefined();
+        expect(entry.availableAt).toBeUndefined();
+      }
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryOutbox)));
+  });
 });
 
 describe("Inbox", () => {

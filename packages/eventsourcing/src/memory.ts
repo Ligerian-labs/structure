@@ -1,5 +1,5 @@
 import { ConcurrencyConflict } from "@structure-ai/domain";
-import { Context, Effect, Either, Layer, Option, Ref, Stream, SynchronizedRef } from "effect";
+import { Clock, Context, Effect, Either, Layer, Option, Ref, Stream, SynchronizedRef } from "effect";
 import { CheckpointStore } from "./CheckpointStore.js";
 import {
   type AppendResult,
@@ -276,7 +276,9 @@ export const InMemoryCheckpointStore: Layer.Layer<CheckpointStore> = Layer.effec
 
 /**
  * In-memory `Outbox`: entries keep enqueue order; `enqueue` is idempotent
- * per message id. Marking an unknown id is a no-op.
+ * per message id. Marking an unknown id is a no-op. `pending` returns only
+ * entries whose `availableAt` (set at enqueue or by `markFailed`) has
+ * elapsed, mirroring the SQL adapters' due filter.
  */
 export const InMemoryOutbox: Layer.Layer<Outbox> = Layer.effect(
   Outbox,
@@ -290,29 +292,59 @@ export const InMemoryOutbox: Layer.Layer<Outbox> = Layer.effect(
         }
         return new Map(entries).set(id, patch(entry));
       });
+    const due = (entry: OutboxEntry, now: number): boolean =>
+      entry.availableAt === undefined || entry.availableAt <= now;
     return Outbox.of({
       enqueue: (messages) =>
         Ref.update(ref, (entries) => {
           const next = new Map(entries);
           for (const message of messages) {
             if (!next.has(message.id)) {
-              next.set(message.id, { message, status: "pending", attempts: 0 });
+              const entry: OutboxEntry = { message, status: "pending", attempts: 0 };
+              next.set(
+                message.id,
+                message.availableAt === undefined
+                  ? entry
+                  : { ...entry, availableAt: message.availableAt },
+              );
             }
           }
           return next;
         }),
       pending: (limit) =>
-        Effect.map(Ref.get(ref), (entries) =>
-          [...entries.values()].filter((entry) => entry.status === "pending").slice(0, limit),
+        Effect.flatMap(Clock.currentTimeMillis, (now) =>
+          Effect.map(Ref.get(ref), (entries) =>
+            [...entries.values()]
+              .filter((entry) => entry.status === "pending" && due(entry, now))
+              .slice(0, limit),
+          ),
         ),
       markPublished: (ids) =>
         Effect.forEach(ids, (id) => update(id, (entry) => ({ ...entry, status: "published" })), {
           discard: true,
         }),
-      markFailed: (id, error, attempts) =>
-        update(id, (entry) => ({ ...entry, attempts, lastError: error })),
+      markFailed: (id, error, attempts, retryAt) =>
+        update(id, (entry) => {
+          const { availableAt: _previous, ...rest } = entry;
+          return retryAt === undefined
+            ? { ...rest, attempts, lastError: error }
+            : { ...rest, attempts, lastError: error, availableAt: retryAt };
+        }),
       markDead: (id, error) =>
         update(id, (entry) => ({ ...entry, status: "dead", lastError: error })),
+      replay: (ids) =>
+        Effect.forEach(
+          ids,
+          (id) =>
+            update(id, (entry) => {
+              if (entry.status !== "dead") {
+                return entry;
+              }
+              const { availableAt: _availableAt, lastError: _lastError, ...rest } = entry;
+              return { ...rest, status: "pending" as const, attempts: 0 };
+            }),
+          { discard: true },
+        ),
       deadLetters: () =>
         Effect.map(Ref.get(ref), (entries) =>
           [...entries.values()].filter((entry) => entry.status === "dead"),

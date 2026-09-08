@@ -1,15 +1,18 @@
-import { Context, type Duration, Effect, Option, Ref, Schedule } from "effect";
+import { Clock, Context, Duration, Effect, Either, Option, Random, Ref } from "effect";
 
 /**
  * A message staged for publication. `id` must be globally unique — it is
  * the deduplication key for consumers and the idempotence key for
- * `enqueue`.
+ * `enqueue`. `availableAt` (epoch milliseconds) optionally schedules the
+ * first delivery attempt: the message stays staged, invisible to
+ * `pending`, until that time.
  */
 export interface OutboxMessage {
   readonly id: string;
   readonly topic: string;
   readonly payload: unknown;
   readonly metadata: Readonly<Record<string, unknown>>;
+  readonly availableAt?: number;
 }
 
 export type OutboxStatus = "pending" | "published" | "dead";
@@ -22,12 +25,23 @@ export interface OutboxEntry {
   readonly attempts: number;
   /** Text of the most recent publish failure, if any. */
   readonly lastError?: string;
+  /**
+   * Epoch milliseconds before which no delivery attempt should be made
+   * (from `OutboxMessage.availableAt` or the retry schedule persisted by
+   * the relay through `markFailed`). Absent means immediately due.
+   */
+  readonly availableAt?: number;
 }
 
 /**
  * Transactional outbox port. Adapters call `enqueue` in the same
  * transaction as the event append so a message is staged iff the events
  * committed; the relay then delivers staged messages at-least-once.
+ *
+ * Scheduling is durable: `pending` only returns entries whose
+ * `availableAt` has elapsed, and the relay persists the next eligible
+ * time on every failed attempt, so delayed delivery and retry backoff
+ * survive process restarts.
  */
 export interface OutboxService {
   /**
@@ -35,14 +49,34 @@ export interface OutboxService {
    * whose id is already known is ignored, so redelivered enqueues are safe.
    */
   readonly enqueue: (messages: ReadonlyArray<OutboxMessage>) => Effect.Effect<void>;
-  /** Up to `limit` pending entries in enqueue order. */
+  /**
+   * Up to `limit` pending entries that are due now, in stable enqueue
+   * order. Entries scheduled for the future (initially, or while backing
+   * off after a failed attempt) are not returned until their time comes.
+   */
   readonly pending: (limit: number) => Effect.Effect<ReadonlyArray<OutboxEntry>>;
   /** Marks entries as successfully published. */
   readonly markPublished: (ids: ReadonlyArray<string>) => Effect.Effect<void>;
-  /** Records a failed attempt: the entry stays pending with `attempts`/`error` updated. */
-  readonly markFailed: (id: string, error: string, attempts: number) => Effect.Effect<void>;
+  /**
+   * Records a failed attempt: the entry stays pending with
+   * `attempts`/`error` updated and becomes eligible again at `retryAt`
+   * (epoch milliseconds; absent means immediately). Persisting the
+   * schedule here is what makes relay backoff restart-safe.
+   */
+  readonly markFailed: (
+    id: string,
+    error: string,
+    attempts: number,
+    retryAt?: number,
+  ) => Effect.Effect<void>;
   /** Moves an entry to the dead letters, keeping the final error text. */
   readonly markDead: (id: string, error: string) => Effect.Effect<void>;
+  /**
+   * Requeues dead-lettered entries: back to pending with the attempt
+   * count, last error, and any delivery schedule cleared, so the next
+   * relay pass delivers them fresh. Unknown or non-dead ids are ignored.
+   */
+  readonly replay: (ids: ReadonlyArray<string>) => Effect.Effect<void>;
   /** Entries given up on, with their last error and attempt count for diagnosis. */
   readonly deadLetters: () => Effect.Effect<ReadonlyArray<OutboxEntry>>;
 }
@@ -79,7 +113,31 @@ export interface OutboxRelayOptions<EP, RP> {
   readonly backoffBase?: Duration.DurationInput;
   /** Max entries fetched per poll. Default 32. */
   readonly batchSize?: number;
+  /**
+   * Jitter spread of the retry backoff, as a fraction of the computed
+   * delay (0.2 keeps the delay within ±20%). Default 0.2, matching
+   * `Schedule.jittered`. 0 disables jitter (deterministic tests).
+   */
+  readonly backoffJitter?: number;
 }
+
+/**
+ * One backoff delay for the given 1-based attempt count, as
+ * `backoffBase * 2^(attempt-1) * (1 ± spread)`, clamped to a 24-hour
+ * ceiling. With `backoffJitter: 0` the delay is deterministic.
+ */
+const backoffDelay = (
+  attempt: number,
+  options: OutboxRelayOptions<unknown, unknown>,
+): Effect.Effect<number> => {
+  const base = Duration.toMillis(options.backoffBase ?? "100 millis");
+  const spread = options.backoffJitter === undefined ? 0.2 : Math.max(0, options.backoffJitter);
+  const bounded = Math.min(base * 2 ** (attempt - 1), Duration.toMillis("24 hours"));
+  if (spread === 0) {
+    return Effect.succeed(bounded);
+  }
+  return Random.nextRange(1 - spread, 1 + spread).pipe(Effect.map((factor) => bounded * factor));
+};
 
 const publishEntry = <EP, RP>(
   outbox: OutboxService,
@@ -94,29 +152,29 @@ const publishEntry = <EP, RP>(
         entry.lastError ?? "exhausted attempts before this pass",
       );
     }
-    const attempts = yield* Ref.make(entry.attempts);
-    const lastError = yield* Ref.make(entry.lastError ?? "unknown error");
-    const retriesLeft = maxAttempts - entry.attempts - 1;
-    const backoff = Schedule.exponential(options.backoffBase ?? "100 millis").pipe(
-      Schedule.jittered,
-      Schedule.intersect(Schedule.recurs(retriesLeft)),
-    );
-    yield* options.publish(entry).pipe(
-      Effect.tapError((error) =>
-        Effect.gen(function* () {
-          const text = describeError(error);
-          yield* Ref.set(lastError, text);
-          const count = yield* Ref.updateAndGet(attempts, (n) => n + 1);
-          yield* outbox.markFailed(entry.message.id, text, count);
-        }),
-      ),
-      Effect.retry(backoff),
-      Effect.matchEffect({
-        onSuccess: () => outbox.markPublished([entry.message.id]),
-        onFailure: () =>
-          Effect.flatMap(Ref.get(lastError), (text) => outbox.markDead(entry.message.id, text)),
-      }),
-    );
+    let attempts = entry.attempts;
+    let lastError = entry.lastError ?? "unknown error";
+    while (true) {
+      const outcome = yield* Effect.either(options.publish(entry));
+      if (Either.isRight(outcome)) {
+        return yield* outbox.markPublished([entry.message.id]);
+      }
+      const text = describeError(outcome.left);
+      attempts += 1;
+      lastError = text;
+      // Record every attempt (the dead letter keeps the final count for
+      // diagnosis), then give up once the budget is spent.
+      if (attempts >= maxAttempts) {
+        yield* outbox.markFailed(entry.message.id, text, attempts);
+        return yield* outbox.markDead(entry.message.id, lastError);
+      }
+      // Persist the schedule before sleeping: a crash mid-backoff must not
+      // make the entry immediately eligible again on restart.
+      const delayMillis = yield* backoffDelay(attempts, options);
+      const retryAt = (yield* Clock.currentTimeMillis) + delayMillis;
+      yield* outbox.markFailed(entry.message.id, text, attempts, retryAt);
+      yield* Effect.sleep(delayMillis);
+    }
   });
 
 /**
