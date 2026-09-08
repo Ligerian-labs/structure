@@ -78,7 +78,7 @@ describe("S3 endpoint normalisation", () => {
       expect(pathOf(url).startsWith("/bucket")).toBe(true);
       expect(url.startsWith("http://")).toBe(true);
     }
-    expect(pathOf(urls[0] ?? "")).toBe("/bucket/tenant/files%2Fone.bin");
+    expect(pathOf(urls[0] ?? "")).toBe("/bucket/tenant/files/one.bin");
     expect(pathOf(urls[9] ?? "")).toBe("/bucket");
   });
 
@@ -89,7 +89,7 @@ describe("S3 endpoint normalisation", () => {
       expect(pathOf(url)).not.toContain("//");
       expect(pathOf(url).startsWith("/s3/bucket")).toBe(true);
     }
-    expect(pathOf(urls[0] ?? "")).toBe("/s3/bucket/tenant/files%2Fone.bin");
+    expect(pathOf(urls[0] ?? "")).toBe("/s3/bucket/tenant/files/one.bin");
   });
 
   test("an endpoint without a trailing slash, and the AWS default, are unchanged", async () => {
