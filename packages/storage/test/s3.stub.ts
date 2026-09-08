@@ -1,3 +1,4 @@
+import { createHash, createHmac } from "node:crypto";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import { Redacted } from "effect";
@@ -26,6 +27,16 @@ export interface S3StubOptions {
   /** Credentials the stub verifies signatures against. */
   readonly accessKeyId?: string;
   readonly secretAccessKey?: string;
+  /**
+   * How the stub canonicalises the request path before verifying the
+   * signature. `decoded` (default) is what AWS S3 and MinIO do: the path is
+   * percent-decoded and re-encoded segment by segment, so `a%2Fb` and `a/b`
+   * verify against the same signature. `raw` is what GCS's
+   * S3-interoperability endpoint does: the path is signed exactly as it was
+   * received, so a request sent as `a%2Fb` only verifies when it was signed
+   * as `a%2Fb`.
+   */
+  readonly canonicalPath?: "decoded" | "raw";
 }
 
 export const STUB_ACCESS_KEY_ID = "test-access-key";
@@ -35,14 +46,86 @@ const AMZ_DATE = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/u;
 const AUTHORIZATION =
   /^AWS4-HMAC-SHA256 Credential=([^/]+)\/\d{8}\/([^/]+)\/([^/]+)\/aws4_request, SignedHeaders=([^,]+), Signature=[0-9a-f]{64}$/u;
 
+const RFC3986_SAFE = /[A-Za-z0-9\-._~]/u;
+
+/** RFC 3986 percent-encoding of every byte outside the unreserved set. */
+const percentEncode = (value: string): string => {
+  let out = "";
+  for (const byte of new TextEncoder().encode(value)) {
+    const character = String.fromCharCode(byte);
+    out += RFC3986_SAFE.test(character)
+      ? character
+      : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return out;
+};
+
+/**
+ * An independent SigV4 signer that takes the canonical URI as given, the way
+ * GCS's S3-interoperability endpoint verifies a request (the path exactly as
+ * received on the wire, never decoded first). Deliberately not the package's
+ * own `signRequest`: that one canonicalises by decoding each segment, which is
+ * the AWS/MinIO behaviour, and a stub built on it cannot tell the two apart.
+ */
+const signOverRawPath = (input: {
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly region: string;
+  readonly service: string;
+  readonly method: string;
+  readonly rawPath: string;
+  readonly search: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly payloadHash: string;
+  readonly amzDate: string;
+}): string => {
+  const query = [...new URLSearchParams(input.search).entries()]
+    .map(([key, value]) => [percentEncode(key), percentEncode(value)] as const)
+    .sort(([aKey, aValue], [bKey, bValue]) =>
+      aKey === bKey ? aValue.localeCompare(bValue) : aKey.localeCompare(bKey),
+    )
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+  const headers = Object.entries(input.headers)
+    .map(([name, value]) => [name.trim().toLowerCase(), value.trim()] as const)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const canonicalRequest = [
+    input.method,
+    input.rawPath,
+    query,
+    headers.map(([name, value]) => `${name}:${value}\n`).join(""),
+    headers.map(([name]) => name).join(";"),
+    input.payloadHash,
+  ].join("\n");
+  const dateStamp = input.amzDate.slice(0, 8);
+  const scope = `${dateStamp}/${input.region}/${input.service}/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    input.amzDate,
+    scope,
+    createHash("sha256").update(canonicalRequest).digest("hex"),
+  ].join("\n");
+  const hmac = (key: Uint8Array | string, data: string): Buffer =>
+    createHmac("sha256", key).update(data, "utf8").digest();
+  const signingKey = hmac(
+    hmac(hmac(hmac(`AWS4${input.secretAccessKey}`, dateStamp), input.region), input.service),
+    "aws4_request",
+  );
+  const signature = createHmac("sha256", signingKey).update(stringToSign, "utf8").digest("hex");
+  return `AWS4-HMAC-SHA256 Credential=${input.accessKeyId}/${scope}, SignedHeaders=${headers
+    .map(([name]) => name)
+    .join(";")}, Signature=${signature}`;
+};
+
 /**
  * A minimal S3-compatible stub over loopback HTTP for offline driver tests:
  * PUT/GET/HEAD/DELETE objects, multipart initiate/part/complete, and LIST
  * (v2, prefix only). Rejects unsigned requests with 401 so tests prove the
  * driver signs everything it sends, and verifies every SigV4 signature the
- * way a real store does — over the path with repeated slashes collapsed —
- * answering a MinIO-shaped 403 `SignatureDoesNotMatch` when the signature
- * covers a different path than the one the store canonicalises to.
+ * way a real store does — over the path as received, decoded first like
+ * AWS/MinIO or taken raw like GCS (`canonicalPath`) — answering a
+ * MinIO-shaped 403 `SignatureDoesNotMatch` when the signature covers a
+ * different path than the one the store canonicalises to.
  */
 export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubServer> => {
   const objects = new Map<string, StoredStub>();
@@ -62,6 +145,7 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
 
   const accessKeyId = options.accessKeyId ?? STUB_ACCESS_KEY_ID;
   const secretAccessKey = Redacted.make(options.secretAccessKey ?? STUB_SECRET_ACCESS_KEY);
+  const canonicalPath = options.canonicalPath ?? "decoded";
 
   /**
    * Recomputes the `Authorization` header the client should have sent for
@@ -98,6 +182,20 @@ export const startS3Stub = async (options: S3StubOptions = {}): Promise<S3StubSe
       const value = request.headers[name];
       if (typeof value !== "string") return undefined;
       headers[name] = value;
+    }
+    if (canonicalPath === "raw") {
+      return signOverRawPath({
+        accessKeyId,
+        secretAccessKey: Redacted.value(secretAccessKey),
+        region: region ?? "",
+        service: service ?? "",
+        method,
+        rawPath: path,
+        search,
+        headers: { ...headers, host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate },
+        payloadHash,
+        amzDate,
+      });
     }
     return signRequest({
       credentials: { accessKeyId, secretAccessKey, region: region ?? "", service: service ?? "" },
