@@ -31,6 +31,14 @@ export {
   validateSmtpOptions,
 } from "./drivers/smtp.js";
 export {
+  type ApiDsnScheme,
+  type DsnDriverFactories,
+  defaultDsnDriverFactories,
+  driverFromDsn,
+  type MailerDsn,
+  parseMailerDsn,
+} from "./dsn.js";
+export {
   MailDeliveryFailed,
   type MailError,
   type MailFailureClass,

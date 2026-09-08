@@ -195,7 +195,13 @@ const openSession = (options: SmtpOptions): Promise<Session> =>
 
     const mode = tlsModeOf(options);
     const tlsOptions = {
-      servername: options.tls?.servername ?? options.host,
+      // An IP-literal SNI servername is refused by node:tls ("Setting the TLS
+      // ServerName to an IP address is not permitted"), so it is only set for
+      // real hostnames — IP-host relays then authenticate via the certificate
+      // SAN/rejectUnauthorized instead of SNI.
+      ...(net.isIP(options.tls?.servername ?? options.host) === 0
+        ? { servername: options.tls?.servername ?? options.host }
+        : {}),
       rejectUnauthorized: options.tls?.rejectUnauthorized ?? true,
       ...(options.tls?.ca === undefined ? {} : { ca: [...toArray(options.tls.ca)] }),
     };
