@@ -74,19 +74,28 @@ describe("S3 object path encoding (what is sent equals what is signed)", () => {
     expect(list.search).toBe("?list-type=2&prefix=tenant%2Fworkspaces%2Fws-1%2F");
   });
 
-  test("a key prefix is encoded segment by segment, like the key", async () => {
+  test("a key prefix is encoded segment by segment, RFC 3986, like the key", async () => {
     const transport = recordingFetch();
     const storage = makeS3Storage({
       bucket: "bucket",
       region: "us-east-1",
       ...credentials,
       endpoint: "http://store.local",
-      keyPrefix: "acme corp/eu west",
+      // Every class the encoder must handle: a space (which `new URL` would
+      // encode by itself, so it proves nothing alone), the characters
+      // `encodeURIComponent` leaves bare but SigV4 percent-encodes (`!'()*`),
+      // a `#` and a `?` (an unencoded one would swallow the key into a
+      // fragment or a query), and a `%` (an unencoded one is a broken escape).
+      keyPrefix: "acme corp/eu-west (#1)!/50%/q?a",
       fetchImpl: transport.fetchImpl,
     });
     const key = await Effect.runPromise(objectKey("files/one.bin"));
     await Effect.runPromise(storage.head(key));
-    expect(pathOf(transport.urls[0] ?? "")).toBe("/bucket/acme%20corp/eu%20west/files/one.bin");
+    // Asserted on the whole URL, not on `pathname`: a swallowed key would
+    // still leave a plausible pathname behind.
+    expect(transport.urls[0]).toBe(
+      "http://store.local/bucket/acme%20corp/eu-west%20%28%231%29%21/50%25/q%3Fa/files/one.bin",
+    );
   });
 
   test("the readiness probe key is sent as /bucket/readiness/probe", async () => {
@@ -203,6 +212,31 @@ describe("S3 driver against a store that canonicalises the raw request path (GCS
     );
     expect(stored.size).toBe(payload.byteLength);
     expect(store.objects.get("exports/2026/09/big.bin")?.bytes.byteLength).toBe(payload.byteLength);
+    expect(store.unverified.length).toBe(before);
+  });
+
+  test("a key prefix with reserved characters verifies and lands under its literal name", async () => {
+    const store = await rawStore();
+    const storage = makeS3Storage({
+      bucket: "stub-bucket",
+      region: "europe-west1",
+      ...credentials,
+      endpoint: store.url,
+      keyPrefix: "acme corp/eu-west (#1)!/50%",
+    });
+    const key = await Effect.runPromise(objectKey("files/two.bin"));
+    const before = store.unverified.length;
+    await Effect.runPromise(
+      storage.put({ key, body: new Uint8Array([2]), contentType: "text/plain" }),
+    );
+    expect(store.objects.has("acme corp/eu-west (#1)!/50%/files/two.bin")).toBe(true);
+    const head = await Effect.runPromise(storage.head(key));
+    expect(head.size).toBe(1);
+    // The list prefix travels as a query value; the stub's raw mode must
+    // canonicalise the query the way SigV4 does (`!()` encoded) or the
+    // signature of a prefix with those characters never verifies.
+    const listed = await Effect.runPromise(storage.list("files/"));
+    expect(listed.map((object) => String(object.key))).toContain("files/two.bin");
     expect(store.unverified.length).toBe(before);
   });
 
