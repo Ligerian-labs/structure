@@ -105,7 +105,10 @@ describe("OutboxRelay", () => {
   test("replay requeues dead letters with a clean slate", async () => {
     const program = Effect.gen(function* () {
       const outbox = yield* Outbox;
-      yield* outbox.enqueue([message("m7"), { ...message("m8"), availableAt: Date.now() + 60_000 }]);
+      yield* outbox.enqueue([
+        message("m7"),
+        { ...message("m8"), availableAt: Date.now() + 60_000 },
+      ]);
       yield* outbox.markFailed("m8", "broker down", 2, Date.now() + 60_000);
       yield* outbox.markDead("m7", "gave up");
       yield* outbox.markDead("m8", "gave up again");

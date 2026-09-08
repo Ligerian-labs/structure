@@ -159,9 +159,9 @@ const make = (
       Effect.forEach(
         messages,
         (message) => sql`
-          INSERT INTO ${sql(tables.outbox)} (id, topic, payload, metadata, status, attempts)
+          INSERT INTO ${sql(tables.outbox)} (id, topic, payload, metadata, status, attempts, available_at)
           VALUES (${message.id}, ${message.topic}, ${jsonText(message.payload)}::jsonb,
-                  ${jsonText(message.metadata)}::jsonb, 'pending', 0)
+                  ${jsonText(message.metadata)}::jsonb, 'pending', 0, ${message.availableAt ?? null})
         `,
         { discard: true },
       );

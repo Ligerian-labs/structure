@@ -183,14 +183,40 @@ const addPartitionColumn = (
   });
 
 /**
+ * Rev 3: the `available_at` column on `outbox` — epoch milliseconds before
+ * which the entry is not eligible for delivery (scheduled enqueue or the
+ * relay's persisted retry backoff) — plus the partial index that serves
+ * `pending`'s due filter. Existing rows are backfilled to NULL
+ * (immediately due), matching pre-rev-3 behavior.
+ */
+const addOutboxAvailableAt = (
+  options?: AdapterOptions,
+): Effect.Effect<void, SqlError, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = tableNames(options);
+    yield* sql`
+      ALTER TABLE ${sql(tables.outbox)}
+      ADD COLUMN IF NOT EXISTS available_at BIGINT
+    `;
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS ${sql(`${tables.outbox}_available_at_idx`)}
+      ON ${sql(tables.outbox)} (available_at)
+      WHERE status = 'pending' AND available_at IS NOT NULL
+    `;
+  });
+
+/**
  * The schema as ordered, idempotent steps, for consumers that keep their
  * own migration ledger (append each new `rev` as a new entry there). Rev 1
  * is the table set up to 0.0.14; rev 2 adds the generated `partition`
- * column and its index to `events`.
+ * column and its index to `events`; rev 3 adds `outbox.available_at` and
+ * its partial index.
  */
 export const migrations: ReadonlyArray<SchemaMigration> = [
   { rev: 1, name: "eventsourcing-pg-tables", apply: createTables },
   { rev: 2, name: "eventsourcing-pg-events-partition", apply: addPartitionColumn },
+  { rev: 3, name: "eventsourcing-pg-outbox-available-at", apply: addOutboxAvailableAt },
 ];
 
 /**

@@ -1,5 +1,11 @@
 import * as SqlClient from "@effect/sql/SqlClient";
-import { Inbox, Outbox, type OutboxEntry, type OutboxMessage, type OutboxStatus } from "@structure-ai/eventsourcing";
+import {
+  Inbox,
+  Outbox,
+  type OutboxEntry,
+  type OutboxMessage,
+  type OutboxStatus,
+} from "@structure-ai/eventsourcing";
 import { Clock, Effect, Layer } from "effect";
 import { jsonText, toNumber } from "./internal.js";
 import { type AdapterOptions, tableNames } from "./schema.js";
@@ -26,15 +32,16 @@ const decodeEntry = (row: OutboxRow): OutboxEntry => {
     status: row.status as OutboxStatus,
     attempts: toNumber(row.attempts),
   };
-  const withError =
-    row.last_error === null ? entry : { ...entry, lastError: row.last_error };
+  const withError = row.last_error === null ? entry : { ...entry, lastError: row.last_error };
   return row.available_at === null
     ? withError
     : { ...withError, availableAt: Number(row.available_at) };
 };
 
 /** The stored columns of one message, schedule included. */
-const messageColumns = (message: OutboxMessage): {
+const messageColumns = (
+  message: OutboxMessage,
+): {
   readonly id: string;
   readonly topic: string;
   readonly payload: string;

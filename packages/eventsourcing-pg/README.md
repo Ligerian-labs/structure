@@ -24,7 +24,7 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 | --- | --- |
 | `layer(config?)` | `PgClient` + `migrate` + every adapter, and the client itself. `config`: `url`, `maxConnections`, `applicationName`, plus the adapter options. |
 | `storesLayer(options?)` | Every adapter on top of an ambient `SqlClient` (no migration). |
-| `migrate(options?)` | Applies every step of `migrations` in order, idempotently: the tables for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency (rev 1), then the generated `partition` column and its index on `events` (rev 2), all prefixed by `tablePrefix`. |
+| `migrate(options?)` | Applies every step of `migrations` in order, idempotently: the tables for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency (rev 1), then the generated `partition` column and its index on `events` (rev 2), then `outbox.available_at` with its partial index for scheduled delivery (rev 3), all prefixed by `tablePrefix`. |
 | `migrations` | The same schema as ordered `{ rev, name, apply(options?) }` steps, for consumers keeping their own migration ledger: record each `rev` as its own entry and append the next one on upgrade. |
 | `tableNames(options?)` | Resolved table names for a prefix — use it for test isolation and cleanup. |
 | `appendWithOutbox(stream, expectedVersion, events, messages)` | Events and outbox rows committed in one transaction. |

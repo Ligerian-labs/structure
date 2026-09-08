@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { unlinkSync } from "node:fs";
 import * as SqlClient from "@effect/sql/SqlClient";
 import type { OutboxMessage } from "@structure-ai/eventsourcing";
 import { Outbox } from "@structure-ai/eventsourcing";
 import { Effect } from "effect";
-import { unlinkSync } from "node:fs";
 import { layer } from "../src/index.js";
 
 const message = (id: string): OutboxMessage => ({

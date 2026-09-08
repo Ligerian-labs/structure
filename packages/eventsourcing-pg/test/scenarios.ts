@@ -308,10 +308,7 @@ export const registerScenarios = (run: RunTest): void => {
           { ...message("s2"), availableAt: now + 60_000 },
           message("s3"),
         ]);
-        expect((yield* outbox.pending(10)).map((entry) => entry.message.id)).toEqual([
-          "s1",
-          "s3",
-        ]);
+        expect((yield* outbox.pending(10)).map((entry) => entry.message.id)).toEqual(["s1", "s3"]);
         // The due filter respects the limit.
         expect((yield* outbox.pending(1)).map((entry) => entry.message.id)).toEqual(["s1"]);
         // Once due, the entry is offered — order still follows insertion.
@@ -323,10 +320,7 @@ export const registerScenarios = (run: RunTest): void => {
         ]);
         // A retryAt in the future hides the entry again (durable backoff).
         yield* outbox.markFailed("s2", "backing off", 1, now + 60_000);
-        expect((yield* outbox.pending(10)).map((entry) => entry.message.id)).toEqual([
-          "s1",
-          "s3",
-        ]);
+        expect((yield* outbox.pending(10)).map((entry) => entry.message.id)).toEqual(["s1", "s3"]);
       }),
     ));
 

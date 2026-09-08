@@ -1,5 +1,15 @@
 import { ConcurrencyConflict } from "@structure-ai/domain";
-import { Clock, Context, Effect, Either, Layer, Option, Ref, Stream, SynchronizedRef } from "effect";
+import {
+  Clock,
+  Context,
+  Effect,
+  Either,
+  Layer,
+  Option,
+  Ref,
+  Stream,
+  SynchronizedRef,
+} from "effect";
 import { CheckpointStore } from "./CheckpointStore.js";
 import {
   type AppendResult,
