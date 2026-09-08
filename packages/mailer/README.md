@@ -4,6 +4,8 @@ Transactional email for Effect applications behind one port: a `Mailer` service 
 
 Messages are schema-validated (`effect/Schema`) before any driver sees them — including CRLF-injection checks on every header field. Delivery failures are classified `transient` (SMTP 4yz, timeouts, provider 5xx/429 — retried with bounded jittered backoff) or `permanent` (SMTP 5yz, provider 4xx — fail fast). Every send is logged and measured without ever logging the subject or body.
 
+Symfony stacks can instead point Structure at their existing `MAILER_DSN` (see [DSN](#dsn)) — `smtp://`, `smtps://`, `resend+api://`, `resend+smtp://`, and `brevo+api://` — with implicit TLS for `smtps://` and credentials kept `Redacted` end to end.
+
 ## Quick start
 
 ```ts
@@ -67,10 +69,11 @@ Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message
 
 ## Settings
 
-`mailerSettings` (`@structure-ai/config`) selects the driver and its credentials; secrets load `Redacted`. `MAIL_FROM` accepts either `noreply@example.com` or a display form such as `Platform <noreply@example.com>`. `layerFromSettings(settings)` parses and validates the sender before it constructs the service. It also checks the selected driver's required setting: `MAIL_SMTP_HOST` for SMTP, `MAIL_RESEND_API_KEY` for Resend, or `MAIL_BREVO_API_KEY` for Brevo. SMTP requires TLS by default: `MAIL_SMTP_TLS=starttls` upgrades before AUTH and refuses a relay that does not offer it, `implicit` speaks TLS from the first byte on port 465 unless `MAIL_SMTP_PORT` says otherwise, and `none` is accepted only for a loopback relay or with `MAIL_SMTP_ALLOW_PLAINTEXT=true`, refused at composition otherwise.
+`mailerSettings` (`@structure-ai/config`) selects the driver and its credentials; secrets load `Redacted`. `MAILER_DSN`, when set, selects the driver outright (see [DSN](#dsn)); otherwise `MAIL_DRIVER` picks it. `MAIL_FROM` accepts either `noreply@example.com` or a display form such as `Platform <noreply@example.com>`. `layerFromSettings(settings)` parses and validates the sender before it constructs the service. It also checks the selected driver's required setting: `MAIL_SMTP_HOST` for SMTP, `MAIL_RESEND_API_KEY` for Resend, or `MAIL_BREVO_API_KEY` for Brevo. SMTP requires TLS by default: `MAIL_SMTP_TLS=starttls` upgrades before AUTH and refuses a relay that does not offer it, `implicit` speaks TLS from the first byte on port 465 unless `MAIL_SMTP_PORT` says otherwise, and `none` is accepted only for a loopback relay or with `MAIL_SMTP_ALLOW_PLAINTEXT=true`, refused at composition otherwise.
 
 | Name | Type | Required | Default | Secret |
 | --- | --- | --- | --- | --- |
+| `MAILER_DSN` | Symfony-compatible DSN (`smtp://`, `smtps://`, `resend+api://`, `resend+smtp://`, `brevo+api://`) | no | — | yes |
 | `MAIL_DRIVER` | `"capture" \| "smtp" \| "resend" \| "brevo"` | no | `capture` | |
 | `MAIL_FROM` | email or `Name <email>` | no | `no-reply@localhost.invalid` | |
 | `MAIL_SMTP_HOST` | string | when driver=smtp | — | |
@@ -84,6 +87,22 @@ Attachments ride as base64 `EmailAttachment`s (≤10 MiB each, ≤10 per message
 | `MAIL_RESEND_BASE_URL` | url (https, or http to loopback) | no | provider host | |
 | `MAIL_BREVO_API_KEY` | secret | when driver=brevo | — | yes |
 | `MAIL_BREVO_BASE_URL` | url (https, or http to loopback) | no | provider host | |
+
+## DSN
+
+Symfony-compatible `MAILER_DSN` support lets a frozen stack keep its delivery configuration unchanged: set `MAILER_DSN` (a secret) and it selects the driver outright, overriding the per-driver settings below. `parseMailerDsn(dsn)` parses to a typed `MailerDsn` value; `driverFromDsn(dsn)` builds the driver (validating transport security exactly like the explicit settings path). Credentials ride in the userinfo and stay `Redacted`; query parameters never carry secrets — a `?password=`/`?api_key=` DSN is a typed `MailValidationError`.
+
+| Scheme | Driver | Notes |
+| --- | --- | --- |
+| `smtp://user:pass@host:port` | smtp | STARTTLS (the driver refuses a relay that offers none, before AUTH); default port 587 |
+| `smtps://user:pass@host:port` | smtp | Implicit TLS from the first byte; default port 465 |
+| `resend+api://KEY@default` | resend | The API key is the userinfo; `?base_url=` overrides the API host (https, or http to loopback) |
+| `resend+smtp://resend@KEY@smtp.resend.com:2465` | smtp | Resend's SMTP relay with AUTH credentials; implicit TLS |
+| `brevo+api://KEY@default` | brevo | Brevo HTTP API; `?base_url=` as above |
+
+Supported query parameters (non-secret): `local_domain=` (EHLO identifier), `verify_peer=false` (skip certificate verification — use only against a test relay), `allow_plaintext=true` (accept cleartext to a non-loopback relay), `base_url=` (API drivers).
+
+An IP-literal host (`smtps://10.0.0.5:465`) works: SNI is not sent for IP addresses (node refuses an IP `servername`), so authentication falls back to certificate verification.
 
 ## Errors
 
