@@ -2,6 +2,21 @@ import * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
 import { Effect } from "effect";
 
+/**
+ * Whether a `SqlError` is SQLite's `duplicate column name` rejection — the
+ * `ALTER TABLE ADD COLUMN` on a database that already has the column.
+ */
+export const isMissingColumn = (error: SqlError): boolean => {
+  const cause = error.cause;
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "message" in cause &&
+    typeof cause.message === "string" &&
+    cause.message.includes("duplicate column name")
+  );
+};
+
 /** Options shared by every adapter in this package. */
 export interface AdapterOptions {
   /** Prefix prepended to every table name (default: none). */
@@ -81,10 +96,15 @@ export const migrate = (
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'published', 'dead')),
         attempts INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
+        available_at INTEGER,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `;
+    // Databases created before the schedule column: add it in place.
+    yield* sql`
+      ALTER TABLE ${sql(tables.outbox)} ADD COLUMN available_at INTEGER
+    `.pipe(Effect.catchIf(isMissingColumn, () => Effect.void));
     yield* sql`
       CREATE TABLE IF NOT EXISTS ${sql(tables.inbox)} (
         consumer_id TEXT NOT NULL,

@@ -1,6 +1,6 @@
 import * as SqlClient from "@effect/sql/SqlClient";
-import { Inbox, Outbox, type OutboxEntry, type OutboxStatus } from "@structure-ai/eventsourcing";
-import { Effect, Layer } from "effect";
+import { Inbox, Outbox, type OutboxEntry, type OutboxMessage, type OutboxStatus } from "@structure-ai/eventsourcing";
+import { Clock, Effect, Layer } from "effect";
 import { jsonText, toNumber } from "./internal.js";
 import { type AdapterOptions, tableNames } from "./schema.js";
 
@@ -12,6 +12,7 @@ interface OutboxRow {
   readonly status: string;
   readonly attempts: number | bigint;
   readonly last_error: string | null;
+  readonly available_at: number | bigint | string | null;
 }
 
 const decodeEntry = (row: OutboxRow): OutboxEntry => {
@@ -25,13 +26,34 @@ const decodeEntry = (row: OutboxRow): OutboxEntry => {
     status: row.status as OutboxStatus,
     attempts: toNumber(row.attempts),
   };
-  return row.last_error === null ? entry : { ...entry, lastError: row.last_error };
+  const withError =
+    row.last_error === null ? entry : { ...entry, lastError: row.last_error };
+  return row.available_at === null
+    ? withError
+    : { ...withError, availableAt: Number(row.available_at) };
 };
+
+/** The stored columns of one message, schedule included. */
+const messageColumns = (message: OutboxMessage): {
+  readonly id: string;
+  readonly topic: string;
+  readonly payload: string;
+  readonly metadata: string;
+  readonly availableAt: number | null;
+} => ({
+  id: message.id,
+  topic: message.topic,
+  payload: jsonText(message.payload),
+  metadata: jsonText(message.metadata),
+  availableAt: message.availableAt ?? null,
+});
 
 /**
  * `Outbox` persisting staged messages in `outbox`. `enqueue` is idempotent
  * per message id (`ON CONFLICT DO NOTHING`); enqueue order is the table's
- * insertion (rowid) order.
+ * insertion (rowid) order. `pending` returns only entries whose
+ * `available_at` (epoch milliseconds, set by `enqueue` for scheduled
+ * messages or by `markFailed` for the retry backoff) has elapsed.
  */
 export const outboxLayer = (
   options?: AdapterOptions,
@@ -43,7 +65,7 @@ export const outboxLayer = (
       const tables = tableNames(options);
       const entries = (whereStatus: OutboxStatus, limit?: number) => {
         const base = sql`
-          SELECT id, topic, payload, metadata, status, attempts, last_error
+          SELECT id, topic, payload, metadata, status, attempts, last_error, available_at
           FROM ${sql(tables.outbox)}
           WHERE status = ${whereStatus}
           ORDER BY rowid ASC
@@ -59,15 +81,30 @@ export const outboxLayer = (
         enqueue: (messages) =>
           Effect.forEach(
             messages,
-            (message) => sql`
-              INSERT INTO ${sql(tables.outbox)} (id, topic, payload, metadata, status, attempts)
-              VALUES (${message.id}, ${message.topic}, ${jsonText(message.payload)},
-                      ${jsonText(message.metadata)}, 'pending', 0)
-              ON CONFLICT (id) DO NOTHING
-            `,
+            (message) => {
+              const columns = messageColumns(message);
+              return sql`
+                INSERT INTO ${sql(tables.outbox)} (id, topic, payload, metadata, status, attempts, available_at)
+                VALUES (${columns.id}, ${columns.topic}, ${columns.payload},
+                        ${columns.metadata}, 'pending', 0, ${columns.availableAt})
+                ON CONFLICT (id) DO NOTHING
+              `;
+            },
             { discard: true },
           ).pipe(Effect.orDie),
-        pending: (limit) => entries("pending", limit),
+        pending: (limit) =>
+          Effect.flatMap(Clock.currentTimeMillis, (now) =>
+            sql<OutboxRow>`
+              SELECT id, topic, payload, metadata, status, attempts, last_error, available_at
+              FROM ${sql(tables.outbox)}
+              WHERE status = 'pending' AND (available_at IS NULL OR available_at <= ${now})
+              ORDER BY rowid ASC
+              LIMIT ${limit}
+            `.pipe(
+              Effect.orDie,
+              Effect.map((rows) => rows.map(decodeEntry)),
+            ),
+          ),
         markPublished: (ids) =>
           ids.length === 0
             ? Effect.void
@@ -76,10 +113,11 @@ export const outboxLayer = (
                 SET status = 'published', updated_at = CURRENT_TIMESTAMP
                 WHERE id IN ${sql.in(ids)}
               `.pipe(Effect.orDie, Effect.asVoid),
-        markFailed: (id, error, attempts) =>
+        markFailed: (id, error, attempts, retryAt) =>
           sql`
             UPDATE ${sql(tables.outbox)}
-            SET attempts = ${attempts}, last_error = ${error}, updated_at = CURRENT_TIMESTAMP
+            SET attempts = ${attempts}, last_error = ${error}, available_at = ${retryAt ?? null},
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = ${id}
           `.pipe(Effect.orDie, Effect.asVoid),
         markDead: (id, error) =>
@@ -88,6 +126,15 @@ export const outboxLayer = (
             SET status = 'dead', last_error = ${error}, updated_at = CURRENT_TIMESTAMP
             WHERE id = ${id}
           `.pipe(Effect.orDie, Effect.asVoid),
+        replay: (ids) =>
+          ids.length === 0
+            ? Effect.void
+            : sql`
+                UPDATE ${sql(tables.outbox)}
+                SET status = 'pending', attempts = 0, last_error = NULL, available_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ${sql.in(ids)} AND status = 'dead'
+              `.pipe(Effect.orDie, Effect.asVoid),
         deadLetters: () => entries("dead"),
       });
     }),
