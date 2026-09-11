@@ -50,7 +50,7 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 ## Recovery procedures
 
 - **Stale or corrupted view model** — rebuild it: `viewProjection.rebuild(...)` truncates the table and replays every event with `live: false` (side-effect consumers must gate on `live`, so a rebuild never re-sends emails). Views are disposable by design.
-- **Stuck outbox entry** — inspect `Outbox.deadLetters()` (last error included). Fix the cause; re-deliver by re-enqueueing a new entry. Dead-lettering is a diagnosis point, not a resolution.
+- **Stuck outbox entry** — inspect `Outbox.deadLetters()` (last error included). Fix the cause, then requeue with `Outbox.replay([id])`: the entry returns to pending with attempts, last error, and any delivery schedule cleared. Dead-lettering is a diagnosis point, not a resolution.
 - **Repeated `ConcurrencyConflict` on one aggregate** — a hot aggregate. `executeWithRetry` absorbs incidental races; sustained conflict is a modeling signal (aggregate too big), not a retry-tuning problem.
 - **Poisoned event (fails a projection handler)** — the projection halts at its checkpoint (at-least-once, pre-checkpoint failure). Fix the handler or add an upcaster for the event's schema version, redeploy, and the projection resumes from the checkpoint.
 - **Importing a frozen event store.** Stop live writers and use `HistoryImporter` instead of `EventStore.append`. The importer preserves source global positions and stream versions, validates each batch before its transaction, and writes no outbox rows. Keep the import and batch ids stable. Retry an interrupted batch unchanged, then resume with its returned token. A token mismatch or changed target stops the import. Mark the last batch complete before enabling writers.

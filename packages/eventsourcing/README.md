@@ -32,7 +32,7 @@ const program = Effect.gen(function* () {
 | `AggregateStore.make(aggregate, registry, opts?)` | `load` (fold history), `execute` (load → decide → append with expected version), `executeWithRetry` (reload+retry on conflict only, default 3); stamps `EventMetadata` including correlation, causation, optional actor, and the command's `partition` and `extensions` (never `origin`). Stream naming: `<AggregateName>-<id>` (aggregate names must not contain `-`). |
 | `SnapshotStore` | Optional; picked up from context when provided, written every `snapshotEvery` events. |
 | `Projection.make/catchup/run/rebuild` + `CheckpointStore` | Named projections, at-least-once, checkpoint per batch, unknown event types skipped and counted, `rebuild` replays with `live: false`. |
-| `Outbox` + `OutboxRelay.run/drain` | Pending → publish → mark; exponential backoff with jitter; after `maxAttempts` (default 5) entries dead-letter with the last error kept for diagnosis. |
+| `Outbox` + `OutboxRelay.run/drain` | Pending → publish → mark; exponential backoff with jitter; after `maxAttempts` (default 5) entries dead-letter with the last error kept for diagnosis. Scheduling is durable: `OutboxMessage.availableAt` delays the first attempt, `pending` returns only due entries, the relay persists the next eligible time through `markFailed` (backoff survives restarts), and `replay(ids)` requeues dead letters fresh. |
 | `Inbox` + `Inbox.dedupe(consumerId, messageId)` | Idempotent consumers: runs the effect only for unseen messages, marks after success. |
 | `InMemory*` layers, `InMemoryAll` | In-memory implementations of every port. |
 

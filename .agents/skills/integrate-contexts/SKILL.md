@@ -30,7 +30,7 @@ yield* appendWithOutbox(streamName, expectedVersion, events, [
    SAVEPOINTs. On sqlite/in-memory, writes are serialized anyway; combine
    per-write transactions as the approximation.
 
-3. **Run the relay** in a worker process: `OutboxRelay.run` polls pending → publishes → marks; exponential backoff with jitter; after `maxAttempts` (default 5) entries dead-letter and keep the last error. `OutboxRelay.drain` empties the queue once (tests, shutdown).
+3. **Run the relay** in a worker process: `OutboxRelay.run` polls pending → publishes → marks; exponential backoff with jitter; after `maxAttempts` (default 5) entries dead-letter and keep the last error. Backoff is durable — the relay persists the next eligible time (`markFailed`), so a restart does not make a backing-off message immediately due. `OutboxMessage.availableAt` schedules the first attempt (durable delayed delivery); `OutboxRelay.drain` empties the queue once (tests, shutdown).
 4. **Consume idempotently** — dedupe every side effect:
 
 ```ts

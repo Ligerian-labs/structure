@@ -24,7 +24,7 @@ const durable = layer({ filename: "./app.db" });            // sqlite
 2. **Use `tableNames({ tablePrefix })`** to namespace tables (`events`, `snapshots`, `checkpoints`, `outbox`, `inbox`, and on pg `idempotency` per prefix) — required for pg test isolation, available for multi-app databases.
    - pg: `layer`/`storesLayer` also provide the cqrs `IdempotencyStore` (`idempotencyTtl`, default 24 hours) — provide it to `CommandBus.layer` instead of `IdempotencyStore.inMemory`, and run `purgeExpiredIdempotency(options)` on a schedule.
 3. **Transactional outbox**: prefer `appendWithOutbox(stream, expectedVersion, events, messages)` — events + outbox rows commit in one transaction, so a crash between "decided" and "notified" is impossible.
-4. **Wire `OutboxRelay.run`** in a worker (or every instance, if cheap): pending → publish → mark, exponential backoff with jitter, dead letters after `maxAttempts` with the last error kept.
+4. **Wire `OutboxRelay.run`** in a worker (or every instance, if cheap): pending → publish → mark, exponential backoff with jitter, dead letters after `maxAttempts` with the last error kept. Backoff and `availableAt` scheduling are durable in the SQL adapters (survive restarts); requeue dead letters with `Outbox.replay([id])`.
 5. **Tests:** sqlite via `layer({ filename: ":memory:" })` — same scenarios as in-memory; pg tests must skip unless `DATABASE_URL` is set (see `packages/eventsourcing-pg/test/pg.test.ts`: unique table prefix per run, tables dropped after).
 
 ## Rules

@@ -292,6 +292,76 @@ export const registerScenarios = (run: RunTest): void => {
       }),
     ));
 
+  test("outbox scheduling: pending returns only due entries and preserves order", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const outbox = yield* Outbox;
+        const now = Date.now();
+        yield* outbox.enqueue([
+          message("s1"),
+          { ...message("s2"), availableAt: now + 60_000 },
+          message("s3"),
+        ]);
+        expect((yield* outbox.pending(10)).map((entry) => entry.message.id)).toEqual(["s1", "s3"]);
+        // The due filter respects the limit.
+        expect((yield* outbox.pending(1)).map((entry) => entry.message.id)).toEqual(["s1"]);
+        // Once due, the entry is offered — order still follows insertion.
+        yield* outbox.markFailed("s2", "not yet", 0, now - 1);
+        expect((yield* outbox.pending(10)).map((entry) => entry.message.id)).toEqual([
+          "s1",
+          "s2",
+          "s3",
+        ]);
+        // A retryAt in the future hides the entry again (durable backoff).
+        yield* outbox.markFailed("s2", "backing off", 1, now + 60_000);
+        expect((yield* outbox.pending(10)).map((entry) => entry.message.id)).toEqual(["s1", "s3"]);
+      }),
+    ));
+
+  test("outbox scheduling: markFailed without a retryAt keeps the entry due", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const outbox = yield* Outbox;
+        yield* outbox.enqueue([{ ...message("d1"), availableAt: Date.now() + 60_000 }]);
+        expect(yield* outbox.pending(10)).toEqual([]);
+        // Clearing the schedule (no retryAt) makes the entry immediately due.
+        yield* outbox.markFailed("d1", "schedule cleared", 1);
+        const pending = yield* outbox.pending(10);
+        expect(pending.map((entry) => entry.message.id)).toEqual(["d1"]);
+        expect(pending[0]?.attempts).toBe(1);
+        expect(pending[0]?.availableAt).toBeUndefined();
+      }),
+    ));
+
+  test("outbox replay: dead letters return fresh and the schedule resets", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const outbox = yield* Outbox;
+        const now = Date.now();
+        yield* outbox.enqueue([message("p1"), { ...message("p2"), availableAt: now + 60_000 }]);
+        yield* outbox.markFailed("p2", "scheduled", 2, now + 60_000);
+        yield* outbox.markDead("p1", "gave up");
+        yield* outbox.markDead("p2", "gave up too");
+        // Unknown ids and non-dead entries are ignored.
+        yield* outbox.replay(["missing"]);
+        yield* outbox.enqueue([message("p3")]);
+        yield* outbox.replay(["p3"]);
+        expect((yield* outbox.deadLetters()).map((entry) => entry.message.id)).toEqual([
+          "p1",
+          "p2",
+        ]);
+        yield* outbox.replay(["p1", "p2"]);
+        expect(yield* outbox.deadLetters()).toEqual([]);
+        const pending = yield* outbox.pending(10);
+        expect(pending.map((entry) => entry.message.id)).toEqual(["p1", "p2", "p3"]);
+        for (const entry of pending) {
+          expect(entry.attempts).toBe(0);
+          expect(entry.lastError).toBeUndefined();
+          expect(entry.availableAt).toBeUndefined();
+        }
+      }),
+    ));
+
   test("inbox dedup: seen/markProcessed per consumer, idempotent", () =>
     run(() =>
       Effect.gen(function* () {

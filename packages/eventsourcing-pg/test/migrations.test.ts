@@ -1,7 +1,8 @@
 /**
  * The schema as versioned steps: rev 1 is the table set as it shipped up
  * to 0.0.14, rev 2 adds the generated `partition` column and its index on
- * `events`. `migrate()` applies every step in order and is idempotent.
+ * `events`, rev 3 adds `outbox.available_at` with its partial index.
+ * `migrate()` applies every step in order and is idempotent.
  *
  * Runs against `DATABASE_URL` only (see pg.test.ts).
  */
@@ -28,6 +29,17 @@ interface IndexRow {
 interface PartitionRow {
   readonly position: number | bigint | string;
   readonly partition: string | null;
+}
+
+interface OutboxColumnRow {
+  readonly column_name: string;
+  readonly is_nullable: string;
+  readonly data_type: string;
+}
+
+interface OutboxIndexRow {
+  readonly indexname: string;
+  readonly indexdef: string;
 }
 
 const step = (rev: number) => {
@@ -57,6 +69,25 @@ const partitionIndex = (events: string) =>
     (sql) => sql<IndexRow>`
       SELECT indexname, indexdef FROM pg_indexes
       WHERE tablename = ${events} AND indexname = ${`${events}_partition_position_idx`}
+    `,
+  );
+
+const outboxAvailableAtColumn = (outbox: string) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql<OutboxColumnRow>`
+      SELECT column_name, is_nullable, data_type
+      FROM information_schema.columns
+      WHERE table_name = ${outbox} AND column_name = 'available_at'
+    `,
+  );
+
+const outboxAvailableAtIndex = (outbox: string) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql<OutboxIndexRow>`
+      SELECT indexname, indexdef FROM pg_indexes
+      WHERE tablename = ${outbox} AND indexname = ${`${outbox}_available_at_idx`}
     `,
   );
 
@@ -93,8 +124,8 @@ const runTest = (
 };
 
 describe.skipIf(databaseUrl === undefined)("pg schema migration steps (needs DATABASE_URL)", () => {
-  test("migrations are rev 1 (the 0.0.14 tables) and rev 2 (partition column + index), in order", () => {
-    expect(migrations.map((migration) => migration.rev)).toEqual([1, 2]);
+  test("migrations are rev 1 (the 0.0.14 tables), rev 2 (partition column + index), and rev 3 (outbox available_at + index), in order", () => {
+    expect(migrations.map((migration) => migration.rev)).toEqual([1, 2, 3]);
     for (const migration of migrations) {
       expect(migration.name.length).toBeGreaterThan(0);
     }
@@ -140,6 +171,41 @@ describe.skipIf(databaseUrl === undefined)("pg schema migration steps (needs DAT
           WHERE partition = 'agency-42' ORDER BY position
         `;
         expect(filtered.map((row) => String(row.position))).toEqual(["3"]);
+      }),
+    ));
+
+  test("rev 3 on an outbox already holding rows: column added nullable, existing rows NULL, partial index present", () =>
+    runTest((options) =>
+      Effect.gen(function* () {
+        const tables = tableNames(options);
+        yield* step(1).apply(options);
+        yield* step(2).apply(options);
+        // an outbox row from before rev 3: no available_at column yet
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO ${sql(tables.outbox)} (id, topic, payload, metadata)
+          VALUES ('pre-rev-3', 'orders', '{}'::jsonb, '{}'::jsonb)
+        `;
+        expect(yield* outboxAvailableAtColumn(tables.outbox)).toEqual([]);
+        expect(yield* outboxAvailableAtIndex(tables.outbox)).toEqual([]);
+
+        yield* step(3).apply(options);
+
+        const columns = yield* outboxAvailableAtColumn(tables.outbox);
+        expect(columns.length).toBe(1);
+        expect(columns[0]?.is_nullable).toBe("YES");
+        expect(columns[0]?.data_type).toBe("bigint");
+        // NULL means immediately due: the pre-rev-3 row keeps its behavior
+        const rows = yield* sql<{ readonly available_at: string | null }>`
+          SELECT available_at FROM ${sql(tables.outbox)} WHERE id = 'pre-rev-3'
+        `;
+        expect(rows.map((row) => row.available_at)).toEqual([null]);
+
+        const indexes = yield* outboxAvailableAtIndex(tables.outbox);
+        expect(indexes.length).toBe(1);
+        // partial: serves pending's due filter (status pending AND available_at set)
+        expect(indexes[0]?.indexdef).toContain("status = 'pending'");
+        expect(indexes[0]?.indexdef).toContain("available_at IS NOT NULL");
       }),
     ));
 

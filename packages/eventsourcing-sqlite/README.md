@@ -20,7 +20,7 @@ On an existing `SqlClient`: `storesLayer(options)` merges every adapter; run `mi
 | --- | --- |
 | `layer(config)` | `SqliteClient` for `filename` (WAL on unless `disableWAL`) + `migrate` + every adapter, and the client itself. |
 | `storesLayer(options?)` | Every adapter on top of an ambient `SqlClient` (no migration). |
-| `migrate(options?)` | Idempotent `CREATE TABLE IF NOT EXISTS` for events, snapshots, checkpoints, outbox, and inbox, prefixed by `tablePrefix`, plus the expression index on the envelope's partition (`json_extract(metadata, '$.partition')`, `position`) that serves `readAll({ partition })`; an existing database gets the index at the next `migrate`. |
+| `migrate(options?)` | Idempotent `CREATE TABLE IF NOT EXISTS` for events, snapshots, checkpoints, outbox (with the `available_at` schedule column — added in place for existing databases), and inbox, prefixed by `tablePrefix`, plus the expression index on the envelope's partition (`json_extract(metadata, '$.partition')`, `position`) that serves `readAll({ partition })`; an existing database gets the index at the next `migrate`. |
 | `tableNames(options?)` | Resolved table names for a prefix — use it for test isolation and cleanup. |
 | `appendWithOutbox(stream, expectedVersion, events, messages)` | Events and outbox rows committed in one transaction. |
 | `AdapterOptions` | `tablePrefix` (default none). |
