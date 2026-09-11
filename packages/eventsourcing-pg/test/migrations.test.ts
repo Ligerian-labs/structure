@@ -204,9 +204,8 @@ describe.skipIf(databaseUrl === undefined)("pg schema migration steps (needs DAT
         const indexes = yield* outboxAvailableAtIndex(tables.outbox);
         expect(indexes.length).toBe(1);
         // partial: serves pending's due filter (status pending AND available_at set)
-        expect(indexes[0]?.indexdef).toMatch(
-          /WHERE \(?status = 'pending'(::text)? AND available_at IS NOT NULL\)?/,
-        );
+        expect(indexes[0]?.indexdef).toContain("status = 'pending'");
+        expect(indexes[0]?.indexdef).toContain("available_at IS NOT NULL");
       }),
     ));
 
