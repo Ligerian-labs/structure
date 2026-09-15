@@ -1,0 +1,37 @@
+{
+  "name": "@structure-ai/fixtures",
+  "version": "0.0.0",
+  "description": "Composable command-based fixtures for development, tests, and previews, with named scenarios and an application CLI.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/fixtures"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@structure-ai/cqrs": "workspace:*",
+    "@structure-ai/cli": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:",
+    "@structure-ai/domain": "workspace:*"
+  }
+}

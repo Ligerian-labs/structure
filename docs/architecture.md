@@ -86,3 +86,7 @@ The classification is decided where the error is born and preserved across layer
 | Traffic/error/latency metrics per boundary | `Metrics.track` at bus, HTTP, AI call sites |
 | Retries | One owner per operation: `executeWithRetry` (conflicts), `OutboxRelay` (publishing), `ai` (transient LLM failures), `client` (transport, for typed API calls). Never nested. |
 | Secrets | `Redacted` from `Settings.secret` to call site; never logged |
+
+## Fixture scenarios
+
+[`@structure-ai/fixtures`](../packages/fixtures/README.md) composes shared base data and named feature scenarios above CQRS. Instances declare explicit dependencies and create data through the app command bus. The app provides authorization, persistence, external adapters and a readiness hook that makes the state usable through queries. Direct composition preserves typed outputs for tests; a mountable CLI exposes the same scenarios to agents and developers. See [ADR-0019](decisions/0019-composable-command-fixtures.md) for sharing, isolation and production boundaries.

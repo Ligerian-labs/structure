@@ -21,6 +21,7 @@ Monorepo of small, independently importable packages under the `@structure-ai/*`
 | `@structure-ai/migrations` | Versioned, ordered, forward-only SQL migrations (dialect-agnostic over `@effect/sql`), with status reporting and a ready-made CLI command group. |
 | `@structure-ai/runtime` | App bootstrap: config-first startup, readiness checks, shutdown coordinator with bounded finalizers, Bun entrypoint. |
 | `@structure-ai/http` | Routes/handlers on `@effect/platform` HttpApi: OpenAPI + Swagger UI, health probes, error mapping, CQRS bridge, Bun server with graceful shutdown. |
+| [`@structure-ai/fixtures`](packages/fixtures/README.md) | Shared base data and named feature scenarios through application commands, with isolated runs and a CLI. |
 | `@structure-ai/cli` | CLI commands on `@effect/cli` with config/observability pre-wired and classified exit codes. |
 | `@structure-ai/ai` | LLM provider bindings on `@effect/ai` (Anthropic/OpenAI): typed calls, structured output, bounded retries, token/cost metrics, deterministic test model. |
 | `@structure-ai/mcp` | MCP server bindings: expose schema-typed tools/resources and CQRS messages to coding agents over stdio or HTTP. |
