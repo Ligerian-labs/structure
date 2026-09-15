@@ -67,3 +67,9 @@ No environment-name branching anywhere: behavior differences ride on explicit se
 `.env` files (`@structure-ai/dotenv`) are a local-development source, loaded explicitly at the entrypoint and always below the real environment: a variable the platform sets wins, the file's value is reported as shadowed. Production images carry no `.env` files — a missing cascade file is not an error, a missing required variable is (`<app> dotenv check` exits 78 with the full list, and startup fails with the same `ConfigLoadError`).
 
 One such setting deserves a warning: the `trustProxy` flag passed to `clientIp` (HTTP rate limiting). Keep it `false` unless a proxy you operate terminates every connection and appends the client address to `x-forwarded-for`; with it on, a directly reachable replica lets any client choose its own rate-limit bucket.
+
+## Preparing data for feature verification
+
+Use a shared fixture catalog for base users/CMS content and named feature scenarios. Mount [`fixturesCommand`](../packages/fixtures/README.md#application-cli) in the app CLI with the intended target layers. Resolve the fixture capability from typed configuration, false by default, and never grant it for production resources. Provide recording/test adapters for external effects. Production CMS provisioning is a separate reviewed workflow.
+
+Run `fixtures plan <scenario> --input '<json>'` before `fixtures load`. Loading creates a fresh run and waits for the configured readiness hook. Keep the receipt and verify the actual query/API/UI behavior. Completed data survives failures; an interrupted invocation can be identified by its stderr progress receipt. Cleanup is explicit through `fixtures cleanup <run-id>` and an app-owned command hook that enforces run ownership. See the [package lifecycle contract](../packages/fixtures/README.md#run-and-verify) and [agent recipe](../.agents/skills/create-fixtures/SKILL.md).

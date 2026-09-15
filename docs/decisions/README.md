@@ -22,3 +22,4 @@ Numbered, immutable once accepted; reversing a decision means a new ADR marking 
 | [0016](0016-idempotency-scoped-per-actor-with-payload-identity.md) | Idempotency keys scoped per actor with payload identity |
 | [0017](0017-dotenv-as-a-package-above-config.md) | `.env` support is a package above `config`; environment wins over files unless overridden; no encryption |
 | [0018](0018-partition-on-the-event-envelope.md) | An optional partition on the event envelope: the store filters on it and enforces its immutability per stream; meaning and ownership stay with the application |
+| [0019](0019-composable-command-fixtures.md) | Explicit fixture instances and base/feature catalogs create isolated application data through commands, with app-owned readiness and cleanup |

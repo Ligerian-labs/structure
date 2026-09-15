@@ -165,3 +165,7 @@ For local development, keep the values in `.env` files and load them below the r
 ## 8. Verify
 
 Every step above has a test-shaped equivalent in the owning package's `test/` directory — start from those when writing your app's tests: in-memory event store, `TestModel` for LLM calls, sqlite `:memory:` for SQL, no network.
+
+## Prepare repeatable feature data
+
+Once the app has commands and queries, define shared base fixtures and feature scenarios with [`@structure-ai/fixtures`](../packages/fixtures/README.md). Load them through the app CLI in an isolated target, wait for read models, and exercise the feature with the returned IDs. The [create-fixtures recipe](../.agents/skills/create-fixtures/SKILL.md) covers composition and verification; the [stock-flow example](../packages/fixtures/test/business-flow.test.ts) shows the same definitions used in a test.
