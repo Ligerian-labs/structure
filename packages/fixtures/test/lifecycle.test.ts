@@ -80,3 +80,19 @@ test("cleanup is explicit, capability-guarded and scoped to one run UUID", async
   await Effect.runPromise(cleanup({ runId, remove, enabled: true }));
   expect(removed).toEqual([runId]);
 });
+
+test("fixture context never converts a defect into a recoverable failure", async () => {
+  const defect = new Error("fixture bug");
+  const result = await Effect.runPromiseExit(
+    run({
+      enabled: true,
+      fixtures: { broken: defineFixture({ key: "broken", create: () => Effect.die(defect) }) },
+      ready: () => Effect.void,
+    }).pipe(Effect.provide(bus)),
+  );
+  expect(Exit.isFailure(result)).toBe(true);
+  if (Exit.isFailure(result)) {
+    expect([...Cause.defects(result.cause)]).toEqual([defect]);
+    expect([...Cause.failures(result.cause)]).toEqual([]);
+  }
+});

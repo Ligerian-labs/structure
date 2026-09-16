@@ -59,3 +59,9 @@ Measured on a local Postgres 17 (two-event appends to distinct streams): a singl
 ## Tests
 
 `bun test` runs the suite against `DATABASE_URL` and skips it otherwise. Each test creates a uniquely prefixed table set and drops it afterwards, so one database serves parallel runs.
+
+## Persistence failures
+
+The storage, history-import and idempotency adapters expose `PersistenceError` for SQL and JSON failures, retaining the operation and diagnostic cause. Version races remain `ConcurrencyConflict`. See the [shared error contract](../eventsourcing/README.md#persistence-failures).
+
+SQL-specific helpers such as `migrate` and `appendWithOutbox` retain their explicit `SqlError` channel. JSON encoding in `appendWithOutbox` can also fail with `PersistenceError`.

@@ -4,11 +4,14 @@ import * as HttpApiBuilder from "@effect/platform/HttpApiBuilder";
 import * as HttpApp from "@effect/platform/HttpApp";
 import type * as HttpPlatform from "@effect/platform/HttpPlatform";
 import * as HttpServer from "@effect/platform/HttpServer";
+import * as HttpServerError from "@effect/platform/HttpServerError";
 import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import type * as BunContext from "@effect/platform-bun/BunContext";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
+import { Correlation } from "@structure-ai/observability";
 import { Readiness } from "@structure-ai/runtime";
 import { Cause, type Duration, Effect, Layer, Option } from "effect";
+import { defaultErrorResponse } from "./errors.js";
 import * as Middleware from "./middleware.js";
 import { compileMounts, InvalidMounts, type Mount, type MountTable, matchMount } from "./mounts.js";
 import {
@@ -67,16 +70,6 @@ const graceful = (
     }),
   );
 
-const isRouteNotFound = (cause: Cause.Cause<unknown>): boolean =>
-  Option.match(Cause.failureOption(cause), {
-    onNone: () => false,
-    onSome: (error) =>
-      typeof error === "object" &&
-      error !== null &&
-      "_tag" in error &&
-      (error as { _tag: unknown })._tag === "RouteNotFound",
-  });
-
 const pathOf = (request: HttpServerRequest.HttpServerRequest): string => {
   const url = request.url;
   const end = url.indexOf("?");
@@ -100,26 +93,41 @@ const dispatch =
       const path = pathOf(request);
       const mount = matchMount(mounts, path);
       if (mount !== undefined) {
-        // A rejecting handler is a defect: `problems` logs the cause and
-        // answers with the 500 problem carrying only the correlation id.
+        // Promise rejections are expected transport failures at this boundary.
+        // Log them and respond safely without manufacturing a defect.
         return yield* HttpApp.fromWebHandler(mount.handler).pipe(
-          Effect.catchAll((error) => Effect.die(error)),
+          Effect.catchAll((error) =>
+            Effect.logError("mounted handler failed", error).pipe(
+              Effect.zipRight(
+                Effect.map(Correlation.current, (context) =>
+                  defaultErrorResponse(undefined, context.correlationId),
+                ),
+              ),
+            ),
+          ),
         );
       }
       if (staticServer === undefined) return yield* app;
+      // HttpApi's composed app erases RouteNotFound from its declared channel.
+      // Recover only a single validated routing failure, never a compound cause.
       return yield* app.pipe(
-        Effect.catchAllCause((cause) =>
-          isRouteNotFound(cause)
-            ? staticServer.serve(request, path).pipe(
-                Effect.flatMap(
-                  Option.match({
-                    onNone: () => Effect.failCause(cause),
-                    onSome: Effect.succeed,
-                  }),
-                ),
-              )
-            : Effect.failCause(cause),
-        ),
+        Effect.catchAllCause((cause) => {
+          const failure: Cause.Cause<unknown> = cause;
+          if (
+            !Cause.isFailType(failure) ||
+            !(failure.error instanceof HttpServerError.RouteNotFound)
+          ) {
+            return Effect.failCause(cause);
+          }
+          return staticServer.serve(request, path).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.failCause(cause),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
+        }),
       );
     });
 

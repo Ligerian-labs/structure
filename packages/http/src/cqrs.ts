@@ -92,24 +92,21 @@ const dispatchOptions = (
   };
 };
 
-const failWithProblem = (error: unknown): Effect.Effect<never, HttpProblem> =>
+/** Map each typed dispatch failure, preserving defects, interruption and cause composition. */
+const dispatchErrors = <A, E, R, FailureType, FailureEncoded>(
+  effect: Effect.Effect<A, E, R>,
+  failure: Schema.Schema<FailureType, FailureEncoded> | undefined,
+): Effect.Effect<A, HttpProblem | FailureType, R> =>
   Effect.flatMap(Correlation.current, (context) =>
-    Effect.fail(toProblem(error, context.correlationId)),
+    effect.pipe(
+      Effect.mapError((error) => {
+        const declared = failure !== undefined && ParseResult.is(failure)(error);
+        return declared
+          ? (new DeclaredBusinessFailure({ failure: error }) as unknown as FailureType)
+          : toProblem(error, context.correlationId);
+      }),
+    ),
   );
-
-/**
- * Builds the dispatch-error handler shared by the command and query bridges:
- * declared business failures travel on (wrapped in the internal marker, see
- * {@link DeclaredBusinessFailure}), everything else becomes a problem.
- */
-const bridgeErrorHandler =
-  <FailureType, FailureEncoded>(failure: Schema.Schema<FailureType, FailureEncoded> | undefined) =>
-  (error: unknown): Effect.Effect<never, HttpProblem | FailureType> => {
-    const declared = failure !== undefined && ParseResult.is(failure)(error);
-    return declared
-      ? Effect.fail(new DeclaredBusinessFailure({ failure: error }) as unknown as FailureType)
-      : failWithProblem(error);
-  };
 
 /**
  * Turns a command definition into an `HttpApiBuilder` endpoint handler:
@@ -148,9 +145,10 @@ export const command =
     request: BridgeRequest<PayloadEncoded>,
   ): Effect.Effect<SuccessType, HttpProblem | FailureType, CommandBus> =>
     Effect.flatMap(CommandBus, (bus) =>
-      bus
-        .dispatch(definition, request.payload, dispatchOptions(options, request.request))
-        .pipe(Effect.catchAll(bridgeErrorHandler(definition.failure))),
+      dispatchErrors(
+        bus.dispatch(definition, request.payload, dispatchOptions(options, request.request)),
+        definition.failure,
+      ),
     );
 
 /**
@@ -184,9 +182,10 @@ export const query =
     request: BridgeRequest<PayloadEncoded>,
   ): Effect.Effect<SuccessType, HttpProblem | FailureType, QueryBus> =>
     Effect.flatMap(QueryBus, (bus) =>
-      bus
-        .dispatch(definition, request.payload, dispatchOptions(options, request.request))
-        .pipe(Effect.catchAll(bridgeErrorHandler(definition.failure))),
+      dispatchErrors(
+        bus.dispatch(definition, request.payload, dispatchOptions(options, request.request)),
+        definition.failure,
+      ),
     );
 
 /**

@@ -19,7 +19,7 @@ export interface SchedulerHarness {
     readonly pollMillis?: number;
     readonly leaseMillis?: number;
     readonly drainTimeoutMillis?: number;
-  }) => Promise<Fiber.RuntimeFiber<void, never>>;
+  }) => Promise<Fiber.RuntimeFiber<void, import("../src/index.js").WorkerError>>;
   /** Log records emitted through the harness logger (message + annotations). */
   readonly logRecords: () => ReadonlyArray<{
     message: string;

@@ -90,3 +90,9 @@ The classification is decided where the error is born and preserved across layer
 ## Fixture scenarios
 
 [`@structure-ai/fixtures`](../packages/fixtures/README.md) composes shared base data and named feature scenarios above CQRS. Instances declare explicit dependencies and create data through the app command bus. The app provides authorization, persistence, external adapters and a readiness hook that makes the state usable through queries. Direct composition preserves typed outputs for tests; a mountable CLI exposes the same scenarios to agents and developers. See [ADR-0019](decisions/0019-composable-command-fixtures.md) for sharing, isolation and production boundaries.
+
+## Typed infrastructure failures
+
+Persistence ports and their callers expose `PersistenceError`; adapters no longer turn routine SQL, broker or stored-data failures into defects to satisfy `E = never`. CQRS handlers accept this infrastructure error separately from their declared public business schemas. HTTP returns a safe 500 for it. Its default classification prevents automatic retries of ambiguous writes.
+
+Use typed recovery for expected failures. At a transport, process or worker boundary that must inspect a `Cause`, preserve cancellation and defects before considering recovery. A matching tag is insufficient at an unknown boundary. See [ADR-0020](decisions/0020-typed-persistence-and-cause-boundaries.md) for the contract and upgrade guidance.

@@ -1,9 +1,9 @@
-import { Context, Effect, Layer, Ref } from "effect";
+import { Cause, Context, Effect, Layer, Ref } from "effect";
 
 /** A named probe evaluated on every `checkAll`. Failures and defects count as not-ok. */
 export interface ReadinessCheck {
   readonly name: string;
-  readonly run: Effect.Effect<boolean>;
+  readonly run: Effect.Effect<boolean, unknown>;
 }
 
 /** Aggregate readiness state, suitable for rendering as an HTTP health response. */
@@ -40,7 +40,11 @@ export class Readiness extends Context.Tag("@structure-ai/runtime/Readiness")<
         const results = yield* Effect.forEach(registered, (check) =>
           check.run.pipe(
             // A failing or defect-throwing check is a "not ready" answer, never a crash.
-            Effect.catchAllCause(() => Effect.succeed(false)),
+            Effect.catchAllCause((cause) =>
+              Cause.isInterrupted(cause)
+                ? Effect.failCause(Cause.stripFailures(cause))
+                : Effect.succeed(false),
+            ),
             Effect.map((ok) => ({ name: check.name, ok })),
           ),
         );

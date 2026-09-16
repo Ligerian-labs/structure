@@ -1,6 +1,8 @@
 import type * as HttpApiEndpoint from "@effect/platform/HttpApiEndpoint";
+import { HttpApiDecodeError } from "@effect/platform/HttpApiError";
 import * as HttpApiSchema from "@effect/platform/HttpApiSchema";
 import type { HttpMethod } from "@effect/platform/HttpMethod";
+import { RouteNotFound } from "@effect/platform/HttpServerError";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import { Schema } from "effect";
 
@@ -153,39 +155,58 @@ export const withDefaultErrors = <
   RE
 > => endpoint.addError(HttpProblemSchema);
 
-const hasTag = (u: unknown): u is { readonly _tag: string } =>
-  typeof u === "object" &&
-  u !== null &&
-  "_tag" in u &&
-  typeof (u as { _tag: unknown })._tag === "string";
+// Authorization is composed by apps, so validate its public contract here without
+// adding a dependency from HTTP to authorization. A tag alone is insufficient.
+const taxonomy = Schema.Union(
+  Schema.Struct({
+    _tag: Schema.Literal("ValidationFailed"),
+    subject: Schema.String,
+    issues: Schema.Array(Schema.String),
+  }),
+  Schema.Struct({ _tag: Schema.Literal("Unauthorized"), tag: Schema.String }),
+  Schema.Struct({
+    _tag: Schema.Literal("Unauthenticated"),
+    permission: Schema.optional(Schema.String),
+    reason: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("PermissionDenied"),
+    permission: Schema.String,
+    principal: Schema.String,
+  }),
+  Schema.Struct({ _tag: Schema.Literal("NotFound"), entity: Schema.String, id: Schema.String }),
+  Schema.Struct({
+    _tag: Schema.Literal("ConcurrencyConflict"),
+    entity: Schema.String,
+    id: Schema.String,
+    expectedVersion: Schema.Number,
+    actualVersion: Schema.Number,
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("IdempotencyMismatch", "IdempotencyInFlight"),
+    tag: Schema.String,
+    key: Schema.String,
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("DispatchTimeout"),
+    tag: Schema.String,
+    timeoutMillis: Schema.Number,
+  }),
+  Schema.Struct({ _tag: Schema.Literal("InvariantViolation"), rule: Schema.String }),
+  Schema.Struct({
+    _tag: Schema.Literal("HandlerNotFound"),
+    tag: Schema.String,
+    kind: Schema.Literal("command", "query"),
+  }),
+);
+const isTaxonomyError = Schema.is(taxonomy);
 
-const stringField = (u: object, key: string): string | undefined => {
-  const value = (u as Record<string, unknown>)[key];
-  return typeof value === "string" ? value : undefined;
-};
-
-const issuesField = (u: object): ReadonlyArray<string> => {
-  const value = (u as Record<string, unknown>).issues;
-  return Array.isArray(value)
-    ? value.filter((issue): issue is string => typeof issue === "string")
-    : [];
-};
-
-/** Formats platform `HttpApiDecodeError` issues (`{ path, message }`) as strings. */
-const decodeIssues = (u: object): ReadonlyArray<string> => {
-  const value = (u as Record<string, unknown>).issues;
-  if (!Array.isArray(value)) return [];
-  const out: Array<string> = [];
-  for (const issue of value) {
-    if (typeof issue !== "object" || issue === null) continue;
-    const message = stringField(issue, "message");
-    if (message === undefined) continue;
-    const path = (issue as Record<string, unknown>).path;
-    const prefix = Array.isArray(path) && path.length > 0 ? `${path.join(".")}: ` : "";
-    out.push(`${prefix}${message}`);
-  }
-  return out;
-};
+/** Validated framework failures handled by the problem boundary. */
+export const isKnownError = (error: unknown): boolean =>
+  HttpProblemSchema.members.some((member) => error instanceof member) ||
+  error instanceof HttpApiDecodeError ||
+  error instanceof RouteNotFound ||
+  isTaxonomyError(error);
 
 const internal = (correlationId: string | undefined): InternalServerProblem =>
   new InternalServerProblem({
@@ -210,8 +231,8 @@ const internal = (correlationId: string | undefined): InternalServerProblem =>
  * - `RouteNotFound`    → 404
  * - anything else (including defects) → 500 with the correlation id only
  *
- * Discrimination is structural (by `_tag`), so any error following the
- * `@structure-ai/domain` taxonomy maps correctly regardless of where it came from.
+ * Structural taxonomy errors are validated against their fields before mapping.
+ * Platform errors use their constructors; a matching tag alone is insufficient.
  */
 export const toProblem = (error: unknown, correlationId?: string): HttpProblem => {
   if (error instanceof BadRequestProblem) return error;
@@ -221,20 +242,36 @@ export const toProblem = (error: unknown, correlationId?: string): HttpProblem =
   if (error instanceof ConflictProblem) return error;
   if (error instanceof GatewayTimeoutProblem) return error;
   if (error instanceof InternalServerProblem) return error;
-  if (!hasTag(error)) return internal(correlationId);
+  if (error instanceof TooManyRequestsProblem) return error;
   const withCorrelation = correlationId !== undefined ? { correlationId } : {};
+  if (error instanceof HttpApiDecodeError)
+    return new BadRequestProblem({
+      error: "ValidationFailed",
+      message: "request is invalid",
+      issues: error.issues.map(
+        (issue) => `${issue.path.length > 0 ? `${issue.path.join(".")}: ` : ""}${issue.message}`,
+      ),
+      ...withCorrelation,
+    });
+  if (error instanceof RouteNotFound)
+    return new NotFoundProblem({
+      error: "NotFound",
+      message: "route not found",
+      ...withCorrelation,
+    });
+  if (!isTaxonomyError(error)) return internal(correlationId);
   switch (error._tag) {
     case "ValidationFailed": {
-      const subject = stringField(error, "subject") ?? "request";
+      const subject = error.subject;
       return new BadRequestProblem({
         error: "ValidationFailed",
         message: `${subject} is invalid`,
-        issues: issuesField(error),
+        issues: error.issues,
         ...withCorrelation,
       });
     }
     case "Unauthorized": {
-      const tag = stringField(error, "tag");
+      const tag = error.tag;
       return new ForbiddenProblem({
         error: "Unauthorized",
         message: tag === undefined ? "not allowed" : `not allowed to dispatch "${tag}"`,
@@ -248,7 +285,7 @@ export const toProblem = (error: unknown, correlationId?: string): HttpProblem =
         ...withCorrelation,
       });
     case "PermissionDenied": {
-      const permission = stringField(error, "permission");
+      const permission = error.permission;
       return new ForbiddenProblem({
         error: "PermissionDenied",
         message: permission === undefined ? "not allowed" : `not allowed: "${permission}"`,
@@ -256,8 +293,8 @@ export const toProblem = (error: unknown, correlationId?: string): HttpProblem =
       });
     }
     case "NotFound": {
-      const entity = stringField(error, "entity");
-      const id = stringField(error, "id");
+      const entity = error.entity;
+      const id = error.id;
       return new NotFoundProblem({
         error: "NotFound",
         message:
@@ -265,22 +302,9 @@ export const toProblem = (error: unknown, correlationId?: string): HttpProblem =
         ...withCorrelation,
       });
     }
-    case "HttpApiDecodeError":
-      return new BadRequestProblem({
-        error: "ValidationFailed",
-        message: "request is invalid",
-        issues: decodeIssues(error),
-        ...withCorrelation,
-      });
-    case "RouteNotFound":
-      return new NotFoundProblem({
-        error: "NotFound",
-        message: "route not found",
-        ...withCorrelation,
-      });
     case "ConcurrencyConflict": {
-      const entity = stringField(error, "entity");
-      const id = stringField(error, "id");
+      const entity = error.entity;
+      const id = error.id;
       return new ConflictProblem({
         error: "ConcurrencyConflict",
         message:
@@ -303,7 +327,7 @@ export const toProblem = (error: unknown, correlationId?: string): HttpProblem =
         ...withCorrelation,
       });
     case "DispatchTimeout": {
-      const tag = stringField(error, "tag");
+      const tag = error.tag;
       return new GatewayTimeoutProblem({
         error: "DispatchTimeout",
         message: tag === undefined ? "request timed out" : `"${tag}" timed out`,

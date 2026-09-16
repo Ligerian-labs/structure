@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { Settings, toLayer } from "@structure-ai/config";
+import { ConfigLoadError, Settings, toLayer } from "@structure-ai/config";
 import { layerSilent } from "@structure-ai/observability";
 import {
+  Cause,
   Context,
   Deferred,
   Duration,
   Effect,
   Exit,
   Fiber,
+  FiberId,
   Layer,
   Logger,
   LogLevel,
@@ -502,4 +504,27 @@ describe("launch", () => {
     expect(stdout[0]).toContain("launched");
     expect(() => JSON.parse(stdout[0] ?? "")).toThrow();
   }, 20_000);
+});
+
+test("readiness preserves cancellation and its finalizer defects", async () => {
+  const cause = Cause.sequential(Cause.interrupt(FiberId.none), Cause.die(new Error("finalizer")));
+  const exit = await Effect.runPromiseExit(
+    Effect.gen(function* () {
+      const readiness = yield* Readiness;
+      yield* readiness.register({ name: "cancelled", run: Effect.failCause(cause) });
+      return yield* readiness.checkAll;
+    }).pipe(Effect.provide(Readiness.layer)),
+  );
+  expect(Exit.isFailure(exit)).toBe(true);
+  if (Exit.isFailure(exit)) expect(exit.cause).toEqual(cause);
+});
+
+test("a configuration failure cannot hide a defect at the process boundary", async () => {
+  const cause = Cause.parallel(
+    Cause.fail(new ConfigLoadError({ issues: [] })),
+    Cause.die(new Error("startup bug")),
+  );
+  const outcome = await Effect.runPromise(runToCompletion(Effect.failCause(cause), Layer.empty));
+  expect(outcome._tag).toBe("Failed");
+  if (outcome._tag === "Failed") expect(outcome.cause).toEqual(cause);
 });

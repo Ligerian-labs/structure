@@ -87,7 +87,7 @@ Preflight checks the whole dependency graph before any fixture commands run. Dif
 
 `ready` is required. Drain owned outbox/consumer work and catch up projections, then check relevant queries where needed. Pass `() => Effect.void` only when the app has no asynchronous work to wait for. A fixture that depends on a projected value during creation must wait for that value itself; the final readiness hook runs after all fixture instances. Do not sleep for an arbitrary duration.
 
-A successful report contains `runId`, `completed` fixture keys, typed `values`, and generated `ids` grouped by fixture key and label. A failed run returns `FixtureError` with its run ID, failed step, completed keys and underlying `Cause`. Completed data and any partial work inside the failed command remain available. The message omits command payloads and raw causes. Interruption stays an interruption; the CLI's progress receipt still identifies the run. The default 30-second deadline includes readiness and can be changed by the application.
+A successful report contains `runId`, `completed` fixture keys, typed `values`, and generated `ids` grouped by fixture key and label. An expected failure returns `FixtureError` with its run ID, failed step, completed keys and underlying `Cause`. Completed data and any partial work inside the failed command remain available. The message omits command payloads and raw causes. Defects remain defects. Compound causes retain their structure. Interruption stays an interruption; the CLI's progress receipt still identifies the run. The default 30-second deadline includes readiness and can be changed by the application.
 
 ## Application CLI
 

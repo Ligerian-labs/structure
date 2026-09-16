@@ -1,6 +1,6 @@
 import * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import { NisshiClient } from "./protocol/client.js";
 import type { NisshiApiError, NisshiConnectionError } from "./protocol/errors.js";
 import { type SidecarOptions, sidecarTables } from "./sidecar.js";
@@ -64,13 +64,24 @@ export const drainPending = (
 /** Runs `drainPending` forever, sleeping `pollInterval` between passes. */
 export const runPendingRelay = (
   options?: RelayOptions & { readonly pollInterval?: number },
-): Effect.Effect<never, never, SqlClient.SqlClient | NisshiClient> =>
+): Effect.Effect<
+  never,
+  NisshiApiError | NisshiConnectionError | SqlError,
+  SqlClient.SqlClient | NisshiClient
+> =>
   Effect.gen(function* () {
     const interval = options?.pollInterval ?? 500;
     for (;;) {
       yield* drainPending(options).pipe(
-        Effect.ignore,
-        Effect.catchAllDefect(() => Effect.void),
+        Effect.catchAllCause((cause) => {
+          if (
+            Cause.isFailType(cause) &&
+            (cause.error._tag === "NisshiConnectionError" ||
+              (cause.error._tag === "NisshiApiError" && cause.error.retriable))
+          )
+            return Effect.logWarning("Nisshi relay will retry a transient broker failure");
+          return Effect.failCause(cause);
+        }),
       );
       yield* Effect.sleep(interval);
     }

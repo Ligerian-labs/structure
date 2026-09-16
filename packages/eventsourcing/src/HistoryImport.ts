@@ -1,3 +1,4 @@
+import type { PersistenceError } from "@structure-ai/domain";
 import { EventMetadata } from "@structure-ai/domain";
 import { Context, Data, Effect, Schema } from "effect";
 import type { EventDecodeError, SerializedEvent } from "./codec.js";
@@ -72,7 +73,7 @@ export interface HistoryImporterService {
   readonly importBatch: (
     batch: HistoryImportBatch,
     decoder: HistoryEventDecoder,
-  ) => Effect.Effect<HistoryImportResult, HistoryImportError | EventDecodeError>;
+  ) => Effect.Effect<HistoryImportResult, HistoryImportError | EventDecodeError | PersistenceError>;
 }
 
 /** Service tag for resumable frozen-history import. */

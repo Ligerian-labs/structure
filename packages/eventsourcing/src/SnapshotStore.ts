@@ -1,3 +1,4 @@
+import type { PersistenceError } from "@structure-ai/domain";
 import { Context, type Effect, type Option } from "effect";
 
 /**
@@ -19,9 +20,9 @@ export interface Snapshot {
  */
 export interface SnapshotStoreService {
   /** Latest snapshot for a stream, if any. */
-  readonly load: (streamName: string) => Effect.Effect<Option.Option<Snapshot>>;
+  readonly load: (streamName: string) => Effect.Effect<Option.Option<Snapshot>, PersistenceError>;
   /** Stores `snapshot` as the latest for the stream, replacing any previous one. */
-  readonly save: (streamName: string, snapshot: Snapshot) => Effect.Effect<void>;
+  readonly save: (streamName: string, snapshot: Snapshot) => Effect.Effect<void, PersistenceError>;
 }
 
 /** Service tag for the snapshot store port. */

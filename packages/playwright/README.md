@@ -104,3 +104,5 @@ Playwright launches the webServers once per run, not per worker: the default iso
 Dependencies (app side): `effect`, `@effect/platform`, `@effect/platform-bun`, `@structure-ai/cqrs` (buses), `@structure-ai/eventsourcing` (event store), `@structure-ai/auth` (seeding). Peer: `@playwright/test`. The spec side (`./test` subpath) is hand-written plain JS + `d.ts` — Node cannot execute the repo's TS-source exports, an exception to the no-build rule kept honest by ~200 dependency-free lines.
 
 The fixture app under `test/` (todo aggregate, projection-backed list, vanilla frontend, specs) is the package's own executable example; its browser suite runs via `bun run test:e2e` (requires `bunx playwright install chromium` once), its `bun test` suite is network-free.
+
+Event-storage and auth-seeding failures return safe HTTP 500 responses. An invalid control token still returns 401. Missing captured verification mail is a fixture wiring defect.

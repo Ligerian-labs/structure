@@ -1,6 +1,6 @@
 import * as SqlClient from "@effect/sql/SqlClient";
-import type { SqlError } from "@effect/sql/SqlError";
-import { ConcurrencyConflict } from "@structure-ai/domain";
+import { SqlError } from "@effect/sql/SqlError";
+import { ConcurrencyConflict, PersistenceError } from "@structure-ai/domain";
 import {
   type AppendEvent,
   type AppendResult,
@@ -10,7 +10,7 @@ import {
   type StoredEvent,
   type StoredEventMetadata,
 } from "@structure-ai/eventsourcing";
-import { Effect, Layer, Stream } from "effect";
+import { Cause, Effect, Layer, Stream } from "effect";
 import { decodeWireEvent, encodeWireEvent, validateWireEvent } from "./envelope.js";
 import { NisshiClient } from "./protocol/client.js";
 import { NisshiProduceError } from "./protocol/errors.js";
@@ -109,7 +109,7 @@ const make = (
       streamName: string,
       expectedVersion: number,
       events: ReadonlyArray<AppendEvent>,
-    ): Effect.Effect<AppendResult, ConcurrencyConflict | SqlError> =>
+    ): Effect.Effect<AppendResult, ConcurrencyConflict | SqlError | PersistenceError> =>
       sql
         .withTransaction(
           Effect.gen(function* () {
@@ -141,22 +141,27 @@ const make = (
             }
             yield* Effect.forEach(
               events,
-              (event, index) => {
-                const wire = {
-                  type: event.type,
-                  schemaVersion: event.schemaVersion,
-                  version: expectedVersion + index + 1,
-                  payload: event.payload,
-                  metadata: event.metadata,
-                };
-                if (validate) {
-                  validateWireEvent(wire, streamName);
-                }
-                return sql`
+              (event, index) =>
+                Effect.gen(function* () {
+                  const wire = {
+                    type: event.type,
+                    schemaVersion: event.schemaVersion,
+                    version: expectedVersion + index + 1,
+                    payload: event.payload,
+                    metadata: event.metadata,
+                  };
+                  const encoded = yield* Effect.try({
+                    try: () => {
+                      if (validate) validateWireEvent(wire, streamName);
+                      return JSON.stringify(wire);
+                    },
+                    catch: (cause) => new PersistenceError({ operation: "nisshi.encode", cause }),
+                  });
+                  return yield* sql`
                 INSERT INTO ${sql(tables.pending)} (stream_name, version, topic, record_value)
-                VALUES (${streamName}, ${expectedVersion + index + 1}, ${topic}, ${JSON.stringify(wire)})
+                VALUES (${streamName}, ${expectedVersion + index + 1}, ${topic}, ${encoded})
               `;
-              },
+                }),
               { discard: true },
             );
             return {
@@ -166,66 +171,95 @@ const make = (
           }),
         )
         .pipe(
-          Effect.catchIf(
-            (error): error is SqlError => isUniqueViolation(error),
-            () =>
-              Effect.flatMap(Effect.orDie(currentVersion(streamName)), (actual) =>
-                Effect.fail(conflict(streamName, expectedVersion, actual)),
-              ),
-          ),
+          Effect.catchAllCause((cause) => {
+            if (
+              !Cause.isFailType(cause) ||
+              !(cause.error instanceof SqlError) ||
+              !isUniqueViolation(cause.error)
+            )
+              return Effect.failCause(cause);
+            return Effect.flatMap(currentVersion(streamName), (actual) =>
+              Effect.fail(conflict(streamName, expectedVersion, actual)),
+            );
+          }),
         );
 
-    /** Best-effort reservation rollback: only succeeds if nobody built on top. Never masks the original failure. */
+    /** Conditional rollback; its failure is retained alongside the produce failure. */
     const rollback = (
       streamName: string,
       expectedVersion: number,
       count: number,
-    ): Effect.Effect<void> =>
-      sql
-        .withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
+    ): Effect.Effect<void, SqlError> =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
               UPDATE ${sql(tables.streams)}
               SET last_version = ${expectedVersion}
               WHERE stream_name = ${streamName} AND last_version = ${expectedVersion + count}
             `;
-            yield* sql`
+          yield* sql`
               DELETE FROM ${sql(tables.pending)}
               WHERE stream_name = ${streamName}
                 AND version > ${expectedVersion} AND version <= ${expectedVersion + count}
             `;
-          }),
-        )
-        .pipe(
-          Effect.ignore,
-          Effect.catchAllDefect(() => Effect.void),
-        );
+        }),
+      );
 
     const append: EventStoreService["append"] = (streamName, expectedVersion, events) =>
       Effect.gen(function* () {
+        const records = yield* Effect.try({
+          try: () =>
+            events.map((event, index) => ({
+              key: new TextEncoder().encode(streamName),
+              value: encodeWireEvent({
+                type: event.type,
+                schemaVersion: event.schemaVersion,
+                version: expectedVersion + index + 1,
+                payload: event.payload,
+                metadata: event.metadata,
+              }),
+            })),
+          catch: (cause) => new PersistenceError({ operation: "nisshi.encode", cause }),
+        });
         const result = yield* reserve(streamName, expectedVersion, events).pipe(
-          Effect.catchTag("SqlError", (error) => Effect.die(error)),
+          Effect.mapError((cause) =>
+            cause instanceof SqlError
+              ? new PersistenceError({ operation: "nisshi.reserve", cause })
+              : cause,
+          ),
         );
         if (events.length === 0) {
           return result;
         }
-        const records = events.map((event, index) => ({
-          key: new TextEncoder().encode(streamName),
-          value: encodeWireEvent({
-            type: event.type,
-            schemaVersion: event.schemaVersion,
-            version: expectedVersion + index + 1,
-            payload: event.payload,
-            metadata: event.metadata,
-          }),
-        }));
         yield* client.produce(topic, records).pipe(
-          Effect.catchAllCause((cause) =>
-            Effect.gen(function* () {
-              yield* rollback(streamName, expectedVersion, events.length);
-              return yield* Effect.die(new NisshiProduceError({ topic, cause }));
-            }),
-          ),
+          Effect.catchAllCause((cause) => {
+            const original = Cause.map(
+              cause,
+              (error) =>
+                new PersistenceError({
+                  operation: "nisshi.produce",
+                  cause: new NisshiProduceError({ topic, cause: error }),
+                }),
+            );
+            if (!Cause.isFailType(cause)) return Effect.failCause(original);
+            return rollback(streamName, expectedVersion, events.length).pipe(
+              Effect.uninterruptible,
+              Effect.matchCauseEffect({
+                onSuccess: () => Effect.failCause(original),
+                onFailure: (cleanup) =>
+                  Effect.failCause(
+                    Cause.sequential(
+                      original,
+                      Cause.map(
+                        cleanup,
+                        (error) =>
+                          new PersistenceError({ operation: "nisshi.rollback", cause: error }),
+                      ),
+                    ),
+                  ),
+              }),
+            );
+          }),
         );
         // Confirm: events are durable in the topic. A failure here leaves the
         // pending rows for the relay; a re-produce duplicates are tolerated
@@ -235,8 +269,13 @@ const make = (
           WHERE stream_name = ${streamName}
             AND version > ${expectedVersion} AND version <= ${expectedVersion + events.length}
         `.pipe(
-          Effect.catchTag("SqlError", (error) =>
-            Effect.logWarning(`pending confirm failed: ${error.message}`),
+          Effect.mapError((cause) => new PersistenceError({ operation: "nisshi.confirm", cause })),
+          Effect.catchAllCause((cause) =>
+            Cause.isFailType(cause)
+              ? Effect.logWarning(
+                  "Nisshi pending confirmation failed; relay will recover pending rows",
+                )
+              : Effect.failCause(cause),
           ),
         );
         return result;
@@ -250,12 +289,18 @@ const make = (
         readonly value: Uint8Array;
       }>;
     }
-    const readTopic = (fromOffset: bigint): Effect.Effect<TopicRecords> =>
+    const readTopic = (fromOffset: bigint): Effect.Effect<TopicRecords, PersistenceError> =>
       Effect.gen(function* () {
         const out: { offset: bigint; streamName: string; value: Uint8Array }[] = [];
         let offset = fromOffset;
         for (;;) {
-          const page = yield* client.fetch(topic, offset, maxBytes).pipe(Effect.orDie);
+          const page = yield* client
+            .fetch(topic, offset, maxBytes)
+            .pipe(
+              Effect.mapError(
+                (cause) => new PersistenceError({ operation: "nisshi.fetch", cause }),
+              ),
+            );
           if (page.records.length === 0) {
             return { records: out };
           }
@@ -278,24 +323,29 @@ const make = (
       append,
       read: (streamName, readOptions) =>
         Stream.unwrap(
-          Effect.map(readTopic(0n), ({ records }) => {
-            const fromVersion = readOptions?.fromVersion ?? 1;
-            const seen = new Set<number>();
-            const events: StoredEvent[] = [];
-            for (const record of records) {
-              if (record.streamName !== streamName) {
-                continue;
+          Effect.flatMap(readTopic(0n), ({ records }) =>
+            Effect.gen(function* () {
+              const fromVersion = readOptions?.fromVersion ?? 1;
+              const seen = new Set<number>();
+              const events: StoredEvent[] = [];
+              for (const record of records) {
+                if (record.streamName !== streamName) {
+                  continue;
+                }
+                const envelope = yield* Effect.try({
+                  try: () => decodeWireEvent(record.value, streamName),
+                  catch: (cause) => new PersistenceError({ operation: "nisshi.decode", cause }),
+                });
+                if (envelope.version < fromVersion || seen.has(envelope.version)) {
+                  continue;
+                }
+                seen.add(envelope.version);
+                events.push(storedEvent(record.offset, streamName, envelope));
               }
-              const envelope = decodeWireEvent(record.value, streamName);
-              if (envelope.version < fromVersion || seen.has(envelope.version)) {
-                continue;
-              }
-              seen.add(envelope.version);
-              events.push(storedEvent(record.offset, streamName, envelope));
-            }
-            events.sort((a, b) => a.version - b.version);
-            return Stream.fromIterable(events);
-          }),
+              events.sort((a, b) => a.version - b.version);
+              return Stream.fromIterable(events);
+            }),
+          ),
         ),
       readAll: (readOptions) =>
         Stream.unwrap(
@@ -315,7 +365,13 @@ const make = (
               if (limit !== undefined && events.length >= limit) {
                 break;
               }
-              const page = yield* client.fetch(topic, offset, maxBytes).pipe(Effect.orDie);
+              const page = yield* client
+                .fetch(topic, offset, maxBytes)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new PersistenceError({ operation: "nisshi.fetch", cause }),
+                  ),
+                );
               if (page.records.length === 0) {
                 break;
               }
@@ -324,7 +380,10 @@ const make = (
                 const event = storedEvent(
                   record.offset,
                   streamName,
-                  decodeWireEvent(record.value, streamName),
+                  yield* Effect.try({
+                    try: () => decodeWireEvent(record.value, streamName),
+                    catch: (cause) => new PersistenceError({ operation: "nisshi.decode", cause }),
+                  }),
                 );
                 if (keep(event)) {
                   events.push(event);

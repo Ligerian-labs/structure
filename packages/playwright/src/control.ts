@@ -4,6 +4,7 @@ import * as HttpApiEndpoint from "@effect/platform/HttpApiEndpoint";
 import * as HttpApiError from "@effect/platform/HttpApiError";
 import * as HttpApiGroup from "@effect/platform/HttpApiGroup";
 import type * as HttpServerRequest from "@effect/platform/HttpServerRequest";
+import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
 import type { AuthService } from "@structure-ai/auth";
 import {
@@ -122,7 +123,7 @@ const failExit = (tag: string, message: string): ControlExit => ({
 
 const tagOf = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "_tag" in error) {
-    const tag = (error as { readonly _tag: unknown })._tag;
+    const tag = error._tag;
     if (typeof tag === "string") return tag;
   }
   return "Unknown";
@@ -322,7 +323,16 @@ const controlGroupLive = <DrainR, ResetR>(options: TestControlOptions<DrainR, Re
           const store = yield* EventStore;
           const events = yield* Stream.runCollect(store.readAll());
           return Chunk.toReadonlyArray(events).map(toWireEvent);
-        }),
+        }).pipe(
+          Effect.catchTag("PersistenceError", () =>
+            Effect.succeed(
+              HttpServerResponse.unsafeJson(
+                { error: "PersistenceError", message: "Event storage failed" },
+                { status: 500 },
+              ),
+            ),
+          ),
+        ),
       )
       .handle("drain", ({ request }) =>
         Effect.flatMap(guarded(request, options.token), () => runHook(options.drain, "drain hook")),
@@ -335,26 +345,32 @@ const controlGroupLive = <DrainR, ResetR>(options: TestControlOptions<DrainR, Re
           yield* guarded(request, options.token);
           const auth = options.auth;
           if (auth === undefined) return notConfigured("auth option");
-          // Seeding is fixture, not business outcome: infrastructure failures die loudly.
-          const registered = yield* auth.service
-            .registerPassword({
-              tenantId: auth.tenantId,
-              email: body.email,
-              password: body.password,
-              ...(body.displayName !== undefined && { displayName: body.displayName }),
-            })
-            .pipe(Effect.orDie);
+          const registered = yield* auth.service.registerPassword({
+            tenantId: auth.tenantId,
+            email: body.email,
+            password: body.password,
+            ...(body.displayName !== undefined && { displayName: body.displayName }),
+          });
           const verification = [...auth.emails]
             .reverse()
             .find((email) => email.kind === "email-verification" && email.to === body.email);
           if (verification === undefined) {
             return yield* Effect.die(`no verification e-mail captured for ${body.email}`);
           }
-          yield* auth.service
-            .verifyEmail(auth.tenantId, Redacted.make(verification.token))
-            .pipe(Effect.orDie);
+          yield* auth.service.verifyEmail(auth.tenantId, Redacted.make(verification.token));
           return okExit({ userId: registered.id });
-        }),
+        }).pipe(
+          Effect.catchAll((error) =>
+            error instanceof HttpApiError.Unauthorized
+              ? Effect.fail(error)
+              : Effect.succeed(
+                  HttpServerResponse.unsafeJson(
+                    { error: "AuthSeedFailure", message: "Auth fixture could not be created" },
+                    { status: 500 },
+                  ),
+                ),
+          ),
+        ),
       ),
   );
 

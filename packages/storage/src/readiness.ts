@@ -19,6 +19,6 @@ export const storageReadinessCheck = (storage: Storage): ReadinessCheck => ({
   run: storage.head(READINESS_PROBE_KEY).pipe(
     Effect.as(true),
     Effect.catchTag("ObjectNotFound", () => Effect.succeed(true)),
-    Effect.catchAllCause(() => Effect.succeed(false)),
+    Effect.catchAll(() => Effect.succeed(false)),
   ),
 });

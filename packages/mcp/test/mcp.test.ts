@@ -154,11 +154,11 @@ describe("defineTool", () => {
     expect(textOf(result)).toBe("the business rule was violated");
   });
 
-  test("a defect surfaces its message without a stack", async () => {
+  test("a defect returns a safe message without its private details", async () => {
     const result = await withServer([Dies], callTool("dies", {}));
 
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toBe("unexpected defect");
+    expect(textOf(result)).toBe("Internal tool error");
   });
 
   test("calling an unknown tool fails with an MCP InvalidParams error", async () => {

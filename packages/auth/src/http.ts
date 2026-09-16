@@ -1,4 +1,4 @@
-import { Effect, Redacted } from "effect";
+import { Cause, Effect, Redacted } from "effect";
 import { readBoundedText } from "./body.js";
 import {
   AccountLinkDenied,
@@ -700,14 +700,17 @@ export const makeAuthHandler = (
     handler: (request) =>
       Effect.runPromise(
         program(request).pipe(
-          Effect.catchAll((error) => Effect.succeed(errorResponse(error))),
-          Effect.catchAllCause(() =>
-            Effect.succeed(
-              jsonResponse(500, {
-                error: "AuthInternalError",
-                message: "Authentication failed unexpectedly",
-              }),
-            ),
+          Effect.catchAllCause((cause) =>
+            Cause.isInterrupted(cause)
+              ? Effect.failCause(cause)
+              : Cause.isFailType(cause)
+                ? Effect.succeed(errorResponse(cause.error))
+                : Effect.succeed(
+                    jsonResponse(500, {
+                      error: "AuthInternalError",
+                      message: "Authentication failed unexpectedly",
+                    }),
+                  ),
           ),
         ),
       ),

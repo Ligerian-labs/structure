@@ -1,4 +1,5 @@
 import type { SqlClient } from "@effect/sql/SqlClient";
+import type { PersistenceError } from "@structure-ai/domain";
 import type {
   CheckpointStore,
   EventDecodeError,
@@ -31,7 +32,7 @@ export type ViewProjectionHandler<E, Store, EH, R> = (
   event: E,
   store: Store,
   context: ViewProjectionContext,
-) => Effect.Effect<void, EH, R>;
+) => Effect.Effect<void, EH | PersistenceError, R>;
 
 /**
  * A projection hydrating one view-model table from the global event feed.
@@ -40,19 +41,23 @@ export type ViewProjectionHandler<E, Store, EH, R> = (
  */
 export interface ViewProjection<E extends { readonly _tag: string }, EH, R> {
   /** The underlying eventsourcing projection (store resolved per handler). */
-  readonly projection: Projection.Projection<E, EH, R | SqlClient>;
+  readonly projection: Projection.Projection<E, EH | PersistenceError, R | SqlClient>;
   /** Processes every event from the checkpoint to the head, then returns. */
   readonly catchup: (options?: {
     readonly batchSize?: number;
   }) => Effect.Effect<
     Projection.CatchupStats,
-    EH | EventDecodeError,
+    EH | EventDecodeError | PersistenceError,
     EventStore | CheckpointStore | SqlClient | R
   >;
   /** Runs forever: catch up, sleep, repeat. Interrupt the fiber to stop. */
   readonly run: (
     options?: Projection.RunOptions,
-  ) => Effect.Effect<never, EH | EventDecodeError, EventStore | CheckpointStore | SqlClient | R>;
+  ) => Effect.Effect<
+    never,
+    EH | EventDecodeError | PersistenceError,
+    EventStore | CheckpointStore | SqlClient | R
+  >;
   /**
    * Truncates the view table, zeroes the checkpoint, and replays the whole
    * feed with `live: false`.
@@ -61,7 +66,7 @@ export interface ViewProjection<E extends { readonly _tag: string }, EH, R> {
     readonly batchSize?: number;
   }) => Effect.Effect<
     Projection.CatchupStats,
-    EH | EventDecodeError,
+    EH | EventDecodeError | PersistenceError,
     EventStore | CheckpointStore | SqlClient | R
   >;
 }
@@ -109,9 +114,9 @@ export const make = <
       handler: ViewProjectionHandler<E, Store, EH, R>,
       event: E,
       context: ViewProjectionContext,
-    ) => Effect.Effect<void, EH, R2>,
-  ): Projection.Projection<E, EH, R2> => {
-    const when: Record<string, Projection.ProjectionHandler<E, EH, R2>> = {};
+    ) => Effect.Effect<void, EH | PersistenceError, R2>,
+  ): Projection.Projection<E, EH | PersistenceError, R2> => {
+    const when: Record<string, Projection.ProjectionHandler<E, EH | PersistenceError, R2>> = {};
     for (const [tag, handler] of Object.entries(handlers)) {
       if (handler === undefined) {
         continue;
@@ -119,14 +124,14 @@ export const make = <
       when[tag] = (event, stored, context) =>
         resolve(handler, event, { stored, live: context.live });
     }
-    return Projection.make<E, EH, R2>({
+    return Projection.make<E, EH | PersistenceError, R2>({
       name: options.name,
       registry: options.registry,
-      when: when as unknown as Projection.Projection<E, EH, R2>["when"],
+      when: when as unknown as Projection.Projection<E, EH | PersistenceError, R2>["when"],
     });
   };
 
-  const forStore = (store: Store): Projection.Projection<E, EH, R> =>
+  const forStore = (store: Store): Projection.Projection<E, EH | PersistenceError, R> =>
     adaptWith((handler, event, context) => handler(event, store, context));
 
   const withStore = <X, EX, RX>(

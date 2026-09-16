@@ -238,7 +238,7 @@ const auth = makeAuth({
   /* ... */
   secondFactor: {
     isEnrolled: (tenantId, userId) =>
-      totp.isEnrolled(tenantId, userId).pipe(Effect.catchAll(() => Effect.succeed(false))),
+      totp.isEnrolled(tenantId, userId),
   },
 });
 
@@ -275,6 +275,7 @@ Semantics:
 - **Operator reset**: `resetSecondFactor(tenantId, userId, { actor })` removes an enrollment without any code, for the member who lost both the authenticator and the codes. It is audited as `totp-reset` with the operator as `actor`; expose it only behind the application's operator surface (a CLI, a superadmin route), never to the user.
 - **At rest** (`secret`, at least 32 characters, checked when `makeTotp` is built so a misconfiguration fails at boot): the TOTP secret is stored encrypted (AES-256-GCM) and recovery codes as salted keyed hashes (HMAC-SHA-256, a fresh salt per code), both under keys derived from `secret` with HKDF-SHA-256 and a purpose label, so a database read (a backup, a replica, an export) yields no second factor and no precomputed table transfers between users or instances. Stored values carry a `v1:` prefix; enrollments written before sealing existed keep verifying and are sealed on their next successful verification. Rotating `secret` invalidates every enrollment sealed under the old one: rotate it as an announced re-enrollment, not silently.
 - **Lockout**: failed attempts count per principal; at the threshold the second factor locks for the cooldown (`RateLimitExceeded` with `Retry-After`), audited as `totp-locked`. A locked factor never bypasses — verification keeps failing until the cooldown passes or the enrollment is removed through the owner flow or the operator reset.
+- **Enrollment lookup failures**: the hook propagates `AuthStoreError` or `AuthDependencyError` and prevents session creation. Never recover a failed enrollment read as `false`.
 - **Session elevation**: `SessionRecord.elevatedAt` is absent while a confirmed enrollment keeps a session `2fa-pending`; `totp.verify` sets it.
 - **Sensitive account changes**: when `secondFactor` is configured, a pending session gets `SecondFactorRequired` from password changes, passkey registration/rename/removal, and OAuth unlinking. The built-in HTTP handler returns 401 for that error.
 - **Storage**: through the existing `AuthStore` contract (`putTotpSecret`, `confirmTotp`, `markTotpStepUsed`, `replaceTotpSecret`, `recordTotpFailure`, `consumeRecoveryCode`, `elevateSession`, ...) — in-memory here, durable in `auth-sqlite` / `auth-pg` (same scenarios). The store only ever sees sealed material.

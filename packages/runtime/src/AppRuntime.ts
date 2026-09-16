@@ -116,15 +116,15 @@ export const launch = <E, R, LE>(
     Effect.onExit(() => armDrainDeadline),
     Effect.ensuring(removeListeners),
     Effect.provide(options.layers),
-    Effect.catchAll((error) =>
-      isConfigLoadError(error)
+    Effect.catchAllCause((cause) =>
+      Cause.isFailType(cause) && isConfigLoadError(cause.error)
         ? Effect.zipRight(
             Effect.sync(() => {
               configFailed = true;
             }),
-            Effect.logFatal(error.message),
+            Effect.logFatal(cause.error.message),
           )
-        : Effect.fail(error),
+        : Effect.failCause(cause),
     ),
   );
   BunRuntime.runMain(app, {
@@ -179,9 +179,8 @@ export const runToCompletion = <E, R, LE>(
     Effect.exit,
     Effect.map((exit): RunOutcome => {
       if (Exit.isSuccess(exit) || Cause.isInterruptedOnly(exit.cause)) return { _tag: "Success" };
-      const failure = Cause.failureOption(exit.cause);
-      if (Option.isSome(failure) && isConfigLoadError(failure.value)) {
-        return { _tag: "ConfigInvalid", issues: failure.value.issues };
+      if (Cause.isFailType(exit.cause) && isConfigLoadError(exit.cause.error)) {
+        return { _tag: "ConfigInvalid", issues: exit.cause.error.issues };
       }
       return { _tag: "Failed", cause: exit.cause };
     }),

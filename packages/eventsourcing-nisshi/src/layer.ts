@@ -2,6 +2,7 @@ import type * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
 import { PgClient } from "@effect/sql-pg";
 import { SqliteClient } from "@effect/sql-sqlite-bun";
+import { PersistenceError } from "@structure-ai/domain";
 import type {
   CheckpointStore,
   EventStore,
@@ -82,7 +83,7 @@ export const layerPg = (
   options: NisshiPgConfig,
 ): Layer.Layer<
   StoreServices | PgClient.PgClient | SqlClient.SqlClient | NisshiClient,
-  SqlError | NisshiConnectionError
+  SqlError | NisshiConnectionError | PersistenceError
 > => {
   const client = nisshiClientLayer({
     brokerUrl: options.brokerUrl,
@@ -101,7 +102,13 @@ export const layerPg = (
       ? client
       : Layer.effectDiscard(
           Effect.flatMap(NisshiClient, (c) =>
-            c.ensureTopic(options.topic ?? "events").pipe(Effect.orDie),
+            c
+              .ensureTopic(options.topic ?? "events")
+              .pipe(
+                Effect.mapError(
+                  (cause) => new PersistenceError({ operation: "nisshi.ensure-topic", cause }),
+                ),
+              ),
           ),
         ).pipe(Layer.provideMerge(client));
   return storesLayer(options).pipe(Layer.provideMerge(migrated), Layer.provideMerge(ensured));
@@ -116,7 +123,7 @@ export const layer = (
   options: NisshiAdaptersConfig,
 ): Layer.Layer<
   StoreServices | SqliteClient.SqliteClient | SqlClient.SqlClient | NisshiClient,
-  ConfigError | SqlError | NisshiConnectionError
+  ConfigError | SqlError | NisshiConnectionError | PersistenceError
 > => {
   const client = nisshiClientLayer({
     brokerUrl: options.brokerUrl,
@@ -130,7 +137,13 @@ export const layer = (
       ? client
       : Layer.effectDiscard(
           Effect.flatMap(NisshiClient, (c) =>
-            c.ensureTopic(options.topic ?? "events").pipe(Effect.orDie),
+            c
+              .ensureTopic(options.topic ?? "events")
+              .pipe(
+                Effect.mapError(
+                  (cause) => new PersistenceError({ operation: "nisshi.ensure-topic", cause }),
+                ),
+              ),
           ),
         ).pipe(Layer.provideMerge(client));
   return storesLayer(options).pipe(Layer.provideMerge(migrated), Layer.provideMerge(ensured));

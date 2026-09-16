@@ -1,6 +1,6 @@
 import { SqlClient } from "@effect/sql/SqlClient";
 import type { Fragment } from "@effect/sql/Statement";
-import { NotFound } from "@structure-ai/domain";
+import { NotFound, PersistenceError } from "@structure-ai/domain";
 import { type Context, Effect, Layer, Option, Schema } from "effect";
 import type { ColumnSpec, ViewModelDef } from "./ViewModel.js";
 
@@ -24,18 +24,18 @@ export interface FindOptions<Encoded> {
  * Typed store over one view-model table. All methods capture the `SqlClient`
  * at construction and require nothing further.
  *
- * Error semantics: business-level absence is typed (`NotFound`); SQL errors
- * and row-codec failures are defects — a read model failing to decode its
- * own rows is corruption, not a runtime condition (rebuild it from events).
+ * Error semantics: business-level absence is typed (`NotFound`); SQL and
+ * row-codec errors remain typed as `PersistenceError`, retaining their cause
+ * for diagnostics without exposing it to clients.
  *
  * Concurrency: a view table has a single writer — its hydrating projection.
  * The store performs no locking or optimistic checks.
  */
 export interface ViewStore<A, Encoded = A> {
   /** The row with this id, or `NotFound` (entity = the view model's name). */
-  readonly get: (id: string | number) => Effect.Effect<A, NotFound>;
+  readonly get: (id: string | number) => Effect.Effect<A, NotFound | PersistenceError>;
   /** The row with this id as an `Option`. */
-  readonly findById: (id: string | number) => Effect.Effect<Option.Option<A>>;
+  readonly findById: (id: string | number) => Effect.Effect<Option.Option<A>, PersistenceError>;
   /**
    * Rows matching `criteria` — an equality-AND over fields, compared on
    * encoded values (`null` matches SQL `NULL`) — with optional ordering and
@@ -44,25 +44,30 @@ export interface ViewStore<A, Encoded = A> {
   readonly find: (
     criteria?: Partial<Encoded>,
     options?: FindOptions<Encoded>,
-  ) => Effect.Effect<ReadonlyArray<A>>;
+  ) => Effect.Effect<ReadonlyArray<A>, PersistenceError>;
   /** First row matching `criteria` (no implied ordering). */
-  readonly findOne: (criteria: Partial<Encoded>) => Effect.Effect<Option.Option<A>>;
+  readonly findOne: (
+    criteria: Partial<Encoded>,
+  ) => Effect.Effect<Option.Option<A>, PersistenceError>;
   /** Number of rows matching `criteria` (all rows when omitted). */
-  readonly count: (criteria?: Partial<Encoded>) => Effect.Effect<number>;
+  readonly count: (criteria?: Partial<Encoded>) => Effect.Effect<number, PersistenceError>;
   /** Inserts the row, or replaces every non-id column when the id exists. */
-  readonly upsert: (value: A) => Effect.Effect<void>;
+  readonly upsert: (value: A) => Effect.Effect<void, PersistenceError>;
   /** Upserts each value in order. */
-  readonly upsertMany: (values: ReadonlyArray<A>) => Effect.Effect<void>;
+  readonly upsertMany: (values: ReadonlyArray<A>) => Effect.Effect<void, PersistenceError>;
   /**
    * Read-modify-write: loads the row, overlays the defined keys of
    * `partial`, and upserts the result. NOT atomic — safe only because a view
    * table has a single writer (the projection).
    */
-  readonly patch: (id: string | number, partial: Partial<A>) => Effect.Effect<void, NotFound>;
+  readonly patch: (
+    id: string | number,
+    partial: Partial<A>,
+  ) => Effect.Effect<void, NotFound | PersistenceError>;
   /** Deletes the row; deleting a missing id is a no-op (idempotent). */
-  readonly remove: (id: string | number) => Effect.Effect<void>;
+  readonly remove: (id: string | number) => Effect.Effect<void, PersistenceError>;
   /** Deletes every row (`DELETE FROM table`) — used by rebuilds. */
-  readonly truncate: Effect.Effect<void>;
+  readonly truncate: Effect.Effect<void, PersistenceError>;
 }
 
 type ColumnValue = string | number | boolean | null;
@@ -187,7 +192,10 @@ export const make = <Fields extends Schema.Struct.Fields>(
 
     const decodeMany = (
       rows: ReadonlyArray<Record<string, unknown>>,
-    ): Effect.Effect<ReadonlyArray<A>> => Effect.try(() => rows.map(fromRow)).pipe(Effect.orDie);
+    ): Effect.Effect<ReadonlyArray<A>, PersistenceError> =>
+      Effect.try(() => rows.map(fromRow)).pipe(
+        Effect.mapError((cause) => new PersistenceError({ operation: "view-store", cause })),
+      );
 
     const whereFragment = (criteria: Partial<Encoded> | undefined): Fragment => {
       if (criteria === undefined) {
@@ -239,32 +247,37 @@ export const make = <Fields extends Schema.Struct.Fields>(
     const select = (
       criteria: Partial<Encoded> | undefined,
       options: FindOptions<Encoded> | undefined,
-    ): Effect.Effect<ReadonlyArray<Record<string, unknown>>> =>
+    ): Effect.Effect<ReadonlyArray<Record<string, unknown>>, PersistenceError> =>
       sql<
         Record<string, unknown>
       >`SELECT * FROM ${sql(def.table)}${whereFragment(criteria)}${orderFragment(options)}${limitFragment(options)}`.pipe(
-        Effect.orDie,
+        Effect.mapError((cause) => new PersistenceError({ operation: "view-store", cause })),
       );
 
     const find = (
       criteria?: Partial<Encoded>,
       options?: FindOptions<Encoded>,
-    ): Effect.Effect<ReadonlyArray<A>> => Effect.flatMap(select(criteria, options), decodeMany);
+    ): Effect.Effect<ReadonlyArray<A>, PersistenceError> =>
+      Effect.flatMap(select(criteria, options), decodeMany);
 
-    const findById = (id: string | number): Effect.Effect<Option.Option<A>> =>
+    const findById = (id: string | number): Effect.Effect<Option.Option<A>, PersistenceError> =>
       sql<
         Record<string, unknown>
       >`SELECT * FROM ${sql(def.table)} WHERE ${sql(def.idColumn)} = ${id}`.pipe(
-        Effect.orDie,
+        Effect.mapError((cause) => new PersistenceError({ operation: "view-store", cause })),
         Effect.flatMap((rows) => {
           const first = rows[0];
           return first === undefined
             ? Effect.succeed(Option.none<A>())
-            : Effect.try(() => Option.some(fromRow(first))).pipe(Effect.orDie);
+            : Effect.try(() => Option.some(fromRow(first))).pipe(
+                Effect.mapError(
+                  (cause) => new PersistenceError({ operation: "view-store", cause }),
+                ),
+              );
         }),
       );
 
-    const get = (id: string | number): Effect.Effect<A, NotFound> =>
+    const get = (id: string | number): Effect.Effect<A, NotFound | PersistenceError> =>
       Effect.flatMap(
         findById(id),
         Option.match({
@@ -273,14 +286,25 @@ export const make = <Fields extends Schema.Struct.Fields>(
         }),
       );
 
-    const upsert = (value: A): Effect.Effect<void> =>
-      Effect.flatMap(Effect.orDie(Effect.try(() => toRow(value))), (row) =>
-        nonIdColumns.length === 0
-          ? sql`INSERT INTO ${sql(def.table)} ${sql.insert(row)} ON CONFLICT (${sql(def.idColumn)}) DO NOTHING`
-          : sql`INSERT INTO ${sql(def.table)} ${sql.insert(row)} ON CONFLICT (${sql(def.idColumn)}) DO UPDATE SET ${sql.csv(
-              nonIdColumns.map((c) => sql`${sql(c.column)} = excluded.${sql(c.column)}`),
-            )}`,
-      ).pipe(Effect.orDie, Effect.asVoid);
+    const upsert = (value: A): Effect.Effect<void, PersistenceError> =>
+      Effect.flatMap(
+        Effect.mapError((cause) => new PersistenceError({ operation: "view-store", cause }))(
+          Effect.try(() => toRow(value)),
+        ),
+        (row) =>
+          nonIdColumns.length === 0
+            ? sql`INSERT INTO ${sql(def.table)} ${sql.insert(row)} ON CONFLICT (${sql(def.idColumn)}) DO NOTHING`
+            : sql`INSERT INTO ${sql(def.table)} ${sql.insert(row)} ON CONFLICT (${sql(def.idColumn)}) DO UPDATE SET ${sql.csv(
+                nonIdColumns.map((c) => sql`${sql(c.column)} = excluded.${sql(c.column)}`),
+              )}`,
+      ).pipe(
+        Effect.mapError((cause) =>
+          cause instanceof PersistenceError
+            ? cause
+            : new PersistenceError({ operation: "view-store", cause }),
+        ),
+        Effect.asVoid,
+      );
 
     const store: ViewStore<A, Encoded> = {
       get,
@@ -292,7 +316,7 @@ export const make = <Fields extends Schema.Struct.Fields>(
         sql<{
           readonly n: unknown;
         }>`SELECT count(*) AS n FROM ${sql(def.table)}${whereFragment(criteria)}`.pipe(
-          Effect.orDie,
+          Effect.mapError((cause) => new PersistenceError({ operation: "view-store", cause })),
           Effect.map((rows) => Number(rows[0]?.n ?? 0)),
         ),
       upsert,
@@ -311,10 +335,13 @@ export const make = <Fields extends Schema.Struct.Fields>(
         }),
       remove: (id) =>
         sql`DELETE FROM ${sql(def.table)} WHERE ${sql(def.idColumn)} = ${id}`.pipe(
-          Effect.orDie,
+          Effect.mapError((cause) => new PersistenceError({ operation: "view-store", cause })),
           Effect.asVoid,
         ),
-      truncate: sql`DELETE FROM ${sql(def.table)}`.pipe(Effect.orDie, Effect.asVoid),
+      truncate: sql`DELETE FROM ${sql(def.table)}`.pipe(
+        Effect.mapError((cause) => new PersistenceError({ operation: "view-store", cause })),
+        Effect.asVoid,
+      ),
     };
     return store;
   });

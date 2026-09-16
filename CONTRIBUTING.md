@@ -27,6 +27,7 @@ Use the exact Bun version in `package.json#packageManager`, currently 1.4.1, wit
 
 - **Respects the dependency direction** (see AGENTS.md) — no new cycles, no reaching across bounded layers.
 - **Typed errors**: `Data.TaggedError` with a `classification` field (`transient` | `permanent` | `conflict`); no `any`, no non-null assertions (Biome blocks both).
+- **Error review**: trace expected failures from producer through ports and callers. Do not use `orDie` to make infrastructure fit `E = never`, trust an unknown value's `_tag`, or recover from only the first failure of a compound cause. Use typed recovery and validate unknown boundary values. Include regressions for defects, interruption and relevant compound causes; see [ADR-0020](docs/decisions/0020-typed-persistence-and-cause-boundaries.md).
 - **Dependencies**: versions come from the root `package.json` `workspaces.catalog` (`"catalog:"`), internal deps are `"workspace:*"`. Adding a *new* external dependency needs justification in the PR — prefer composing what's already there.
 - **Public API changes** update the package `README.md` and the `llms.txt` line, and stay documented with JSDoc that states constraints, not restatements of names.
 - **Tests over claims**: no network, no real LLM providers (use `TestModel`), sqlite `:memory:` for SQL, pg suites gated on `DATABASE_URL`. A PR whose verification section says "should work" is not done.

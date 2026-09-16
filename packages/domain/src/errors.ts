@@ -56,3 +56,20 @@ export class ValidationFailed extends Data.TaggedError("ValidationFailed")<{
 }
 
 export type DomainError = InvariantViolation | NotFound | ConcurrencyConflict | ValidationFailed;
+
+/**
+ * A persistence adapter could not complete an operation. Kept in the typed
+ * channel so callers can recover without inspecting defects. The immediate
+ * cause is diagnostic only and must not be sent to clients.
+ * No automatic retry is assumed: writes may have committed, and storage
+ * errors can include invalid queries or corrupt data as well as outages.
+ */
+export class PersistenceError extends Data.TaggedError("PersistenceError")<{
+  readonly operation: string;
+  readonly cause: unknown;
+}> {
+  readonly classification = "permanent" as const;
+  override get message(): string {
+    return `Persistence operation failed: ${this.operation}`;
+  }
+}

@@ -8,6 +8,7 @@ export {
   type FailureClass,
   InvariantViolation,
   NotFound,
+  PersistenceError,
   ValidationFailed,
 } from "./errors.js";
 export type { Versioned } from "./Repository.js";

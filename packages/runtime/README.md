@@ -36,7 +36,7 @@ Calling `BunRuntime.runMain` yourself instead of `launch`? Then nothing routes s
 
 | Export | What it is |
 | --- | --- |
-| `Readiness` / `Readiness.layer` | Ready flag + named checks; `checkAll` is ready only when the flag is set and every registered check passes; check defects report `ok: false`, never crash. Starts **not** ready. |
+| `Readiness` / `Readiness.layer` | Ready flag + named checks; `checkAll` is ready only when the flag is set and every registered check passes; typed check failures and defects report `ok: false`; cancellation stays interrupted. Starts **not** ready. |
 | `Shutdown` / `Shutdown.layer(options?)` | Coordinator: `onShutdown(name, finalizer)`, idempotent `trigger(reason)`, `awaitShutdown`. Finalizers run in reverse registration order, each bounded by a timeout (default 5s); a finalizer that exceeds it is cut and logged at error level by name with its budget, a failing one is logged at warning level, and the rest still run. Triggering flips `Readiness` unready first. |
 | `launch(program, { layers, gracePeriod? })` | Bun entrypoint (`BunRuntime.runMain` with `disablePrettyLogger`); `ConfigLoadError` prints every issue and exits 1; a hard deadline (default 30s) prevents hung teardown from blocking exit. |
 | `runToCompletion(program, layers)` | Testable variant returning `{ _tag: "Success" \| "ConfigInvalid" \| "Failed", ... }` instead of exiting the process. |
@@ -46,3 +46,5 @@ Calling `BunRuntime.runMain` yourself instead of `launch`? Then nothing routes s
 ## Operations
 
 **One logger per process.** `launch` runs `BunRuntime.runMain` with `disablePrettyLogger: true`, so the app decides its logger through `@structure-ai/observability` (`layerJson` in production, `layerPretty` locally). Without it `runMain` installs Bun's pretty logger before any app layer runs and the JSON logger lands next to it — every record printed twice. If you call `runMain` yourself, pass the same option; `layerJson` also removes the pretty logger as a backstop, so a plain-`runMain` app with `layerJson` still ends up with a single logger.
+
+`runToCompletion` reports `ConfigInvalid` only for a single `ConfigLoadError`. A compound cause containing a defect remains `Failed`, with the full cause available.

@@ -5,8 +5,9 @@ import {
   IdempotencyStore,
   type IdempotencyStoreService,
 } from "@structure-ai/cqrs";
+import { PersistenceError } from "@structure-ai/domain";
 import { Duration, Effect, Layer } from "effect";
-import { jsonText } from "./internal.js";
+import { encodeJson } from "./internal.js";
 import { type AdapterOptions, tableNames } from "./schema.js";
 
 /** Options of the idempotency store (shared through `AdapterOptions`). */
@@ -89,23 +90,46 @@ export const idempotencyStoreLayer = (
             if (row.payload_hash !== context.payloadHash) return BeginOutcome.Mismatch();
             if (row.status !== "completed") return BeginOutcome.InFlight();
             return BeginOutcome.Completed({
-              result: row.result === null ? null : (JSON.parse(row.result) as unknown),
+              result:
+                row.result === null
+                  ? null
+                  : yield* Effect.try({
+                      try: () => JSON.parse(row.result ?? "null") as unknown,
+                      catch: (cause) =>
+                        new PersistenceError({ operation: "idempotency.decode", cause }),
+                    }),
             });
-          }).pipe(Effect.orDie),
+          }).pipe(
+            Effect.mapError(
+              (cause) => new PersistenceError({ operation: "IdempotencyStore", cause }),
+            ),
+          ),
         complete: (context, result) =>
-          sql`
+          Effect.gen(function* () {
+            return yield* sql`
             UPDATE ${sql(table)}
             SET status = 'completed',
-                result = ${jsonText(result)}::jsonb,
+                result = ${yield* encodeJson(result)}::jsonb,
                 expires_at = now() + make_interval(secs => ${ttl})
             WHERE tag = ${context.tag} AND actor = ${actorColumn(context)} AND key = ${context.key}
-          `.pipe(Effect.orDie, Effect.asVoid),
+          `.pipe(
+              Effect.mapError(
+                (cause) => new PersistenceError({ operation: "IdempotencyStore", cause }),
+              ),
+              Effect.asVoid,
+            );
+          }),
         release: (context) =>
           sql`
             DELETE FROM ${sql(table)}
             WHERE tag = ${context.tag} AND actor = ${actorColumn(context)} AND key = ${context.key}
               AND status = 'claimed'
-          `.pipe(Effect.orDie, Effect.asVoid),
+          `.pipe(
+            Effect.mapError(
+              (cause) => new PersistenceError({ operation: "IdempotencyStore", cause }),
+            ),
+            Effect.asVoid,
+          ),
       };
       return IdempotencyStore.of(service);
     }),
@@ -119,7 +143,7 @@ export const idempotencyStoreLayer = (
  */
 export const purgeExpiredIdempotency = (
   options?: AdapterOptions,
-): Effect.Effect<number, never, SqlClient.SqlClient> =>
+): Effect.Effect<number, PersistenceError, SqlClient.SqlClient> =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const table = tableNames(options).idempotency;
@@ -129,4 +153,6 @@ export const purgeExpiredIdempotency = (
       RETURNING key
     `;
     return removed.length;
-  }).pipe(Effect.orDie);
+  }).pipe(
+    Effect.mapError((cause) => new PersistenceError({ operation: "IdempotencyStore", cause })),
+  );

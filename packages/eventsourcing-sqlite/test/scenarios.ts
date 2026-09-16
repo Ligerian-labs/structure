@@ -9,6 +9,7 @@
  */
 import { expect, test } from "bun:test";
 import type * as SqlClient from "@effect/sql/SqlClient";
+import { ConcurrencyConflict } from "@structure-ai/domain";
 import {
   AggregateStore,
   CheckpointStore,
@@ -97,7 +98,8 @@ export const registerScenarios = (run: RunTest): void => {
         const result = yield* Effect.either(store.append("Counter-b", 0, [event(3)]));
         expect(Either.isLeft(result)).toBe(true);
         if (Either.isLeft(result)) {
-          expect(result.left._tag).toBe("ConcurrencyConflict");
+          expect(result.left).toBeInstanceOf(ConcurrencyConflict);
+          if (!(result.left instanceof ConcurrencyConflict)) throw new Error("expected conflict");
           expect(result.left.entity).toBe("Counter");
           expect(result.left.id).toBe("b");
           expect(result.left.expectedVersion).toBe(0);
@@ -415,7 +417,8 @@ export const registerScenarios = (run: RunTest): void => {
         );
         expect(Either.isLeft(result)).toBe(true);
         if (Either.isLeft(result)) {
-          expect(result.left._tag).toBe("ConcurrencyConflict");
+          expect(result.left).toBeInstanceOf(ConcurrencyConflict);
+          if (!(result.left instanceof ConcurrencyConflict)) throw new Error("expected conflict");
           if (result.left._tag === "ConcurrencyConflict") {
             expect(result.left.actualVersion).toBe(1);
           }

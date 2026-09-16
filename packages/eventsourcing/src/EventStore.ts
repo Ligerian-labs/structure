@@ -1,4 +1,4 @@
-import type { ConcurrencyConflict, EventMetadata } from "@structure-ai/domain";
+import type { ConcurrencyConflict, EventMetadata, PersistenceError } from "@structure-ai/domain";
 import { Context, type Effect, type Schema, type Stream } from "effect";
 
 /**
@@ -86,7 +86,7 @@ export interface EventStoreService {
     streamName: string,
     expectedVersion: number,
     events: ReadonlyArray<AppendEvent>,
-  ) => Effect.Effect<AppendResult, ConcurrencyConflict>;
+  ) => Effect.Effect<AppendResult, ConcurrencyConflict | PersistenceError>;
   /**
    * Events of one stream in version order. `fromVersion` is inclusive and
    * defaults to 1. A missing stream yields an empty stream of events.
@@ -94,7 +94,7 @@ export interface EventStoreService {
   readonly read: (
     streamName: string,
     options?: { readonly fromVersion?: number },
-  ) => Stream.Stream<StoredEvent>;
+  ) => Stream.Stream<StoredEvent, PersistenceError>;
   /**
    * All events across streams in global `position` order — the feed
    * projections consume. `fromPosition` is inclusive and defaults to 1.
@@ -112,7 +112,7 @@ export interface EventStoreService {
    * the filtered feed. An adapter that cannot honour the filter must fail,
    * never silently return the unfiltered feed.
    */
-  readonly readAll: (options?: ReadAllOptions) => Stream.Stream<StoredEvent>;
+  readonly readAll: (options?: ReadAllOptions) => Stream.Stream<StoredEvent, PersistenceError>;
 }
 
 /** Service tag for the event store port. */

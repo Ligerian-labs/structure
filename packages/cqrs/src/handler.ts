@@ -1,3 +1,4 @@
+import type { PersistenceError } from "@structure-ai/domain";
 import { Context, Effect, Layer } from "effect";
 import type {
   AnyMessageDefinition,
@@ -24,7 +25,10 @@ export type RegistrationContext<Reg> = Reg extends Registration<infer R> ? R : n
 
 const makeRegistration = <PayloadType, SuccessType, FailureType, R>(
   definition: AnyMessageDefinition,
-  handler: (payload: PayloadType, dispatch: Dispatch) => Effect.Effect<SuccessType, FailureType, R>,
+  handler: (
+    payload: PayloadType,
+    dispatch: Dispatch,
+  ) => Effect.Effect<SuccessType, FailureType | PersistenceError, R>,
 ): Registration<R> => ({
   definition,
   // Erasure is sound: the bus only calls this handler with a payload decoded
@@ -61,7 +65,7 @@ export const CommandHandler = {
     handler: (
       payload: PayloadType,
       dispatch: Dispatch,
-    ) => Effect.Effect<SuccessType, FailureType, R>,
+    ) => Effect.Effect<SuccessType, FailureType | PersistenceError, R>,
   ): Registration<R> => makeRegistration(definition, handler),
 } as const;
 
@@ -92,7 +96,7 @@ export const QueryHandler = {
     handler: (
       payload: PayloadType,
       dispatch: Dispatch,
-    ) => Effect.Effect<SuccessType, FailureType, R>,
+    ) => Effect.Effect<SuccessType, FailureType | PersistenceError, R>,
   ): Registration<R> => makeRegistration(definition, handler),
 } as const;
 

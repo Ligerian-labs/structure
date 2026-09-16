@@ -1,6 +1,6 @@
-import { ValidationFailed } from "@structure-ai/domain";
+import { PersistenceError, ValidationFailed } from "@structure-ai/domain";
 import { Correlation, Metrics } from "@structure-ai/observability";
-import { Context, Data, Duration, Effect, Layer, Option, Schema } from "effect";
+import { Cause, Context, Data, Duration, Effect, Layer, Option, Schema } from "effect";
 import { ArrayFormatter, type ParseError } from "effect/ParseResult";
 import {
   DispatchTimeout,
@@ -41,6 +41,7 @@ export interface DispatchOptions {
 
 /** Failures the bus itself can produce, before or around the handler. */
 export type DispatchError =
+  | PersistenceError
   | ValidationFailed
   | HandlerNotFound
   | Unauthorized
@@ -116,17 +117,20 @@ export interface IdempotencyStoreService {
    * Atomically claims the context or reports why it cannot. Two concurrent
    * `begin` calls for the same context must yield exactly one `Claimed`.
    */
-  readonly begin: (context: IdempotencyContext) => Effect.Effect<BeginOutcome>;
+  readonly begin: (context: IdempotencyContext) => Effect.Effect<BeginOutcome, PersistenceError>;
   /**
    * Records the wire-encoded success of a claimed context. Later `begin`
    * calls for the same context return `Completed` with this value.
    */
-  readonly complete: (context: IdempotencyContext, result: unknown) => Effect.Effect<void>;
+  readonly complete: (
+    context: IdempotencyContext,
+    result: unknown,
+  ) => Effect.Effect<void, PersistenceError>;
   /**
    * Frees a claim whose dispatch failed or was interrupted, so a retry can
    * run the handler. Must not discard a completed record.
    */
-  readonly release: (context: IdempotencyContext) => Effect.Effect<void>;
+  readonly release: (context: IdempotencyContext) => Effect.Effect<void, PersistenceError>;
 }
 
 /**
@@ -238,7 +242,7 @@ const idempotent = <PayloadType, PayloadEncoded, SuccessType, SuccessEncoded, E>
   actor: string | undefined,
   payload: PayloadType,
   execute: Effect.Effect<SuccessType, E>,
-): Effect.Effect<SuccessType, E | IdempotencyMismatch | IdempotencyInFlight> =>
+): Effect.Effect<SuccessType, E | IdempotencyMismatch | IdempotencyInFlight | PersistenceError> =>
   Effect.gen(function* () {
     // The definition's schemas decoded this payload, so encoding it back
     // cannot fail short of a schema that is not round-trippable (a defect).
@@ -253,7 +257,11 @@ const idempotent = <PayloadType, PayloadEncoded, SuccessType, SuccessEncoded, E>
     const outcome = yield* store.begin(context);
     switch (outcome._tag) {
       case "Completed":
-        return yield* Schema.decodeUnknown(definition.success)(outcome.result).pipe(Effect.orDie);
+        return yield* Schema.decodeUnknown(definition.success)(outcome.result).pipe(
+          Effect.mapError(
+            (cause) => new PersistenceError({ operation: "idempotency.decode", cause }),
+          ),
+        );
       case "InFlight":
         return yield* Effect.fail(new IdempotencyInFlight({ tag: definition.tag, key }));
       case "Mismatch":
@@ -263,7 +271,17 @@ const idempotent = <PayloadType, PayloadEncoded, SuccessType, SuccessEncoded, E>
           const result = yield* execute;
           const encoded = yield* Schema.encode(definition.success)(result).pipe(Effect.orDie);
           return { result, encoded };
-        }).pipe(Effect.onError(() => store.release(context)));
+        }).pipe(
+          Effect.catchAllCause((cause) =>
+            store.release(context).pipe(
+              Effect.uninterruptible,
+              Effect.matchCauseEffect({
+                onFailure: (cleanup) => Effect.failCause(Cause.sequential(cause, cleanup)),
+                onSuccess: () => Effect.failCause(cause),
+              }),
+            ),
+          ),
+        );
         yield* store.complete(context, completed.encoded);
         return completed.result;
       }
