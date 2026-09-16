@@ -51,3 +51,7 @@ The first batch only runs against an empty target. Each successful batch returns
 The importer validates metadata, registry decoding, event-id uniqueness, global positions, and per-stream versions before committing. It does not enqueue outbox messages. If historical publication is intentional, map the imported events to application-owned `OutboxMessage` values and enqueue them explicitly after the import completes; the importer cannot infer topics or integration payloads.
 
 Run imports while live writers are stopped. If the target changes between batches, resume fails instead of mixing histories. A batch call returns only after PostgreSQL's live-write sequence matches the imported history. If a call is interrupted after its transaction commits, retry that batch before enabling writers. A normal append after completion continues from the imported global position.
+
+## Performance workload
+
+From the repository root, `bun run bench:eventsourcing 10000 100` appends 10,000 events across 100 streams, reads them back and checks ordering and payloads. It uses fresh in-memory state and fixed metadata. See [the performance workflow](../../docs/performance.md) for CPU profiling and repeated comparisons. These timings describe the in-memory adapter, not SQL or broker throughput.

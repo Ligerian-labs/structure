@@ -11,6 +11,8 @@ coverage/
 thoughts/
 .claude-modified-files
 /workspace/
+# Local benchmark samples and CPU/task profiles
+/.performance/
 # playwright local artifacts (packages/playwright)
 test-results/
 playwright-report/

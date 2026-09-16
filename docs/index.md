@@ -12,6 +12,7 @@ Living documentation for the framework. "Living" means every document here has a
 | Why is the system shaped this way? | [architecture.md](architecture.md) + [decisions/](decisions/) (ADRs) |
 | How do I run, migrate, observe, and recover it? | [operations.md](operations.md) |
 | What are the repo conventions and hard rules? | [`AGENTS.md`](../AGENTS.md) |
+| How do I profile and verify performance changes? | [performance.md](performance.md) |
 | How do I contribute? | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
 | Machine-readable package index | [`llms.txt`](../llms.txt) |
 | Step-by-step task recipes | `.agents/skills/*/SKILL.md` |
@@ -21,6 +22,8 @@ Living documentation for the framework. "Living" means every document here has a
 - [getting-started.md](getting-started.md) — build one small app end to end: config → domain → command → event sourcing → view model → HTTP → launch.
 - [architecture.md](architecture.md) — the flow of a command through the system, package dependency direction, the consistency model, and the error taxonomy.
 - [operations.md](operations.md) — startup order, migration policy, health, shutdown, telemetry signals, and recovery procedures (projection rebuilds, outbox dead letters).
+- [performance.md](performance.md) — profiling commands, before/after benchmarks, cache controls and review evidence.
+- [performance-audit-2026-09.md](performance-audit-2026-09.md) — measured baseline, current bottlenecks and follow-ups.
 - [decisions/](decisions/) — architecture decision records: numbered, immutable once accepted, superseded rather than edited.
 
 ## Rules for this directory
