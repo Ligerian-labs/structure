@@ -418,17 +418,11 @@ export const makeS3Storage = (options: S3StorageOptions): Storage => {
         }
       },
       catch: (cause): StorageError =>
-        typeof cause === "object" &&
-        cause !== null &&
-        "_tag" in cause &&
-        typeof (cause as { _tag: unknown })._tag === "string" &&
-        [
-          "ObjectNotFound",
-          "StorageRejected",
-          "StorageUnavailable",
-          "StorageValidationError",
-        ].includes((cause as { _tag: string })._tag)
-          ? (cause as StorageError)
+        cause instanceof ObjectNotFound ||
+        cause instanceof StorageRejected ||
+        cause instanceof StorageUnavailable ||
+        cause instanceof StorageValidationError
+          ? cause
           : new StorageUnavailable({
               driver: "s3",
               operation: "put-stream",

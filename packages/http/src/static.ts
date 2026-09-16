@@ -1,7 +1,9 @@
 import { realpath, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
+import { Correlation } from "@structure-ai/observability";
 import { Data, Effect, Option } from "effect";
+import { defaultErrorResponse } from "./errors.js";
 import { underPrefix } from "./mounts.js";
 
 /**
@@ -133,11 +135,17 @@ const validateOptions = (options: StaticOptions): ReadonlyArray<string> => {
 const isInside = (root: string, candidate: string): boolean =>
   candidate === root || candidate.startsWith(root + sep);
 
+const missingFile = (error: unknown): boolean =>
+  error instanceof Error &&
+  "code" in error &&
+  (error.code === "ENOENT" || error.code === "ENOTDIR");
+
 const fileStat = async (path: string): Promise<{ size: number; mtime: Date } | undefined> => {
   try {
     const info = await stat(path);
     return info.isFile() ? { size: info.size, mtime: info.mtime } : undefined;
-  } catch {
+  } catch (error) {
+    if (!missingFile(error)) throw error;
     return undefined;
   }
 };
@@ -145,7 +153,8 @@ const fileStat = async (path: string): Promise<{ size: number; mtime: Date } | u
 const isDirectory = async (path: string): Promise<boolean> => {
   try {
     return (await stat(path)).isDirectory();
-  } catch {
+  } catch (error) {
+    if (!missingFile(error)) throw error;
     return false;
   }
 };
@@ -188,7 +197,10 @@ export const makeStatic = (
   // every served file must resolve inside it.
   let realRoot: Promise<string | undefined> | undefined;
   const resolveRoot = (): Promise<string | undefined> => {
-    realRoot ??= realpath(root).catch(() => undefined);
+    realRoot ??= realpath(root).catch((error: unknown) => {
+      if (!missingFile(error)) throw error;
+      return undefined;
+    });
     return realRoot;
   };
 
@@ -204,7 +216,8 @@ export const makeStatic = (
     let real: string;
     try {
       real = await realpath(candidate);
-    } catch {
+    } catch (error) {
+      if (!missingFile(error)) throw error;
       return undefined;
     }
     if (!isInside(rootPath, real)) return undefined;
@@ -256,7 +269,7 @@ export const makeStatic = (
   const serve = async (
     request: StaticRequest,
     path: string,
-  ): Promise<Option.Option<HttpServerResponse.HttpServerResponse>> => {
+  ): Promise<Option.Option<{ located: Located; variant: Variant }>> => {
     if (request.method !== "GET" && request.method !== "HEAD") return Option.none();
     if (!underPrefix(prefix, path)) return Option.none();
     const below = prefix === "/" ? path : path.slice(prefix.length);
@@ -275,17 +288,24 @@ export const makeStatic = (
     }
     if (located === undefined) return Option.none();
     const variant = await pickVariant(located, request.headers["accept-encoding"]);
-    return variant === undefined ? Option.none() : Option.some(respond(request, located, variant));
+    return variant === undefined ? Option.none() : Option.some({ located, variant });
   };
 
   return {
     violations,
     server: {
       serve: (request, path) =>
-        Effect.promise(() => serve(request, path)).pipe(
-          // Any filesystem surprise is "not a static file": the request falls
-          // through to the HttpApi mapping instead of leaking a defect.
-          Effect.catchAllCause(() => Effect.succeed(Option.none())),
+        Effect.tryPromise({ try: () => serve(request, path), catch: (cause) => cause }).pipe(
+          Effect.map(Option.map(({ located, variant }) => respond(request, located, variant))),
+          Effect.catchAll((error) =>
+            Effect.logError("static file read failed", error).pipe(
+              Effect.zipRight(
+                Effect.map(Correlation.current, (context) =>
+                  Option.some(defaultErrorResponse(undefined, context.correlationId)),
+                ),
+              ),
+            ),
+          ),
         ),
     },
   };

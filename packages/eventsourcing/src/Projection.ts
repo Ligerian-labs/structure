@@ -1,3 +1,4 @@
+import type { PersistenceError } from "@structure-ai/domain";
 import { Chunk, type Duration, Effect, Stream } from "effect";
 import { CheckpointStore } from "./CheckpointStore.js";
 import type { EventDecodeError, EventRegistry } from "./codec.js";
@@ -61,7 +62,11 @@ const catchupWith = <E extends { readonly _tag: string }, EH, R>(
   projection: Projection<E, EH, R>,
   live: boolean,
   batchSize: number,
-): Effect.Effect<CatchupStats, EH | EventDecodeError, EventStore | CheckpointStore | R> =>
+): Effect.Effect<
+  CatchupStats,
+  EH | EventDecodeError | PersistenceError,
+  EventStore | CheckpointStore | R
+> =>
   Effect.gen(function* () {
     const store = yield* EventStore;
     const checkpoints = yield* CheckpointStore;
@@ -106,8 +111,11 @@ const catchupWith = <E extends { readonly _tag: string }, EH, R>(
 export const catchup = <E extends { readonly _tag: string }, EH, R>(
   projection: Projection<E, EH, R>,
   options?: { readonly batchSize?: number },
-): Effect.Effect<CatchupStats, EH | EventDecodeError, EventStore | CheckpointStore | R> =>
-  catchupWith(projection, true, options?.batchSize ?? 100);
+): Effect.Effect<
+  CatchupStats,
+  EH | EventDecodeError | PersistenceError,
+  EventStore | CheckpointStore | R
+> => catchupWith(projection, true, options?.batchSize ?? 100);
 
 /**
  * Runs the projection forever: catch up to the head, sleep `pollInterval`,
@@ -116,7 +124,11 @@ export const catchup = <E extends { readonly _tag: string }, EH, R>(
 export const run = <E extends { readonly _tag: string }, EH, R>(
   projection: Projection<E, EH, R>,
   options?: RunOptions,
-): Effect.Effect<never, EH | EventDecodeError, EventStore | CheckpointStore | R> =>
+): Effect.Effect<
+  never,
+  EH | EventDecodeError | PersistenceError,
+  EventStore | CheckpointStore | R
+> =>
   catchupWith(projection, true, options?.batchSize ?? 100).pipe(
     Effect.andThen(Effect.sleep(options?.pollInterval ?? "500 millis")),
     Effect.forever,
@@ -131,7 +143,11 @@ export const rebuild = <E extends { readonly _tag: string }, EH, R, E2, R2>(
   projection: Projection<E, EH, R>,
   reset: Effect.Effect<void, E2, R2>,
   options?: { readonly batchSize?: number },
-): Effect.Effect<CatchupStats, EH | EventDecodeError | E2, EventStore | CheckpointStore | R | R2> =>
+): Effect.Effect<
+  CatchupStats,
+  EH | EventDecodeError | PersistenceError | E2,
+  EventStore | CheckpointStore | R | R2
+> =>
   Effect.gen(function* () {
     yield* reset;
     const checkpoints = yield* CheckpointStore;

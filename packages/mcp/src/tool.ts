@@ -1,5 +1,5 @@
 import { Tool as AiTool, McpSchema, McpServer } from "@effect/ai";
-import { Effect, Layer, Predicate, Schema } from "effect";
+import { Cause, Effect, Layer, Predicate, Schema } from "effect";
 import { ArrayFormatter, type ParseError } from "effect/ParseResult";
 import {
   InsufficientScope,
@@ -45,11 +45,7 @@ const errorMessage = (error: unknown): string => {
     if (typeof message === "string" && message.length > 0) return message;
   }
   if (typeof error === "string") return error;
-  try {
-    return JSON.stringify(error) ?? String(error);
-  } catch {
-    return String(error);
-  }
+  return "Tool execution failed";
 };
 
 const successResult = (encoded: unknown): McpSchema.CallToolResult =>
@@ -108,8 +104,8 @@ const register = <R>(
         inputSchema: AiTool.getJsonSchemaFromSchemaAst(spec.parametersAst),
         ...(spec.description !== undefined && { description: spec.description }),
       }),
-      // Errors and defects become MCP *tool* errors (`isError: true`) carrying
-      // only the error's message, so the calling agent can see and self-correct.
+      // Expected failures expose the handler's public message. Defects are
+      // logged and return a fixed message; cancellation stays cancellation.
       handle: (payload: unknown) =>
         authorize.pipe(
           Effect.zipRight(spec.decodeParameters(payload)),
@@ -123,8 +119,18 @@ const register = <R>(
               ),
           ),
           Effect.map(successResult),
-          Effect.catchAll((message) => Effect.succeed(errorResult(message))),
-          Effect.catchAllDefect((defect) => Effect.succeed(errorResult(errorMessage(defect)))),
+          Effect.catchAllCause((cause) => {
+            if (Cause.isFailType(cause)) return Effect.succeed(errorResult(cause.error));
+            return Effect.logError("MCP tool execution failed", cause).pipe(
+              Effect.zipRight(
+                // The SDK requires E=never. Typed messages are consumed at this
+                // terminal boundary; cancellation and defects remain in the cause.
+                Cause.isInterrupted(cause)
+                  ? Effect.failCause(Cause.stripFailures(cause))
+                  : Effect.succeed(errorResult("Internal tool error")),
+              ),
+            );
+          }),
         ),
     });
   });
@@ -175,8 +181,8 @@ export interface DefineToolOptions<
  * - arguments are decoded with the parameters schema; invalid input produces
  *   an MCP tool error (`isError: true`), not a protocol crash;
  * - the success value is encoded with the success schema (JSON-friendly);
- * - handler failures and defects become tool errors carrying the error's
- *   `message` only — never a stack trace or internals;
+ * - handler failures carry their public message; defects return a fixed
+ *   internal-error message and cancellation remains interrupted;
  * - declared `scopes` are checked before the handler runs (see
  *   {@link DefineToolOptions.scopes}).
  */

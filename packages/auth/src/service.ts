@@ -91,10 +91,14 @@ export interface MakeAuthOptions {
   /**
    * Second-factor hook: when set and it reports an enrolled user, sessions
    * for that user are created `2fa-pending` (no `elevatedAt`) — wire it to
-   * `TotpService.isEnrolled`. Absent (default), sessions need no elevation.
+   * `TotpService.isEnrolled`. A lookup failure prevents session creation.
+   * Absent (default), sessions need no elevation.
    */
   readonly secondFactor?: {
-    readonly isEnrolled: (tenantId: TenantId, userId: string) => Effect.Effect<boolean>;
+    readonly isEnrolled: (
+      tenantId: TenantId,
+      userId: string,
+    ) => Effect.Effect<boolean, AuthServiceError>;
   };
 }
 

@@ -1,4 +1,5 @@
 import * as SqlClient from "@effect/sql/SqlClient";
+import type { SqlError } from "@effect/sql/SqlError";
 import { Effect } from "effect";
 
 export interface AdapterOptions {
@@ -28,7 +29,7 @@ export const tableNames = (options: AdapterOptions = {}): TableNames => {
  */
 export const migrate = (
   options: AdapterOptions = {},
-): Effect.Effect<void, never, SqlClient.SqlClient> =>
+): Effect.Effect<void, SqlError, SqlClient.SqlClient> =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const tables = tableNames(options);
@@ -75,4 +76,4 @@ export const migrate = (
         dead_at TIMESTAMPTZ NOT NULL
       )
     `;
-  }).pipe(Effect.orDie);
+  });

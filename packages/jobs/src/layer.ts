@@ -1,8 +1,8 @@
 import type * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
 import { PgClient } from "@effect/sql-pg";
-import type { Shutdown } from "@structure-ai/runtime";
-import { Effect, Layer, Redacted } from "effect";
+import { Readiness, type Shutdown } from "@structure-ai/runtime";
+import { Cause, Effect, Layer, Option, Redacted, Ref } from "effect";
 import {
   Scheduler,
   type SchedulerOptions,
@@ -64,6 +64,20 @@ export const workerLayer = (
         );
         return;
       }
-      yield* Effect.forkScoped(scheduler.runWorker(options));
+      const readiness = yield* Effect.serviceOption(Readiness);
+      const running = yield* Ref.make(true);
+      if (Option.isSome(readiness)) {
+        yield* readiness.value.register({ name: "jobs-worker", run: Ref.get(running) });
+      }
+      yield* Effect.forkScoped(
+        scheduler.runWorker(options).pipe(
+          Effect.tapErrorCause((cause) =>
+            Cause.isInterruptedOnly(cause)
+              ? Effect.void
+              : Effect.logError("jobs worker stopped after failure", cause),
+          ),
+          Effect.ensuring(Ref.set(running, false)),
+        ),
+      );
     }),
   );

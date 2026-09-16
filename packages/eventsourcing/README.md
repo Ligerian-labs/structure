@@ -27,7 +27,7 @@ const program = Effect.gen(function* () {
 | Export | What it is |
 | --- | --- |
 | `EventRegistry.make(entries)` | Schema-based codec: `{ schema, schemaVersion, upcasters? }` per event; decode applies upcasters from the stored version up before validating. |
-| `EventStore` | `append(stream, expectedVersion, events)` failing `ConcurrencyConflict` (version 0 = stream must not exist); `read` per stream; `readAll` in global order for projections, optionally narrowed to one or several envelope partitions (`readAll({ partition })`: same positions, same order, same checkpoint guarantee; events without a partition never match, so an unpartitioned store filtered by partition yields nothing). |
+| `EventStore` | `append(stream, expectedVersion, events)` failing `ConcurrencyConflict | PersistenceError` (version 0 = stream must not exist); `read` per stream; `readAll` in global order for projections, optionally narrowed to one or several envelope partitions (`readAll({ partition })`: same positions, same order, same checkpoint guarantee; events without a partition never match, so an unpartitioned store filtered by partition yields nothing). |
 | `HistoryImporter` + `HistoryImport.checksum` | Imports a frozen history with source positions, stream versions, ids, timestamps, correlation/causation, actor, partition, origin and extensions intact. Batches are atomic, checksum-verified, resumable, and idempotent. |
 | `AggregateStore.make(aggregate, registry, opts?)` | `load` (fold history), `execute` (load → decide → append with expected version), `executeWithRetry` (reload+retry on conflict only, default 3); stamps `EventMetadata` including correlation, causation, optional actor, and the command's `partition` and `extensions` (never `origin`). Stream naming: `<AggregateName>-<id>` (aggregate names must not contain `-`). |
 | `SnapshotStore` | Optional; picked up from context when provided, written every `snapshotEvery` events. |
@@ -55,3 +55,9 @@ Run imports while live writers are stopped. If the target changes between batche
 ## Performance workload
 
 From the repository root, `bun run bench:eventsourcing 10000 100` appends 10,000 events across 100 streams, reads them back and checks ordering and payloads. It uses fresh in-memory state and fixed metadata. See [the performance workflow](../../docs/performance.md) for CPU profiling and repeated comparisons. These timings describe the in-memory adapter, not SQL or broker throughput.
+
+## Persistence failures
+
+Storage operations preserve expected SQL, broker and stored-data failures in the typed `PersistenceError` channel, with an operation name and the original diagnostic cause. The error is exported by `@structure-ai/domain`. Aggregate loading, projections, inbox/outbox workflows and view hydration propagate it. Recover with `Effect.catchTag("PersistenceError", handler)` where the application can make a recovery decision. It is classified `permanent` to prevent automatic retries of writes whose commit status may be unknown. Defects and cancellation remain separate.
+
+Outbox publishing retries only a single expected publish failure. A compound cause propagates unchanged, so `OutboxRelay.drain/run` also retain the publisher error type for those causes. Defects and cancellation are never treated as retryable publish failures.

@@ -1,6 +1,6 @@
 # ADR-0015: Nisshi event store — single partition, sidecar ledger, collapsed outbox
 
-- Status: accepted
+- Status: accepted; append error-channel decision superseded by [ADR-0020](0020-typed-persistence-and-cause-boundaries.md)
 - Date: 2026-09-02
 
 ## Context

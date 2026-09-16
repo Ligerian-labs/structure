@@ -81,6 +81,9 @@ jobs:
       - name: Run pg adapter tests against real Postgres
         working-directory: packages/eventsourcing-pg
         run: bun test
+      - name: Run jobs tests against real Postgres
+        working-directory: packages/jobs
+        run: bun test
       - name: Run auth pg adapter tests against real Postgres
         working-directory: packages/auth-pg
         run: bun test

@@ -263,3 +263,10 @@ describe("exitCodeFor", () => {
     expect(outcome.errorMessage).toContain("boom");
   });
 });
+
+test("compound causes retain software and interruption exit codes", () => {
+  const failed = Cause.fail(new DispatchTimeout({ reason: "busy" }));
+  expect(exitCodeFor(Cause.parallel(failed, Cause.die(new Error("bug"))))).toBe(EXIT_SOFTWARE);
+  expect(exitCodeFor(Cause.parallel(failed, Cause.interrupt(FiberId.none)))).toBe(130);
+  expect(exitCodeFor({ _tag: "ConfigLoadError", issues: [] })).toBe(1);
+});

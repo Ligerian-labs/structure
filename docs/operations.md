@@ -73,3 +73,11 @@ One such setting deserves a warning: the `trustProxy` flag passed to `clientIp` 
 Use a shared fixture catalog for base users/CMS content and named feature scenarios. Mount [`fixturesCommand`](../packages/fixtures/README.md#application-cli) in the app CLI with the intended target layers. Resolve the fixture capability from typed configuration, false by default, and never grant it for production resources. Provide recording/test adapters for external effects. Production CMS provisioning is a separate reviewed workflow.
 
 Run `fixtures plan <scenario> --input '<json>'` before `fixtures load`. Loading creates a fresh run and waits for the configured readiness hook. Keep the receipt and verify the actual query/API/UI behavior. Completed data survives failures; an interrupted invocation can be identified by its stderr progress receipt. Cleanup is explicit through `fixtures cleanup <run-id>` and an app-owned command hook that enforces run ownership. See the [package lifecycle contract](../packages/fixtures/README.md#run-and-verify) and [agent recipe](../.agents/skills/create-fixtures/SKILL.md).
+
+## Storage and worker failures
+
+Inspect `PersistenceError.operation` and its cause in controlled diagnostics; never serialize the raw cause to clients. The error does not establish whether a write committed. Check the operation's idempotency and stored outcome before retrying. If idempotency cleanup fails, the combined cause retains the original dispatch failure and cleanup failure; the claim can remain in flight until TTL expiry.
+
+A jobs worker stops on queue failures, defects or compound handler causes instead of silently losing a child fiber. Supervise `runWorker`; `workerLayer` logs failures and reports a stopped worker through readiness when available. The Nisshi relay retries transient broker failures only; permanent broker errors and SQL failures need operator recovery. Pending Nisshi rows can publish after an append reported failure.
+
+Second-factor enrollment lookup failures must prevent session creation. Wire `totp.isEnrolled` directly into the auth hook; never recover a failed lookup as `false`.

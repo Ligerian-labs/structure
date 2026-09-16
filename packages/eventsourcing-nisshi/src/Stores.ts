@@ -1,4 +1,5 @@
 import * as SqlClient from "@effect/sql/SqlClient";
+import { PersistenceError } from "@structure-ai/domain";
 import {
   CheckpointStore,
   type CheckpointStoreService,
@@ -29,26 +30,44 @@ export const snapshotStoreLayer = (
       const sql = yield* SqlClient.SqlClient;
       const service: SnapshotStoreService = {
         load: (streamName) =>
-          Effect.map(
+          Effect.flatMap(
             sql<SnapshotRow>`
               SELECT state, version FROM ${sql(tables.snapshots)} WHERE stream_name = ${streamName}
-            `.pipe(Effect.orDie),
-            (rows): Option.Option<{ state: unknown; version: number }> => {
-              const row = rows[0];
-              return row === undefined
-                ? Option.none()
-                : Option.some({
-                    state: JSON.parse(row.state) as unknown,
-                    version: Number(row.version),
-                  });
-            },
+            `.pipe(
+              Effect.mapError(
+                (cause) => new PersistenceError({ operation: "nisshi-sidecar", cause }),
+              ),
+            ),
+            (rows) =>
+              Effect.try({
+                try: (): Option.Option<{ state: unknown; version: number }> => {
+                  const row = rows[0];
+                  return row === undefined
+                    ? Option.none()
+                    : Option.some({
+                        state: JSON.parse(row.state) as unknown,
+                        version: Number(row.version),
+                      });
+                },
+                catch: (cause) => new PersistenceError({ operation: "snapshot.decode", cause }),
+              }),
           ),
         save: (streamName, snapshot) =>
-          Effect.asVoid(sql`
+          Effect.gen(function* () {
+            const encoded = yield* Effect.try({
+              try: () => JSON.stringify(snapshot.state ?? null),
+              catch: (cause) => new PersistenceError({ operation: "snapshot.encode", cause }),
+            });
+            return yield* Effect.asVoid(sql`
             INSERT INTO ${sql(tables.snapshots)} (stream_name, state, version)
-            VALUES (${streamName}, ${JSON.stringify(snapshot.state ?? null)}, ${snapshot.version})
+            VALUES (${streamName}, ${encoded}, ${snapshot.version})
             ON CONFLICT (stream_name) DO UPDATE SET state = excluded.state, version = excluded.version
-          `).pipe(Effect.orDie),
+          `).pipe(
+              Effect.mapError(
+                (cause) => new PersistenceError({ operation: "nisshi-sidecar", cause }),
+              ),
+            );
+          }),
       };
       return SnapshotStore.of(service);
     }),
@@ -69,7 +88,11 @@ export const checkpointStoreLayer = (
           Effect.map(
             sql<{ readonly position: number | bigint | string | null }>`
               SELECT position FROM ${sql(tables.checkpoints)} WHERE name = ${name}
-            `.pipe(Effect.orDie),
+            `.pipe(
+              Effect.mapError(
+                (cause) => new PersistenceError({ operation: "nisshi-sidecar", cause }),
+              ),
+            ),
             (rows) => toBigInt(rows[0]?.position),
           ),
         save: (name, position) =>
@@ -77,7 +100,11 @@ export const checkpointStoreLayer = (
             INSERT INTO ${sql(tables.checkpoints)} (name, position)
             VALUES (${name}, ${position})
             ON CONFLICT (name) DO UPDATE SET position = excluded.position
-          `).pipe(Effect.orDie),
+          `).pipe(
+            Effect.mapError(
+              (cause) => new PersistenceError({ operation: "nisshi-sidecar", cause }),
+            ),
+          ),
       };
       return CheckpointStore.of(service);
     }),
@@ -99,7 +126,11 @@ export const inboxLayer = (
             sql<{ readonly one: number }>`
               SELECT 1 AS one FROM ${sql(tables.inbox)}
               WHERE consumer_id = ${consumerId} AND message_id = ${messageId}
-            `.pipe(Effect.orDie),
+            `.pipe(
+              Effect.mapError(
+                (cause) => new PersistenceError({ operation: "nisshi-sidecar", cause }),
+              ),
+            ),
             (rows) => rows.length > 0,
           ),
         markProcessed: (consumerId, messageId) =>
@@ -107,7 +138,11 @@ export const inboxLayer = (
             INSERT INTO ${sql(tables.inbox)} (consumer_id, message_id)
             VALUES (${consumerId}, ${messageId})
             ON CONFLICT DO NOTHING
-          `).pipe(Effect.orDie),
+          `).pipe(
+            Effect.mapError(
+              (cause) => new PersistenceError({ operation: "nisshi-sidecar", cause }),
+            ),
+          ),
       };
       return Inbox.of(service);
     }),

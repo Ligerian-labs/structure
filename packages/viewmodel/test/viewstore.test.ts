@@ -84,8 +84,8 @@ describe("ViewStore roundtrip", () => {
         expect(Option.isNone(yield* store.findById("nope"))).toBe(true);
         const error = yield* Effect.flip(store.get("nope"));
         expect(error._tag).toBe("NotFound");
-        expect(error.entity).toBe("PaymentView");
-        expect(error.id).toBe("nope");
+        expect(error).toHaveProperty("entity", "PaymentView");
+        expect(error).toHaveProperty("id", "nope");
         expect(error.classification).toBe("permanent");
       }),
     );
@@ -181,7 +181,7 @@ describe("ViewStore patch/remove/truncate", () => {
         expect(patched.active).toBe(true);
         const error = yield* Effect.flip(store.patch("missing", { price: 1 }));
         expect(error._tag).toBe("NotFound");
-        expect(error.id).toBe("missing");
+        expect(error).toHaveProperty("id", "missing");
       }),
     );
   });

@@ -140,6 +140,22 @@ describe("S3 storage driver (against a loopback stub)", () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
 
+  test("a stream rejection cannot impersonate a storage error using only its tag", async () => {
+    const key = await Effect.runPromise(objectKey("files/spoof.bin"));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error({ _tag: "StorageRejected", reason: "spoofed" });
+      },
+    });
+    const error = await Effect.runPromise(
+      s3WithFetch(async () => new Response(""), 4)
+        .put({ key, body, contentType: "application/octet-stream" })
+        .pipe(Effect.flip),
+    );
+    expect(error._tag).toBe("StorageUnavailable");
+    expect(error).toBeInstanceOf(Error);
+  });
+
   test("a streamed put sends each part as it fills instead of buffering the whole blob first", async () => {
     const partSize = 4;
     const totalChunks = 10;

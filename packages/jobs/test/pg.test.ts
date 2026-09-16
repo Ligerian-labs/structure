@@ -63,7 +63,9 @@ gated("PostgreSQL scheduler (needs DATABASE_URL)", () => {
     const harness: SchedulerHarness = {
       scheduler,
       clock,
-      startWorker: (options): Promise<Fiber.RuntimeFiber<void, never>> =>
+      startWorker: (
+        options,
+      ): Promise<Fiber.RuntimeFiber<void, import("../src/index.js").WorkerError>> =>
         Effect.runPromise(
           Effect.forkDaemon(
             scheduler

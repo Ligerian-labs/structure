@@ -1,4 +1,5 @@
 import * as SqlClient from "@effect/sql/SqlClient";
+import { PersistenceError } from "@structure-ai/domain";
 import {
   Inbox,
   Outbox,
@@ -81,25 +82,38 @@ export const outboxLayer = (
         const query =
           limit === undefined ? sql<OutboxRow>`${base}` : sql<OutboxRow>`${base} LIMIT ${limit}`;
         return query.pipe(
-          Effect.orDie,
-          Effect.map((rows) => rows.map(decodeEntry)),
+          Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
+          Effect.flatMap((rows) =>
+            Effect.try({
+              try: () => rows.map(decodeEntry),
+              catch: (cause) => new PersistenceError({ operation: "outbox.decode", cause }),
+            }),
+          ),
         );
       };
       return Outbox.of({
         enqueue: (messages) =>
           Effect.forEach(
             messages,
-            (message) => {
-              const columns = messageColumns(message);
-              return sql`
+            (message) =>
+              Effect.gen(function* () {
+                const columns = yield* Effect.try({
+                  try: () => messageColumns(message),
+                  catch: (cause) => new PersistenceError({ operation: "outbox.encode", cause }),
+                });
+                return yield* sql`
                 INSERT INTO ${sql(tables.outbox)} (id, topic, payload, metadata, status, attempts, available_at)
                 VALUES (${columns.id}, ${columns.topic}, ${columns.payload}::jsonb,
                         ${columns.metadata}::jsonb, 'pending', 0, ${columns.availableAt})
                 ON CONFLICT (id) DO NOTHING
               `;
-            },
+              }),
             { discard: true },
-          ).pipe(Effect.orDie),
+          ).pipe(
+            Effect.catchTag("SqlError", (cause) =>
+              Effect.fail(new PersistenceError({ operation: "Outbox", cause })),
+            ),
+          ),
         pending: (limit) =>
           Effect.flatMap(Clock.currentTimeMillis, (now) =>
             sql<OutboxRow>`
@@ -110,8 +124,13 @@ export const outboxLayer = (
               ORDER BY seq ASC
               LIMIT ${limit}
             `.pipe(
-              Effect.orDie,
-              Effect.map((rows) => rows.map(decodeEntry)),
+              Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
+              Effect.flatMap((rows) =>
+                Effect.try({
+                  try: () => rows.map(decodeEntry),
+                  catch: (cause) => new PersistenceError({ operation: "outbox.decode", cause }),
+                }),
+              ),
             ),
           ),
         markPublished: (ids) =>
@@ -121,20 +140,29 @@ export const outboxLayer = (
                 UPDATE ${sql(tables.outbox)}
                 SET status = 'published', updated_at = now()
                 WHERE id IN ${sql.in(ids)}
-              `.pipe(Effect.orDie, Effect.asVoid),
+              `.pipe(
+                Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
+                Effect.asVoid,
+              ),
         markFailed: (id, error, attempts, retryAt) =>
           sql`
             UPDATE ${sql(tables.outbox)}
             SET attempts = ${attempts}, last_error = ${error}, available_at = ${retryAt ?? null},
                 updated_at = now()
             WHERE id = ${id}
-          `.pipe(Effect.orDie, Effect.asVoid),
+          `.pipe(
+            Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
+            Effect.asVoid,
+          ),
         markDead: (id, error) =>
           sql`
             UPDATE ${sql(tables.outbox)}
             SET status = 'dead', last_error = ${error}, updated_at = now()
             WHERE id = ${id}
-          `.pipe(Effect.orDie, Effect.asVoid),
+          `.pipe(
+            Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
+            Effect.asVoid,
+          ),
         replay: (ids) =>
           ids.length === 0
             ? Effect.void
@@ -143,7 +171,10 @@ export const outboxLayer = (
                 SET status = 'pending', attempts = 0, last_error = NULL, available_at = NULL,
                     updated_at = now()
                 WHERE id IN ${sql.in(ids)} AND status = 'dead'
-              `.pipe(Effect.orDie, Effect.asVoid),
+              `.pipe(
+                Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
+                Effect.asVoid,
+              ),
         deadLetters: () => entries("dead"),
       });
     }),
@@ -165,7 +196,7 @@ export const inboxLayer = (
             FROM ${sql(tables.inbox)}
             WHERE consumer_id = ${consumerId} AND message_id = ${messageId}
           `.pipe(
-            Effect.orDie,
+            Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
             Effect.map((rows) => rows.length > 0),
           ),
         markProcessed: (consumerId, messageId) =>
@@ -173,7 +204,10 @@ export const inboxLayer = (
             INSERT INTO ${sql(tables.inbox)} (consumer_id, message_id)
             VALUES (${consumerId}, ${messageId})
             ON CONFLICT (consumer_id, message_id) DO NOTHING
-          `.pipe(Effect.orDie, Effect.asVoid),
+          `.pipe(
+            Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
+            Effect.asVoid,
+          ),
       });
     }),
   );

@@ -273,6 +273,7 @@
         "effect": "catalog:",
       },
       "devDependencies": {
+        "@structure-ai/domain": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
       },
@@ -289,6 +290,7 @@
         "effect": "catalog:",
       },
       "devDependencies": {
+        "@effect/experimental": "catalog:",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
       },

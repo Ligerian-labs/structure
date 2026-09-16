@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@types/bun": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "@effect/experimental": "catalog:"
   }
 }

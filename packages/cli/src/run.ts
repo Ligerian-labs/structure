@@ -27,10 +27,7 @@ const classificationOf = (error: unknown): FailureClass | undefined => {
 };
 
 const isConfigLoadError = (error: unknown): error is ConfigLoadError =>
-  error instanceof ConfigLoadError ||
-  (typeof error === "object" &&
-    error !== null &&
-    (error as { readonly _tag?: unknown })._tag === "ConfigLoadError");
+  error instanceof ConfigLoadError;
 
 const exitCodeForFailure = (error: unknown): number => {
   if (isConfigLoadError(error)) return EXIT_CONFIG;
@@ -48,11 +45,13 @@ const exitCodeForFailure = (error: unknown): number => {
  * - errors with `classification: "permanent" | "conflict"` and every other
  *   typed failure → 1
  * - defects (untyped throws) → 70 (EX_SOFTWARE)
- * - pure interruption → 130
+ * - any interruption → 130
  */
 export const exitCodeFor = (input: unknown): number => {
   if (Cause.isCause(input)) {
     if (Cause.isEmpty(input)) return EXIT_SUCCESS;
+    if (Cause.isInterrupted(input)) return EXIT_INTERRUPTED;
+    if (Cause.defects(input).length > 0) return EXIT_SOFTWARE;
     const failure = Cause.failureOption(input);
     if (Option.isSome(failure)) return exitCodeForFailure(failure.value);
     return Cause.isInterruptedOnly(input) ? EXIT_INTERRUPTED : EXIT_SOFTWARE;
@@ -69,8 +68,7 @@ const failureMessage = (error: unknown): string => {
 
 const messageForCause = (cause: Cause.Cause<unknown>): string | undefined => {
   if (Cause.isEmpty(cause)) return undefined;
-  const failure = Cause.failureOption(cause);
-  if (Option.isSome(failure)) return failureMessage(failure.value);
+  if (Cause.isFailType(cause)) return failureMessage(cause.error);
   return Cause.pretty(cause);
 };
 
@@ -108,7 +106,11 @@ export const runCli = <Name extends string, E, A>(options: RunCliOptions<Name, E
     Effect.tapErrorCause((cause) =>
       Effect.sync(() => {
         const failure = Cause.failureOption(cause);
-        if (Option.isSome(failure) && ValidationError.isValidationError(failure.value)) {
+        if (
+          Cause.isFailType(cause) &&
+          Option.isSome(failure) &&
+          ValidationError.isValidationError(failure.value)
+        ) {
           return; // @effect/cli already printed the usage error
         }
         const message = messageForCause(cause);

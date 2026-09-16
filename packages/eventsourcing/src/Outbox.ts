@@ -1,4 +1,5 @@
-import { Clock, Context, Duration, Effect, Either, Option, Random } from "effect";
+import type { PersistenceError } from "@structure-ai/domain";
+import { Cause, Clock, Context, Duration, Effect, Exit, Option, Random } from "effect";
 
 /**
  * A message staged for publication. `id` must be globally unique — it is
@@ -48,15 +49,17 @@ export interface OutboxService {
    * Stages messages for publication. Idempotent per `message.id`: a message
    * whose id is already known is ignored, so redelivered enqueues are safe.
    */
-  readonly enqueue: (messages: ReadonlyArray<OutboxMessage>) => Effect.Effect<void>;
+  readonly enqueue: (
+    messages: ReadonlyArray<OutboxMessage>,
+  ) => Effect.Effect<void, PersistenceError>;
   /**
    * Up to `limit` pending entries that are due now, in stable enqueue
    * order. Entries scheduled for the future (initially, or while backing
    * off after a failed attempt) are not returned until their time comes.
    */
-  readonly pending: (limit: number) => Effect.Effect<ReadonlyArray<OutboxEntry>>;
+  readonly pending: (limit: number) => Effect.Effect<ReadonlyArray<OutboxEntry>, PersistenceError>;
   /** Marks entries as successfully published. */
-  readonly markPublished: (ids: ReadonlyArray<string>) => Effect.Effect<void>;
+  readonly markPublished: (ids: ReadonlyArray<string>) => Effect.Effect<void, PersistenceError>;
   /**
    * Records a failed attempt: the entry stays pending with
    * `attempts`/`error` updated and becomes eligible again at `retryAt`
@@ -68,17 +71,17 @@ export interface OutboxService {
     error: string,
     attempts: number,
     retryAt?: number,
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, PersistenceError>;
   /** Moves an entry to the dead letters, keeping the final error text. */
-  readonly markDead: (id: string, error: string) => Effect.Effect<void>;
+  readonly markDead: (id: string, error: string) => Effect.Effect<void, PersistenceError>;
   /**
    * Requeues dead-lettered entries: back to pending with the attempt
    * count, last error, and any delivery schedule cleared, so the next
    * relay pass delivers them fresh. Unknown or non-dead ids are ignored.
    */
-  readonly replay: (ids: ReadonlyArray<string>) => Effect.Effect<void>;
+  readonly replay: (ids: ReadonlyArray<string>) => Effect.Effect<void, PersistenceError>;
   /** Entries given up on, with their last error and attempt count for diagnosis. */
-  readonly deadLetters: () => Effect.Effect<ReadonlyArray<OutboxEntry>>;
+  readonly deadLetters: () => Effect.Effect<ReadonlyArray<OutboxEntry>, PersistenceError>;
 }
 
 /** Service tag for the outbox port. */
@@ -143,7 +146,7 @@ const publishEntry = <EP, RP>(
   outbox: OutboxService,
   entry: OutboxEntry,
   options: OutboxRelayOptions<EP, RP>,
-): Effect.Effect<void, never, RP> =>
+): Effect.Effect<void, PersistenceError | EP, RP> =>
   Effect.gen(function* () {
     const maxAttempts = options.maxAttempts ?? 5;
     if (entry.attempts >= maxAttempts) {
@@ -155,11 +158,12 @@ const publishEntry = <EP, RP>(
     let attempts = entry.attempts;
     let lastError = entry.lastError ?? "unknown error";
     while (true) {
-      const outcome = yield* Effect.either(options.publish(entry));
-      if (Either.isRight(outcome)) {
+      const outcome = yield* Effect.exit(options.publish(entry));
+      if (Exit.isSuccess(outcome)) {
         return yield* outbox.markPublished([entry.message.id]);
       }
-      const text = describeError(outcome.left);
+      if (!Cause.isFailType(outcome.cause)) return yield* Effect.failCause(outcome.cause);
+      const text = describeError(outcome.cause.error);
       attempts += 1;
       lastError = text;
       // Record every attempt (the dead letter keeps the final count for
@@ -186,7 +190,7 @@ const publishEntry = <EP, RP>(
  */
 export const drain = <EP, RP>(
   options: OutboxRelayOptions<EP, RP>,
-): Effect.Effect<void, never, Outbox | RP> =>
+): Effect.Effect<void, PersistenceError | EP, Outbox | RP> =>
   Effect.gen(function* () {
     const outbox = yield* Outbox;
     while (true) {
@@ -210,7 +214,7 @@ export const drain = <EP, RP>(
  */
 export const run = <EP, RP>(
   options: OutboxRelayOptions<EP, RP>,
-): Effect.Effect<never, never, Outbox | RP> =>
+): Effect.Effect<never, PersistenceError | EP, Outbox | RP> =>
   drain(options).pipe(
     Effect.andThen(Effect.sleep(options.pollInterval ?? "500 millis")),
     Effect.forever,
@@ -226,9 +230,15 @@ export const OutboxRelay = { run, drain } as const;
  */
 export interface InboxService {
   /** Whether `messageId` was already processed by `consumerId`. */
-  readonly seen: (consumerId: string, messageId: string) => Effect.Effect<boolean>;
+  readonly seen: (
+    consumerId: string,
+    messageId: string,
+  ) => Effect.Effect<boolean, PersistenceError>;
   /** Records `messageId` as processed by `consumerId`. */
-  readonly markProcessed: (consumerId: string, messageId: string) => Effect.Effect<void>;
+  readonly markProcessed: (
+    consumerId: string,
+    messageId: string,
+  ) => Effect.Effect<void, PersistenceError>;
 }
 
 /** Service tag for the inbox port. */
@@ -241,7 +251,9 @@ export class Inbox extends Context.Tag("@structure-ai/eventsourcing/Inbox")<Inbo
    */
   static readonly dedupe =
     (consumerId: string, messageId: string) =>
-    <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<Option.Option<A>, E, R | Inbox> =>
+    <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<Option.Option<A>, E | PersistenceError, R | Inbox> =>
       Effect.gen(function* () {
         const inbox = yield* Inbox;
         if (yield* inbox.seen(consumerId, messageId)) {

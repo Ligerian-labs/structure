@@ -14,11 +14,10 @@ import {
   Metric,
   MetricBoundaries,
   MetricLabel,
-  Option,
 } from "effect";
 import { globalValue } from "effect/GlobalValue";
 import { DeclaredBusinessFailure } from "./cqrs.js";
-import { defaultErrorResponse, HttpProblemSchema } from "./errors.js";
+import { defaultErrorResponse, isKnownError } from "./errors.js";
 
 // --- propagated ids ----------------------------------------------------------
 
@@ -274,30 +273,6 @@ export const metrics = <E, R>(
     )(app).pipe(Effect.annotateSpans({ "http.method": request.method, "http.route": route }));
   });
 
-/** Error tags this package knows how to render as problem responses. */
-const knownTags: ReadonlySet<string> = new Set([
-  "ValidationFailed",
-  "Unauthenticated",
-  "Unauthorized",
-  "PermissionDenied",
-  "NotFound",
-  "ConcurrencyConflict",
-  "TooManyRequestsProblem",
-  "DispatchTimeout",
-  "InvariantViolation",
-  "HandlerNotFound",
-  "RouteNotFound",
-  "HttpApiDecodeError",
-]);
-
-const isKnownError = (u: unknown): boolean =>
-  HttpProblemSchema.members.some((member) => u instanceof member) ||
-  (typeof u === "object" &&
-    u !== null &&
-    "_tag" in u &&
-    typeof (u as { _tag: unknown })._tag === "string" &&
-    knownTags.has((u as { _tag: string })._tag));
-
 /**
  * Error boundary: renders the framework error taxonomy (and unknown routes)
  * as problem-details responses and turns defects into a 500 carrying only
@@ -309,24 +284,25 @@ const isKnownError = (u: unknown): boolean =>
 export const problems = <E, R>(app: HttpApp.Default<E, R>): HttpApp.Default<E, R> =>
   Effect.catchAllCause(app, (cause) =>
     Effect.gen(function* () {
-      if (Cause.isInterruptedOnly(cause)) return yield* Effect.failCause(cause);
+      if (Cause.isInterrupted(cause)) return yield* Effect.failCause(cause);
       const context = yield* Correlation.current;
-      const failure = Cause.failureOption(cause);
-      if (Option.isNone(failure)) {
+      if (Cause.defects(cause).length > 0) {
         // A defect: log the full cause here, hide the details from the wire.
         yield* Effect.logError("http request defect", cause);
         return defaultErrorResponse(undefined, context.correlationId);
       }
+      if (!Cause.isFailType(cause)) return yield* Effect.failCause(cause);
+      const failure = cause.error;
       // A declared business failure from the CQRS bridge: unwrap and re-fail
       // the inner error so the platform encodes it via the endpoint's
       // declared failure schema (422), skipping taxonomy mapping — which
       // would otherwise flatten failures whose `_tag` collides with a
       // taxonomy tag into generic problems.
-      if (failure.value instanceof DeclaredBusinessFailure) {
-        return yield* Effect.fail(failure.value.failure as E);
+      if (failure instanceof DeclaredBusinessFailure) {
+        return yield* Effect.fail(failure.failure as E);
       }
-      return isKnownError(failure.value)
-        ? defaultErrorResponse(failure.value, context.correlationId)
+      return isKnownError(failure)
+        ? defaultErrorResponse(failure, context.correlationId)
         : yield* Effect.failCause(cause);
     }),
   );

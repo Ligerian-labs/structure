@@ -282,8 +282,15 @@ maybe("nisshi event store", () => {
         const exit = yield* Effect.exit(store.append("Counter-1", 0, [malformed]));
         expect(exit._tag).toBe("Failure");
         if (exit._tag === "Failure") {
-          const defects = Chunk.toReadonlyArray(Cause.defects(exit.cause));
-          expect(defects.some((d) => d instanceof NisshiProtocolError)).toBe(true);
+          const failure = Cause.failureOption(exit.cause);
+          expect(Cause.defects(exit.cause).length).toBe(0);
+          expect(Option.isSome(failure)).toBe(true);
+          if (Option.isSome(failure)) {
+            expect(failure.value).toMatchObject({
+              _tag: "PersistenceError",
+              cause: expect.any(NisshiProtocolError),
+            });
+          }
           // nothing was reserved: a corrected append still succeeds at 0
           yield* store.append("Counter-1", 0, [event(1)]);
         }

@@ -34,3 +34,9 @@ On an existing `SqlClient`: `storesLayer(options)` merges every adapter; run `mi
 - A lost append race surfaces as `ConcurrencyConflict` from the `UNIQUE(stream_name, version)` backstop, with the actual version re-read after rollback.
 - Positions are the `INTEGER PRIMARY KEY AUTOINCREMENT` rowids: global, monotonic, visible in commit order under SQLite's single writer.
 - No `HistoryImporter` and no `IdempotencyStore` here; use `@structure-ai/eventsourcing-pg` for those.
+
+## Persistence failures
+
+The five storage adapters expose `PersistenceError` for SQL and JSON failures. The error retains its operation and diagnostic cause; version races remain `ConcurrencyConflict`. See the [shared error contract](../eventsourcing/README.md#persistence-failures).
+
+SQL-specific helpers such as `migrate` and `appendWithOutbox` retain their explicit `SqlError` channel. JSON encoding in `appendWithOutbox` can also fail with `PersistenceError`.

@@ -40,6 +40,7 @@ const Invoice = Aggregate.define({
 | `DomainEvent.define(tag, fields)` | Past-tense event schema (`Schema.TaggedStruct`). |
 | `EventMetadata` / `Envelope<E>` | Persisted/published event envelope: eventId, occurredAt, aggregate identity + version, correlation/causation, optional actor; optional `partition` (a locality key, immutable per stream — what it means is the application's), `origin` (`{ node, position }`, set only on a replicated copy by an import path), and `extensions` (an application-owned JSON record the framework never interprets). |
 | `Repository` | Load/save port with `Versioned<A>` and optimistic version checks. |
+| `PersistenceError` | Adapter failure with `operation` and diagnostic `cause`; typed through persistence ports and CQRS. Classified permanent to prevent automatic retries of ambiguous writes. |
 | `InvariantViolation`, `NotFound`, `ConcurrencyConflict`, `ValidationFailed` | Tagged errors with `classification: FailureClass` (`transient`/`permanent`/`conflict`). |
 
 Events record accepted facts only — a failed validation is not a domain event. Keep `decide`/`evolve` pure; effects belong in application services.

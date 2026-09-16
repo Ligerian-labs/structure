@@ -27,7 +27,7 @@ runStdio({ name: "billing", version: "1.0.0", tools: [search, approve] });
 
 | Export | What it is |
 | --- | --- |
-| `defineTool({ name, description?, parameters, success, handler })` | Registers a tool layer; arguments validated against the schema (invalid → tool error, never a crash); success returned as structured content + JSON text; failures **and defects** become message-only tool errors. |
+| `defineTool({ name, description?, parameters, success, handler })` | Registers a tool layer; arguments validated against the schema (invalid → tool error, never a crash); success returned as structured content + JSON text; expected failures use the handler's public message; defects return `Internal tool error` and are logged. Cancellation remains interrupted. |
 | `toolFromCommand(definition, opts?)` / `toolFromQuery(...)` | Bridge a `@structure-ai/cqrs` definition to a tool: parameters = payload schema, handler dispatches on the bus from context; tag kebab-cased for the name. |
 | `defineResource({ uri, name, read, ... })` | MCP resource backed by an Effect. |
 | `serverLayer(options)` | Transport-agnostic server composition. |

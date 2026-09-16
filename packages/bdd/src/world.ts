@@ -14,10 +14,7 @@ export interface WorldMissing<ServiceName extends string> {
 }
 
 const hasTag = (error: unknown): error is { readonly _tag: string } =>
-  typeof error === "object" &&
-  error !== null &&
-  "_tag" in error &&
-  typeof (error as { _tag: unknown })._tag === "string";
+  typeof error === "object" && error !== null && "_tag" in error && typeof error._tag === "string";
 
 /**
  * Per-scenario world: everything the step handlers of one scenario share.

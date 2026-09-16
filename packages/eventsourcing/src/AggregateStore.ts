@@ -1,3 +1,4 @@
+import type { PersistenceError } from "@structure-ai/domain";
 import { Aggregate, type ConcurrencyConflict, EventMetadata } from "@structure-ai/domain";
 import { DateTime, Effect, Option, Predicate, Schema, Stream } from "effect";
 import type { EventDecodeError, EventRegistry } from "./codec.js";
@@ -48,7 +49,7 @@ export interface AggregateStoreService<S, C, E, Err> {
    * latest snapshot when one is configured and available). An empty stream
    * yields the initial state at version 0.
    */
-  readonly load: (id: string) => Effect.Effect<LoadResult<S>, EventDecodeError>;
+  readonly load: (id: string) => Effect.Effect<LoadResult<S>, EventDecodeError | PersistenceError>;
   /**
    * Loads current state, runs `aggregate.decide`, and appends the emitted
    * events with `expectedVersion` set to the loaded version — a concurrent
@@ -62,7 +63,10 @@ export interface AggregateStoreService<S, C, E, Err> {
     id: string,
     command: C,
     metadata?: CommandMetadata,
-  ) => Effect.Effect<ExecuteResult<S, E>, Err | ConcurrencyConflict | EventDecodeError>;
+  ) => Effect.Effect<
+    ExecuteResult<S, E>,
+    Err | ConcurrencyConflict | EventDecodeError | PersistenceError
+  >;
   /**
    * Like `execute`, but on `ConcurrencyConflict` reloads and retries the
    * whole command up to `options.times` more times (default 3). Domain
@@ -73,7 +77,10 @@ export interface AggregateStoreService<S, C, E, Err> {
     command: C,
     metadata?: CommandMetadata,
     options?: { readonly times?: number },
-  ) => Effect.Effect<ExecuteResult<S, E>, Err | ConcurrencyConflict | EventDecodeError>;
+  ) => Effect.Effect<
+    ExecuteResult<S, E>,
+    Err | ConcurrencyConflict | EventDecodeError | PersistenceError
+  >;
 }
 
 const encodeMetadata = Schema.encodeSync(EventMetadata);
@@ -103,7 +110,10 @@ export const make = <S, C, E extends { readonly _tag: string }, Err>(
 
     const loadFrom = (
       id: string,
-    ): Effect.Effect<LoadResult<S> & { readonly snapshotVersion: number }, EventDecodeError> =>
+    ): Effect.Effect<
+      LoadResult<S> & { readonly snapshotVersion: number },
+      EventDecodeError | PersistenceError
+    > =>
       Effect.gen(function* () {
         const name = streamName(id);
         const snapshot =
@@ -122,14 +132,17 @@ export const make = <S, C, E extends { readonly _tag: string }, Err>(
         return { state, version, snapshotVersion };
       });
 
-    const load = (id: string): Effect.Effect<LoadResult<S>, EventDecodeError> =>
+    const load = (id: string): Effect.Effect<LoadResult<S>, EventDecodeError | PersistenceError> =>
       Effect.map(loadFrom(id), ({ state, version }) => ({ state, version }));
 
     const execute = (
       id: string,
       command: C,
       metadata?: CommandMetadata,
-    ): Effect.Effect<ExecuteResult<S, E>, Err | ConcurrencyConflict | EventDecodeError> =>
+    ): Effect.Effect<
+      ExecuteResult<S, E>,
+      Err | ConcurrencyConflict | EventDecodeError | PersistenceError
+    > =>
       Effect.gen(function* () {
         const name = streamName(id);
         const loaded = yield* loadFrom(id);
@@ -185,7 +198,10 @@ export const make = <S, C, E extends { readonly _tag: string }, Err>(
       command: C,
       metadata?: CommandMetadata,
       retryOptions?: { readonly times?: number },
-    ): Effect.Effect<ExecuteResult<S, E>, Err | ConcurrencyConflict | EventDecodeError> =>
+    ): Effect.Effect<
+      ExecuteResult<S, E>,
+      Err | ConcurrencyConflict | EventDecodeError | PersistenceError
+    > =>
       Effect.retry(execute(id, command, metadata), {
         times: retryOptions?.times ?? 3,
         while: (error) => Predicate.isTagged(error, "ConcurrencyConflict"),

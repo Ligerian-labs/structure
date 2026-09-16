@@ -34,6 +34,7 @@ export {
   type SchedulerService,
   schedulerLayer,
   UnknownJob,
+  type WorkerError,
   type WorkerOptions,
 } from "./scheduler.js";
 export { type AdapterOptions, migrate, type TableNames, tableNames } from "./schema.js";

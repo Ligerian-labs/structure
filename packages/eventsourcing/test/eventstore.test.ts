@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ConcurrencyConflict } from "@structure-ai/domain";
 import { Chunk, Effect, Either, Stream } from "effect";
 import { EventStore, InMemoryEventStore, readAllPartitions } from "../src/index.js";
 import { testMetadata } from "./fixtures.js";
@@ -15,7 +16,7 @@ const partitioned = (version: number, partition: string) => ({
   metadata: { ...testMetadata(version), partition },
 });
 
-const collect = <A>(stream: Stream.Stream<A>) =>
+const collect = <A, E>(stream: Stream.Stream<A, E>) =>
   Effect.map(Stream.runCollect(stream), Chunk.toReadonlyArray);
 
 describe("readAllPartitions", () => {
@@ -58,7 +59,8 @@ describe("InMemoryEventStore", () => {
       const result = yield* Effect.either(store.append("Counter-b", 0, [event(3)]));
       expect(Either.isLeft(result)).toBe(true);
       if (Either.isLeft(result)) {
-        expect(result.left._tag).toBe("ConcurrencyConflict");
+        expect(result.left).toBeInstanceOf(ConcurrencyConflict);
+        if (!(result.left instanceof ConcurrencyConflict)) throw new Error("expected conflict");
         expect(result.left.entity).toBe("Counter");
         expect(result.left.id).toBe("b");
         expect(result.left.expectedVersion).toBe(0);

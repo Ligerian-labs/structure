@@ -5,6 +5,7 @@ import {
   AuthDependencyError,
   type AuthEmail,
   type AuthStore,
+  AuthStoreError,
   AuthValidationError,
   allowAllRateLimiter,
   argon2id,
@@ -42,8 +43,17 @@ const build = () => {
   let now = new Date("2026-08-20T12:00:00.000Z");
   const primitives = { now: () => now };
   let totp: TotpService | undefined;
+  let enrollmentFailure: AuthStoreError | undefined;
+  let sessionsCreated = 0;
   const auth = makeAuth({
-    store: memory.store,
+    store: {
+      ...memory.store,
+      createSession: (session) =>
+        Effect.suspend(() => {
+          sessionsCreated++;
+          return memory.store.createSession(session);
+        }),
+    },
     resolveTenant: () => Effect.succeed(tenantConfig),
     emailSender: {
       send: (email) => Effect.sync(() => emails.push(email)).pipe(Effect.asVoid),
@@ -53,13 +63,19 @@ const build = () => {
     primitives,
     secondFactor: {
       isEnrolled: (tenantId, userId) =>
-        (totp?.isEnrolled(tenantId, userId) ?? Effect.succeed(false)).pipe(
-          Effect.catchAll(() => Effect.succeed(false)),
-        ),
+        totp?.isEnrolled(tenantId, userId) ?? Effect.dieMessage("TOTP service was not wired"),
     },
   });
   totp = makeTotp({
-    store: memory.store,
+    store: {
+      ...memory.store,
+      findTotp: (tenantId, userId) =>
+        Effect.suspend(() =>
+          enrollmentFailure === undefined
+            ? memory.store.findTotp(tenantId, userId)
+            : Effect.fail(enrollmentFailure),
+        ),
+    },
     auth,
     resolveTenant: () => Effect.succeed(tenantConfig),
     rateLimiter: allowAllRateLimiter,
@@ -71,6 +87,10 @@ const build = () => {
   });
   return {
     auth,
+    failEnrollmentReads: (error: AuthStoreError) => {
+      enrollmentFailure = error;
+    },
+    sessionsCreated: () => sessionsCreated,
     totp: totp as TotpService,
     memory,
     emails,
@@ -677,4 +697,18 @@ describe("the sealing secret at construction", () => {
     expect(message).toContain("secret");
     expect(message).not.toContain("short");
   });
+});
+
+test("an enrollment lookup outage prevents sign-in and creates no session", async () => {
+  const { harness, email } = await signedInUser("enrollment-outage@example.com");
+  const outage = new AuthStoreError({ operation: "findTotp", cause: new Error("outage") });
+  harness.failEnrollmentReads(outage);
+  const before = harness.sessionsCreated();
+  const outcome = await run(
+    harness.auth
+      .signInPassword("tenant-a", email, "correct horse battery staple")
+      .pipe(Effect.either),
+  );
+  expect(outcome).toMatchObject({ _tag: "Left", left: outage });
+  expect(harness.sessionsCreated()).toBe(before);
 });

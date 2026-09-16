@@ -266,27 +266,24 @@ export const run = <const F extends Fixtures, E, R>(
       }),
     );
     return yield* execute.pipe(
-      Effect.catchAllCause((cause) => {
-        if (Cause.isInterruptedOnly(cause)) return Effect.failCause(cause as Cause.Cause<never>);
-        const failure = Cause.failureOption(cause);
-        const timedOut =
-          Option.isSome(failure) &&
-          failure.value instanceof FixtureError &&
-          failure.value.reason === "timeout";
-        return Effect.fail(
-          new FixtureError({
-            reason: timedOut ? "timeout" : "execution",
-            detail: timedOut
-              ? "Fixture run timed out; partial data remains"
-              : "Fixture run failed; partial data remains",
-            runId,
-            completed: [...completed],
-            step,
-            cause,
-            classification: classification(cause),
+      Effect.catchAllCause((cause) =>
+        Effect.failCause(
+          Cause.map(cause, (error) => {
+            const timedOut = error instanceof FixtureError && error.reason === "timeout";
+            return new FixtureError({
+              reason: timedOut ? "timeout" : "execution",
+              detail: timedOut
+                ? "Fixture run timed out; partial data remains"
+                : "Fixture run failed; partial data remains",
+              runId,
+              completed: [...completed],
+              step,
+              cause,
+              classification: classification(Cause.fail(error)),
+            });
           }),
-        );
-      }),
+        ),
+      ),
     );
   });
 

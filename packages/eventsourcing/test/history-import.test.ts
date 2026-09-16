@@ -129,7 +129,7 @@ describe("InMemoryHistoryImporter", () => {
       );
       expect(Either.isLeft(result)).toBe(true);
       if (Either.isLeft(result) && result.left._tag === "HistoryImportError") {
-        expect(result.left.reason).toBe("invalid-metadata");
+        expect(result.left).toHaveProperty("reason", "invalid-metadata");
       }
       expect(Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()))).toEqual([]);
     });
@@ -193,7 +193,8 @@ describe("InMemoryHistoryImporter", () => {
         importer.importBatch(batch(divergentEvents, divergentChecksum), historyRegistry),
       );
       expect(Either.isLeft(divergent)).toBe(true);
-      if (Either.isLeft(divergent)) expect(divergent.left.reason).toBe("divergent-batch");
+      if (Either.isLeft(divergent))
+        expect(divergent.left).toHaveProperty("reason", "divergent-batch");
 
       expect(Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()))).toEqual(history);
     });
@@ -233,7 +234,8 @@ describe("InMemoryHistoryImporter", () => {
         ),
       );
       expect(Either.isLeft(wrong)).toBe(true);
-      if (Either.isLeft(wrong)) expect(wrong.left.reason).toBe("resume-token-mismatch");
+      if (Either.isLeft(wrong))
+        expect(wrong.left).toHaveProperty("reason", "resume-token-mismatch");
       expect(Chunk.toReadonlyArray(yield* Stream.runCollect(store.readAll()))).toEqual(firstEvents);
 
       yield* importer.importBatch(
@@ -308,7 +310,7 @@ describe("InMemoryHistoryImporter", () => {
           item.reason !== undefined &&
           result.left._tag === "HistoryImportError"
         ) {
-          expect(result.left.reason).toBe(item.reason);
+          expect(result.left).toHaveProperty("reason", item.reason);
         }
         if (Either.isLeft(result) && item.decodeError)
           expect(result.left._tag).toBe("EventDecodeError");
@@ -337,7 +339,7 @@ describe("InMemoryHistoryImporter", () => {
       );
       expect(Either.isLeft(result)).toBe(true);
       if (Either.isLeft(result) && result.left._tag === "HistoryImportError") {
-        expect(result.left.reason).toBe("target-not-empty");
+        expect(result.left).toHaveProperty("reason", "target-not-empty");
       }
       expect(yield* outbox.pending(10)).toEqual([]);
     });

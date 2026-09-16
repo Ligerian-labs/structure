@@ -1,3 +1,5 @@
+import { PersistenceError } from "@structure-ai/domain";
+import { Effect } from "effect";
 /** JSON text for storage; `undefined` collapses to `null`. */
 export const jsonText = (value: unknown): string => JSON.stringify(value ?? null);
 
@@ -20,3 +22,10 @@ export const conflictIdentity = (streamName: string): { entity: string; id: stri
     ? { entity: streamName, id: streamName }
     : { entity: streamName.slice(0, separator), id: streamName.slice(separator + 1) };
 };
+
+/** JSON encoding belongs to the adapter's typed persistence channel. */
+export const encodeJson = (value: unknown): Effect.Effect<string, PersistenceError> =>
+  Effect.try({
+    try: () => jsonText(value),
+    catch: (cause) => new PersistenceError({ operation: "json.encode", cause }),
+  });

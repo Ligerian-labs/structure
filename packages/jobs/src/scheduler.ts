@@ -3,12 +3,14 @@ import type * as Statement from "@effect/sql/Statement";
 import { Correlation, Metrics } from "@structure-ai/observability";
 import { Shutdown } from "@structure-ai/runtime";
 import {
+  Cause,
   Context,
   Data,
   Deferred,
   Duration,
   Effect,
-  Fiber,
+  Exit,
+  type Fiber,
   Layer,
   Metric,
   Option,
@@ -57,6 +59,9 @@ export interface JobFailure {
   readonly reason: string;
   readonly classification: "transient" | "permanent";
 }
+
+/** Worker failures include handler failures only when part of an unhandled compound cause. */
+export type WorkerError = JobQueueError | JobFailure;
 
 // --- definitions ------------------------------------------------------------------
 
@@ -194,7 +199,7 @@ export interface SchedulerService {
    * failures with jittered backoff, and dead-letters permanent failures and
    * exhausted attempts.
    */
-  readonly runWorker: (options?: WorkerOptions) => Effect.Effect<void, never, Shutdown>;
+  readonly runWorker: (options?: WorkerOptions) => Effect.Effect<void, WorkerError, Shutdown>;
 }
 
 export class Scheduler extends Context.Tag("@structure-ai/jobs/Scheduler")<
@@ -406,7 +411,7 @@ export const makeScheduler = (
       );
     };
 
-    const execute = (row: QueueRow, leaseMillis: number): Effect.Effect<void> => {
+    const execute = (row: QueueRow, leaseMillis: number): Effect.Effect<void, WorkerError> => {
       const handler: StoredJobHandler | undefined = handlers.get(row.job_name);
       const context: JobContext = {
         jobId: row.id,
@@ -419,7 +424,7 @@ export const makeScheduler = (
         causationId: row.id,
       });
 
-      const heartbeat: Effect.Effect<void> = Effect.gen(function* () {
+      const heartbeat: Effect.Effect<void, JobQueueError> = Effect.gen(function* () {
         const until = new Date(now().getTime() + leaseMillis);
         // Fenced like every other write: an evicted worker must not keep
         // extending the lease another worker now owns.
@@ -432,35 +437,34 @@ export const makeScheduler = (
         Effect.asVoid,
         Effect.repeat(Schedule.spaced(`${Math.max(1, Math.floor(leaseMillis / 3))} millis`)),
         Effect.asVoid,
-        Effect.catchAllCause(() => Effect.void),
+        Effect.mapError((cause) => queueError("heartbeat", cause)),
       );
 
-      const runOutcome: Effect.Effect<void> = Effect.gen(function* () {
+      const runOutcome: Effect.Effect<void, WorkerError> = Effect.gen(function* () {
         if (handler === undefined) {
           yield* Effect.logError("job dispatched with no registered handler").pipe(
             Effect.annotateLogs({ jobId: row.id, jobName: row.job_name }),
           );
-          yield* deadLetter(row, "unknown-job").pipe(Effect.orDie);
+          yield* deadLetter(row, "unknown-job");
           return;
         }
         const decoded = yield* S.decodeUnknown(handler.payloadSchema)(row.payload).pipe(
           Effect.either,
         );
         if (decoded._tag === "Left") {
-          yield* deadLetter(row, `invalid-payload: ${String(decoded.left).slice(0, 128)}`).pipe(
-            Effect.orDie,
-          );
+          yield* deadLetter(row, `invalid-payload: ${String(decoded.left).slice(0, 128)}`);
           return;
         }
         const failure = yield* handler
           .handle(decoded.right, context)
-          .pipe(Metrics.track(`job_${row.job_name}`, boundaryFor(row.job_name)), Effect.either);
-        if (failure._tag === "Right") {
+          .pipe(Metrics.track(`job_${row.job_name}`, boundaryFor(row.job_name)), Effect.exit);
+        if (Exit.isSuccess(failure)) {
           yield* Metric.increment(succeeded);
-          yield* completeSuccess(row).pipe(Effect.orDie);
+          yield* completeSuccess(row);
           return;
         }
-        const error = failure.left;
+        if (!Cause.isFailType(failure.cause)) return yield* Effect.failCause(failure.cause);
+        const error = failure.cause.error;
         yield* Effect.logWarning("job attempt failed").pipe(
           Effect.annotateLogs({
             jobId: row.id,
@@ -472,29 +476,20 @@ export const makeScheduler = (
         );
         const exhausted = row.attempt >= (row.max_attempts || maxAttemptsFor(row.job_name));
         if (error.classification === "permanent" || exhausted) {
-          yield* deadLetter(row, error.reason).pipe(Effect.orDie);
+          yield* deadLetter(row, error.reason);
           return;
         }
-        yield* rescheduleRetry(row, error.reason).pipe(Effect.orDie);
+        yield* rescheduleRetry(row, error.reason);
       });
 
-      return Effect.gen(function* () {
-        const heartbeatFiber = yield* Effect.fork(
-          heartbeat.pipe(Effect.catchAllCause(() => Effect.void)),
-        );
-        yield* runOutcome.pipe(
-          Effect.ensuring(
-            Fiber.interrupt(heartbeatFiber).pipe(
-              Effect.catchAllCause(() => Effect.void),
-              Effect.asVoid,
-            ),
-          ),
-          correlation,
-        );
-      });
+      // A failed heartbeat invalidates this execution's lease. Stop the
+      // handler and propagate the failure to the worker's supervisor.
+      return runOutcome.pipe(Effect.raceFirst(heartbeat), correlation);
     };
 
-    const runWorker = (workerOptions: WorkerOptions = {}): Effect.Effect<void, never, Shutdown> =>
+    const runWorker = (
+      workerOptions: WorkerOptions = {},
+    ): Effect.Effect<void, WorkerError, Shutdown> =>
       Effect.gen(function* () {
         const shutdown = yield* Shutdown;
         const pollMillis =
@@ -513,7 +508,8 @@ export const makeScheduler = (
             ? undefined
             : Duration.decode(workerOptions.drainTimeout);
 
-        const inflight = new Map<Fiber.RuntimeFiber<void, unknown>, QueueRow>();
+        const inflight = new Map<Fiber.RuntimeFiber<void, WorkerError>, QueueRow>();
+        const workerFailed = yield* Deferred.make<never, WorkerError>();
         // The bound itself: a handler runs only while holding one permit, so
         // even a miscounted claim can never exceed `concurrency` executions.
         const permits = yield* Effect.makeSemaphore(concurrency);
@@ -554,7 +550,13 @@ export const makeScheduler = (
               `.pipe(Effect.asVoid),
             { discard: true },
           );
-        }).pipe(Effect.catchAllCause(() => Effect.void));
+        }).pipe(
+          Effect.catchTag("SqlError", () =>
+            Effect.logError(
+              "jobs worker could not release abandoned leases; rows remain reclaimable after lease expiry",
+            ),
+          ),
+        );
 
         yield* shutdown.onShutdown(
           "jobs-worker",
@@ -576,7 +578,7 @@ export const makeScheduler = (
           ),
         );
 
-        const loop: Effect.Effect<void> = Effect.whileLoop({
+        const loop: Effect.Effect<void, JobQueueError> = Effect.whileLoop({
           while: () => !stopRequested,
           body: () =>
             Effect.gen(function* () {
@@ -591,13 +593,17 @@ export const makeScheduler = (
                 yield* Deferred.await(waiter).pipe(Effect.timeout(pollMillis), Effect.ignore);
                 return;
               }
-              const rows = yield* Effect.orDie(claim(capacity, leaseMillis));
+              const rows = yield* claim(capacity, leaseMillis);
               if (rows.length === 0) {
                 yield* Effect.sleep(pollMillis);
                 return;
               }
               for (const row of rows) {
-                const fiber = yield* Effect.fork(permits.withPermits(1)(execute(row, leaseMillis)));
+                const fiber = yield* Effect.fork(
+                  permits
+                    .withPermits(1)(execute(row, leaseMillis))
+                    .pipe(Effect.tapErrorCause((cause) => Deferred.failCause(workerFailed, cause))),
+                );
                 inflight.set(fiber, row);
                 void fiber.addObserver(() => {
                   inflight.delete(fiber);
@@ -610,9 +616,12 @@ export const makeScheduler = (
             }),
           step: () => undefined,
         });
-        yield* loop;
-        // Graceful drain: wait for in-flight handlers to finish.
-        yield* awaitInflight;
+        // Observe child failures as well as claims. Otherwise a broken
+        // completion/heartbeat or handler defect silently frees a slot.
+        yield* loop.pipe(
+          Effect.zipRight(awaitInflight),
+          Effect.raceFirst(Deferred.await(workerFailed)),
+        );
         yield* Effect.logInfo("jobs worker drained").pipe(
           Effect.annotateLogs({ drained: inflight.size }),
         );

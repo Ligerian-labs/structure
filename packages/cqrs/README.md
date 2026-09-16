@@ -31,7 +31,7 @@ const program = Effect.gen(function* () {
 
 | Export | What it is |
 | --- | --- |
-| `Command.define(tag, { payload, success, failure? })` / `Query.define` | Intent-named message definitions; `failure` types the handler's error channel (in-process only). |
+| `Command.define(tag, { payload, success, failure? })` / `Query.define` | Intent-named message definitions; `failure` types business failures; handlers may also fail with infrastructure `PersistenceError`. |
 | `CommandHandler.make` / `QueryHandler.make` | Bind a definition to a handler `(payload, dispatch) => Effect`; `dispatch` carries messageId, correlationId, causationId, actor, idempotencyKey. |
 | `HandlerRegistry.layer(...registrations)` | Collects handlers (duplicate tag = defect at build time); captures handler service requirements from the context at build — satisfy them with `Layer.provideMerge`, not `Layer.provide`, or the services are spent building the registry and missing from the runtime context (missing-service defects at dispatch, invisible to the type checker). |
 | `CommandBus` / `QueryBus` (+ `.layer`, convenience `layer`) | `dispatch(definition, input, { idempotencyKey?, actor?, timeout? })`. |
@@ -55,3 +55,9 @@ A command dispatched with `idempotencyKey` is identified by the key **scoped to 
 | The claimed dispatch fails, times out or is interrupted | The claim is released; the next dispatch runs the handler again. |
 
 Stored results are the *encoded* success, so a durable store only ever holds JSON — make sure every field of a command's `success` schema round-trips (`Schema.Date`, branded ids and the like do). The store suppresses replays and duplicate concurrent runs of one key; exactly-once processing of *events* is the eventsourcing inbox's job.
+
+## Persistence failures
+
+`DispatchError` includes `PersistenceError` from `@structure-ai/domain`. Handlers and `IdempotencyStore.begin/complete/release` preserve that typed failure. A stored result that no longer decodes is also a persistence failure. It stays separate from the public business `failure` schema and maps to a safe HTTP 500.
+
+A failed dispatch releases its claim without interruption. If release also fails, the bus retains both causes; defects and interruption remain distinct. A failed completion can leave the claim in flight until its TTL expires. Do not automatically retry an ambiguous write.

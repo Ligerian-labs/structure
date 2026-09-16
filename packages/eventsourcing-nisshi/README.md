@@ -80,3 +80,9 @@ The sidecar and broker storage may share one PostgreSQL server, but use separate
 ## Tests
 
 `bun test` skips broker suites unless `NISSHI_URL` is set; PostgreSQL-sidecar scenarios additionally require `DATABASE_URL`. CI installs a pinned Nisshi release, starts PostgreSQL, and runs both sidecar suites. The wire quirks this client encodes (trailing `throttle_time_ms` in Produce, metadata-triggered topic auto-creation, empty-topic high watermark of 1, whole-batch fetch granularity) are pinned by tests in `test/protocol.test.ts`.
+
+## Persistence failures
+
+The event store and sidecar adapters expose `PersistenceError` for SQL, broker and envelope failures, retaining the operation and diagnostic cause. Version races remain `ConcurrencyConflict`. See the [shared error contract](../eventsourcing/README.md#persistence-failures).
+
+`runPendingRelay` retries only connection failures and broker errors marked retriable. SQL and permanent broker failures stop the relay with a typed error; supervise the returned effect. Produce failures wrap `NisshiProduceError` in `PersistenceError`. Pending rows may still be published later, so a failed append is not proof that no events will appear. See [ADR-0020](../../docs/decisions/0020-typed-persistence-and-cause-boundaries.md).

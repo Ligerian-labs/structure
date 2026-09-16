@@ -60,8 +60,12 @@ Per-job metrics under bounded, handler-derived names: `job_<name>_calls_total` /
 
 ## Errors
 
-`UnknownJob`, `InvalidJobPayload` (permanent), `JobQueueError` (transient), `InvalidCronExpression` (permanent, lists every problem). All classified per the framework taxonomy.
+`UnknownJob`, `InvalidJobPayload` (permanent), `JobQueueError` (transient), `InvalidCronExpression` (permanent, lists every problem). All classified per the framework taxonomy. `migrate` exposes `SqlError`. `runWorker` exposes `WorkerError`: queue errors, plus handler failures retained in compound causes.
 
 ## Schema
 
 Two tables created by the idempotent `migrate` (own prefix, `@structure-ai/migrations`-compatible DDL): `jobs_queue` (status `queued|running`, `run_at`, `cron_expr`, `cron_timezone`, `attempt`, `max_attempts`, `lease_expires_at`, `last_error`, correlation fields) with dispatch and lease indexes, and `jobs_dead_letters`.
+
+Only a single expected handler failure participates in job retry/dead-letter policy. A handler defect or cancellation, including one combined with an expected failure, stops the worker with its cause intact. Claim, completion and heartbeat failures also stop the worker. A failed heartbeat interrupts its handler because the lease can no longer be maintained. Rows remain reclaimable after lease expiry.
+
+`workerLayer` logs unexpected worker termination and registers a `jobs-worker` readiness check when a `Readiness` service is available. A stopped worker reports not ready. Failed lease release during shutdown is logged; rows remain reclaimable after expiry.

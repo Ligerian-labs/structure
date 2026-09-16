@@ -28,3 +28,5 @@ runCli({ name: "billing", version: "1.0.0", root: migrate, serviceName: "billing
 | `runCli({ name, version, root, serviceName? })` | Bun entrypoint: provides `BunContext`, maps failures to exit codes. |
 | `runCliForTest(root, argv)` | Testable runner returning `{ exitCode, errorMessage, cause }` without touching `process.exit`. |
 | `exitCodeFor(errorOrCause)` | The mapping: success 0 · usage errors 64 · `ConfigLoadError` 78 (all issues printed) · transient 75 · permanent/conflict 1 · defects 70 · interrupt 130. |
+
+For compound causes, interruption takes precedence, then defects, then typed failure classification. Diagnostics retain the compound cause. A tag-shaped object alone is not a `ConfigLoadError`.

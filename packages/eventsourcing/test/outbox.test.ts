@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Option, Ref } from "effect";
+import { Cause, Effect, Exit, FiberId, Option, Ref } from "effect";
 import { Inbox, InMemoryInbox, InMemoryOutbox, Outbox, OutboxRelay } from "../src/index.js";
 
 const message = (id: string) => ({
@@ -159,4 +159,29 @@ describe("Inbox", () => {
     });
     await Effect.runPromise(program.pipe(Effect.provide(InMemoryInbox)));
   });
+});
+
+test("a compound publish failure is never retried or marked published", async () => {
+  const cause = Cause.parallel(Cause.fail("transport unavailable"), Cause.interrupt(FiberId.none));
+  let attempts = 0;
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const outbox = yield* Outbox;
+      yield* outbox.enqueue([message("compound")]);
+      const exit = yield* Effect.exit(
+        OutboxRelay.drain({
+          publish: () =>
+            Effect.suspend(() => {
+              attempts++;
+              return Effect.failCause(cause);
+            }),
+          backoffBase: "1 millis",
+        }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(exit.cause).toEqual(cause);
+      expect(attempts).toBe(1);
+      expect((yield* outbox.pending(1))[0]?.attempts).toBe(0);
+    }).pipe(Effect.provide(InMemoryOutbox)),
+  );
 });

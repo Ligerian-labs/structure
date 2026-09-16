@@ -1,6 +1,6 @@
 import * as SqlClient from "@effect/sql/SqlClient";
-import type { SqlError } from "@effect/sql/SqlError";
-import { ConcurrencyConflict } from "@structure-ai/domain";
+import { SqlError } from "@effect/sql/SqlError";
+import { ConcurrencyConflict, PersistenceError } from "@structure-ai/domain";
 import {
   type AppendEvent,
   type AppendResult,
@@ -19,8 +19,8 @@ import {
   type StoredEventMetadata,
   validateHistoryImportContinuation,
 } from "@structure-ai/eventsourcing";
-import { Context, Effect, Layer, Stream } from "effect";
-import { conflictIdentity, jsonText, toBigInt, toNumber } from "./internal.js";
+import { Cause, Context, Effect, Layer, Stream } from "effect";
+import { conflictIdentity, encodeJson, toBigInt, toNumber } from "./internal.js";
 import { type AdapterOptions, type TableNames, tableNames } from "./schema.js";
 
 /**
@@ -74,7 +74,7 @@ interface EventStoreWithOutbox {
     expectedVersion: number,
     events: ReadonlyArray<AppendEvent>,
     messages: ReadonlyArray<OutboxMessage>,
-  ) => Effect.Effect<AppendResult, ConcurrencyConflict | SqlError>;
+  ) => Effect.Effect<AppendResult, ConcurrencyConflict | SqlError | PersistenceError>;
 }
 
 interface HistoryImportRow {
@@ -135,17 +135,20 @@ const make = (
       streamName: string,
       expectedVersion: number,
       events: ReadonlyArray<AppendEvent>,
-    ): Effect.Effect<void, SqlError> =>
+    ): Effect.Effect<void, SqlError | PersistenceError> =>
       Effect.forEach(
         events,
-        (event, index) => sql`
+        (event, index) =>
+          Effect.gen(function* () {
+            return yield* sql`
           INSERT INTO ${sql(tables.events)}
             (stream_name, version, type, schema_version, payload, metadata)
           VALUES
             (${streamName}, ${expectedVersion + index + 1}, ${event.type},
-             ${event.schemaVersion}, ${jsonText(event.payload)}::jsonb,
-             ${jsonText(event.metadata)}::jsonb)
-        `,
+             ${event.schemaVersion}, ${yield* encodeJson(event.payload)}::jsonb,
+             ${yield* encodeJson(event.metadata)}::jsonb)
+        `;
+          }),
         { discard: true },
       );
 
@@ -155,14 +158,17 @@ const make = (
     // together.
     const insertMessages = (
       messages: ReadonlyArray<OutboxMessage>,
-    ): Effect.Effect<void, SqlError> =>
+    ): Effect.Effect<void, SqlError | PersistenceError> =>
       Effect.forEach(
         messages,
-        (message) => sql`
+        (message) =>
+          Effect.gen(function* () {
+            return yield* sql`
           INSERT INTO ${sql(tables.outbox)} (id, topic, payload, metadata, status, attempts, available_at)
-          VALUES (${message.id}, ${message.topic}, ${jsonText(message.payload)}::jsonb,
-                  ${jsonText(message.metadata)}::jsonb, 'pending', 0, ${message.availableAt ?? null})
-        `,
+          VALUES (${message.id}, ${message.topic}, ${yield* encodeJson(message.payload)}::jsonb,
+                  ${yield* encodeJson(message.metadata)}::jsonb, 'pending', 0, ${message.availableAt ?? null})
+        `;
+          }),
         { discard: true },
       );
 
@@ -202,7 +208,7 @@ const make = (
       expectedVersion: number,
       events: ReadonlyArray<AppendEvent>,
       messages: ReadonlyArray<OutboxMessage>,
-    ): Effect.Effect<AppendResult, ConcurrencyConflict | SqlError> =>
+    ): Effect.Effect<AppendResult, ConcurrencyConflict | SqlError | PersistenceError> =>
       sql
         .withTransaction(
           Effect.gen(function* () {
@@ -226,15 +232,17 @@ const make = (
           }),
         )
         .pipe(
-          Effect.catchTag(
-            "SqlError",
-            (error): Effect.Effect<never, ConcurrencyConflict | SqlError> =>
-              isEventsVersionConflict(error, tables.events)
-                ? Effect.flatMap(Effect.orDie(currentVersion(streamName)), (actualVersion) =>
-                    Effect.fail(conflict(streamName, expectedVersion, actualVersion)),
-                  )
-                : Effect.fail(error),
-          ),
+          Effect.catchAllCause((cause) => {
+            if (
+              !Cause.isFailType(cause) ||
+              !(cause.error instanceof SqlError) ||
+              !isEventsVersionConflict(cause.error, tables.events)
+            )
+              return Effect.failCause(cause);
+            return Effect.flatMap(currentVersion(streamName), (actualVersion) =>
+              Effect.fail(conflict(streamName, expectedVersion, actualVersion)),
+            );
+          }),
         );
 
     // `::text` so payload/metadata always arrive as JSON text regardless of
@@ -247,7 +255,11 @@ const make = (
     const service = EventStore.of({
       append: (streamName, expectedVersion, events) =>
         appendTransaction(streamName, expectedVersion, events, []).pipe(
-          Effect.catchTag("SqlError", (error) => Effect.die(error)),
+          Effect.mapError((cause) =>
+            cause instanceof SqlError
+              ? new PersistenceError({ operation: "EventStore", cause })
+              : cause,
+          ),
         ),
       read: (streamName, options) =>
         Stream.unwrap(
@@ -257,8 +269,13 @@ const make = (
             WHERE stream_name = ${streamName} AND version >= ${options?.fromVersion ?? 1}
             ORDER BY version ASC
           `.pipe(
-            Effect.orDie,
-            Effect.map((rows) => Stream.fromIterable(rows.map(decodeEvent))),
+            Effect.mapError((cause) => new PersistenceError({ operation: "EventStore", cause })),
+            Effect.flatMap((rows) =>
+              Effect.try({
+                try: () => Stream.fromIterable(rows.map(decodeEvent)),
+                catch: (cause) => new PersistenceError({ operation: "events.decode", cause }),
+              }),
+            ),
           ),
         ),
       readAll: (options) => {
@@ -287,8 +304,13 @@ const make = (
               `;
         return Stream.unwrap(
           query.pipe(
-            Effect.orDie,
-            Effect.map((rows) => Stream.fromIterable(rows.map(decodeEvent))),
+            Effect.mapError((cause) => new PersistenceError({ operation: "EventStore", cause })),
+            Effect.flatMap((rows) =>
+              Effect.try({
+                try: () => Stream.fromIterable(rows.map(decodeEvent)),
+                catch: (cause) => new PersistenceError({ operation: "events.decode", cause }),
+              }),
+            ),
           ),
         );
       },
@@ -403,14 +425,17 @@ const make = (
                 yield* validateHistoryImportContinuation(batch.events, target);
                 yield* Effect.forEach(
                   batch.events,
-                  (event) => sql`
+                  (event) =>
+                    Effect.gen(function* () {
+                      return yield* sql`
                     INSERT INTO ${sql(tables.events)}
                       (position, stream_name, version, type, schema_version, payload, metadata)
                     VALUES
                       (${String(event.position)}, ${event.streamName}, ${event.version}, ${event.type},
-                       ${event.schemaVersion}, ${jsonText(event.payload)}::jsonb,
-                       ${jsonText(event.metadata)}::jsonb)
-                  `,
+                       ${event.schemaVersion}, ${yield* encodeJson(event.payload)}::jsonb,
+                       ${yield* encodeJson(event.metadata)}::jsonb)
+                  `;
+                    }),
                   { discard: true },
                 );
                 yield* sql`
@@ -441,14 +466,26 @@ const make = (
                 } satisfies HistoryImportResult;
               }),
             )
-            .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
+            .pipe(
+              Effect.mapError((cause) =>
+                cause instanceof SqlError
+                  ? new PersistenceError({ operation: "EventStore", cause })
+                  : cause,
+              ),
+            );
           yield* sql`
             SELECT setval(
               pg_get_serial_sequence(format('%I', ${tables.events}::text), 'position'),
               (SELECT max(position) FROM ${sql(tables.events)}),
               true
             )
-          `.pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
+          `.pipe(
+            Effect.mapError((cause) =>
+              cause instanceof SqlError
+                ? new PersistenceError({ operation: "EventStore", cause })
+                : cause,
+            ),
+          );
           return result;
         }),
     });
@@ -469,7 +506,11 @@ export const appendWithOutbox = (
   events: ReadonlyArray<AppendEvent>,
   messages: ReadonlyArray<OutboxMessage>,
   options?: AdapterOptions,
-): Effect.Effect<AppendResult, ConcurrencyConflict | SqlError, SqlClient.SqlClient> =>
+): Effect.Effect<
+  AppendResult,
+  ConcurrencyConflict | SqlError | PersistenceError,
+  SqlClient.SqlClient
+> =>
   Effect.flatMap(make(tableNames(options)), (store) =>
     store.appendWithOutbox(streamName, expectedVersion, events, messages),
   );

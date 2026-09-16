@@ -430,9 +430,9 @@ export const guard =
 /** Safe, log-only description of a verifier failure (tag or constructor name). */
 const describeFailure = (failure: unknown): string => {
   if (typeof failure === "object" && failure !== null) {
-    const tag = (failure as { readonly _tag?: unknown })._tag;
+    const tag = "_tag" in failure ? failure._tag : undefined;
     if (typeof tag === "string") return tag;
-    return failure.constructor.name;
+    return failure.constructor?.name ?? "object";
   }
   return typeof failure;
 };
