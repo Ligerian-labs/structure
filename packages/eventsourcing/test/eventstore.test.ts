@@ -150,4 +150,80 @@ describe("InMemoryEventStore", () => {
     });
     await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
   });
+
+  test("collected reads are stable snapshots unaffected by later appends", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* EventStore;
+      yield* store.append("Counter-s", 0, [event(1), event(2)]);
+      const streamSnapshot = yield* collect(store.read("Counter-s"));
+      const globalSnapshot = yield* collect(store.readAll());
+      yield* store.append("Counter-s", 2, [event(3)]);
+      yield* store.append("Counter-t", 0, [event(1)]);
+      expect(streamSnapshot.map((entry) => entry.position)).toEqual([1n, 2n]);
+      expect(globalSnapshot.map((entry) => entry.position)).toEqual([1n, 2n]);
+      expect((yield* collect(store.read("Counter-s"))).map((entry) => entry.version)).toEqual([
+        1, 2, 3,
+      ]);
+      expect((yield* collect(store.readAll())).map((entry) => entry.position)).toEqual([
+        1n, 2n, 3n, 4n,
+      ]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
+  });
+
+  test("interleaved appends across streams keep contiguous positions and per-stream versions", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* EventStore;
+      const order = ["Counter-i", "Counter-j", "Counter-i", "Counter-j", "Counter-i"] as const;
+      const versions = [0, 0, 1, 1, 2] as const;
+      for (const [index, stream] of order.entries()) {
+        const result = yield* store.append(stream, versions[index], [event(index + 1)]);
+        expect(result).toEqual({ firstVersion: versions[index] + 1, lastVersion: versions[index] + 1 });
+      }
+      const all = yield* collect(store.readAll());
+      expect(all.map((entry) => entry.position)).toEqual([1n, 2n, 3n, 4n, 5n]);
+      expect(all.map((entry) => entry.streamName)).toEqual([...order]);
+      expect(all.map((entry) => entry.version)).toEqual([1, 1, 2, 2, 3]);
+      expect((yield* collect(store.read("Counter-i"))).map((entry) => entry.version)).toEqual([
+        1, 2, 3,
+      ]);
+      expect((yield* collect(store.read("Counter-j"))).map((entry) => entry.version)).toEqual([
+        1, 2,
+      ]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
+  });
+
+  test("empty append at the current version reports the current version and stores nothing", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* EventStore;
+      yield* store.append("Counter-e", 0, [event(1)]);
+      const result = yield* store.append("Counter-e", 1, []);
+      expect(result).toEqual({ firstVersion: 1, lastVersion: 1 });
+      const emptyNewStream = yield* store.append("Counter-f", 0, []);
+      expect(emptyNewStream).toEqual({ firstVersion: 0, lastVersion: 0 });
+      expect((yield* collect(store.readAll())).map((entry) => entry.position)).toEqual([1n]);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
+  });
+
+  test("a conflicting append leaves stored events untouched", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* EventStore;
+      yield* store.append("Counter-c1", 0, [event(1), event(2)]);
+      yield* store.append("Counter-c2", 0, [event(1)]);
+      const rejected = yield* Effect.either(store.append("Counter-c1", 0, [event(3)]));
+      expect(Either.isLeft(rejected)).toBe(true);
+      const all = yield* collect(store.readAll());
+      expect(all.map((entry) => [entry.streamName, entry.version, entry.position])).toEqual([
+        ["Counter-c1", 1, 1n],
+        ["Counter-c1", 2, 2n],
+        ["Counter-c2", 1, 3n],
+      ]);
+      const next = yield* store.append("Counter-c2", 1, [event(2)]);
+      expect(next).toEqual({ firstVersion: 2, lastVersion: 2 });
+      expect((yield* collect(store.readAll())).at(-1)?.position).toBe(4n);
+    });
+    await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
+  });
 });
