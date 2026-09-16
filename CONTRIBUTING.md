@@ -9,7 +9,7 @@ bun install
 bun run lint && bun run typecheck && bun run test   # must be green before you start
 ```
 
-Bun ≥ 1.3 (isolated workspace installs). Postgres tests skip unless `DATABASE_URL` is set; CI runs them against a real Postgres.
+Use the exact Bun version in `package.json#packageManager`, currently 1.4.1, with isolated workspace installs. CI and releases read the same pin. Postgres tests skip unless `DATABASE_URL` is set; CI runs them against a real Postgres.
 
 ## Workflow
 
@@ -30,6 +30,10 @@ Bun ≥ 1.3 (isolated workspace installs). Postgres tests skip unless `DATABASE_
 - **Dependencies**: versions come from the root `package.json` `workspaces.catalog` (`"catalog:"`), internal deps are `"workspace:*"`. Adding a *new* external dependency needs justification in the PR — prefer composing what's already there.
 - **Public API changes** update the package `README.md` and the `llms.txt` line, and stay documented with JSDoc that states constraints, not restatements of names.
 - **Tests over claims**: no network, no real LLM providers (use `TestModel`), sqlite `:memory:` for SQL, pg suites gated on `DATABASE_URL`. A PR whose verification section says "should work" is not done.
+
+## Performance changes
+
+Follow [the performance workflow](docs/performance.md). Profile a representative operation before proposing an optimization, preserve correctness with regression tests, and compare both revisions on the same machine with repeated measurements. Include readable profiles, full-operation timings and variability in the PR. Use `bun run profile:tasks`, `bun run profile:cpu`, and `bun run bench:compare` to collect the evidence. Keep profiling and timing separate.
 
 ## Notes for coding agents
 

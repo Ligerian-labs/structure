@@ -2,7 +2,7 @@
   "name": "structure",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.14",
+  "packageManager": "bun@1.4.1",
   "workspaces": {
     "packages": [
       "packages/*"
@@ -45,7 +45,11 @@
     "lint:fix": "biome check --write .",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "test:e2e": "turbo run test:e2e"
+    "test:e2e": "turbo run test:e2e",
+    "profile:tasks": "mkdir -p .performance && turbo run typecheck test --cache=local: --profile=.performance/tasks.json --summarize",
+    "profile:cpu": "bun --cpu-prof --cpu-prof-md --cpu-prof-dir=.performance",
+    "bench:compare": "bash scripts/benchmark.sh",
+    "bench:eventsourcing": "bun packages/eventsourcing/bench/eventstore.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.9",

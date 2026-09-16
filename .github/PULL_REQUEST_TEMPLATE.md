@@ -24,4 +24,13 @@
 - [ ] `docs/` updated in this PR if cross-package behavior, a contract, or an operational procedure changed (new ADR for significant design choices — see `docs/index.md`)
 - [ ] No new dependency outside the root catalog; dependency direction (AGENTS.md) respected
 
+## Performance evidence
+
+<!-- For performance changes, follow docs/performance.md. Otherwise write "Not applicable". -->
+
+- Workload, baseline/candidate revisions, environment and cache state:
+- Before/after profile links and the hotspot addressed:
+- Full-operation timings, sample count, variability and report links:
+- Correctness regression coverage and related source patterns checked:
+
 <!-- Do not include AI/generated-by attribution in the title, body, or commits. -->
