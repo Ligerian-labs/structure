@@ -41,11 +41,19 @@ const conflictIdentity = (streamName: string): { entity: string; id: string } =>
     : { entity: streamName.slice(0, separator), id: streamName.slice(separator + 1) };
 };
 
+/**
+ * Internal state of `InMemoryEventStore`. The containers are deliberately
+ * mutable: mutation happens only inside the store's `Ref` critical sections
+ * (plain `Ref.modify` and `SynchronizedRef.modifyEffect` both run their
+ * callback exactly once while holding the ref's lock), and every reader
+ * escapes through `filter`, which copies. No code may mutate these fields
+ * outside a critical section or hand out a live container.
+ */
 interface EventStoreState {
-  readonly streams: ReadonlyMap<string, ReadonlyArray<StoredEvent>>;
-  readonly all: ReadonlyArray<StoredEvent>;
-  readonly imports: ReadonlyMap<string, HistoryImportSession>;
-  readonly importBatches: ReadonlyMap<string, HistoryImportBatchRecord>;
+  readonly streams: Map<string, Array<StoredEvent>>;
+  readonly all: Array<StoredEvent>;
+  readonly imports: Map<string, HistoryImportSession>;
+  readonly importBatches: Map<string, HistoryImportBatchRecord>;
 }
 
 interface HistoryImportSession {
@@ -113,14 +121,23 @@ export const InMemoryEventStore: Layer.Layer<EventStore | HistoryImporter> = Lay
                 metadata: event.metadata,
               }),
             );
-            const streams = new Map(state.streams);
-            streams.set(streamName, [...existing, ...stored]);
+            // In-place mutation: this callback runs exactly once while the
+            // ref's lock is held, so no reader can observe an intermediate
+            // state. Copying `all` and the per-stream array per append made
+            // repeated single-event appends quadratic (see issue #89).
+            const stream = state.streams.get(streamName);
+            if (stream === undefined) {
+              state.streams.set(streamName, stored);
+            } else {
+              for (const event of stored) stream.push(event);
+            }
+            for (const event of stored) state.all.push(event);
             return [
               Either.right({
                 firstVersion: actualVersion + 1,
                 lastVersion: actualVersion + events.length,
               }),
-              { ...state, streams, all: [...state.all, ...stored] },
+              state,
             ];
           },
         ).pipe(Effect.flatten),

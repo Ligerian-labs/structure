@@ -165,7 +165,10 @@ describe("InMemoryEventStore", () => {
         1, 2, 3,
       ]);
       expect((yield* collect(store.readAll())).map((entry) => entry.position)).toEqual([
-        1n, 2n, 3n, 4n,
+        1n,
+        2n,
+        3n,
+        4n,
       ]);
     });
     await Effect.runPromise(program.pipe(Effect.provide(InMemoryEventStore)));
@@ -176,9 +179,17 @@ describe("InMemoryEventStore", () => {
       const store = yield* EventStore;
       const order = ["Counter-i", "Counter-j", "Counter-i", "Counter-j", "Counter-i"] as const;
       const versions = [0, 0, 1, 1, 2] as const;
-      for (const [index, stream] of order.entries()) {
-        const result = yield* store.append(stream, versions[index], [event(index + 1)]);
-        expect(result).toEqual({ firstVersion: versions[index] + 1, lastVersion: versions[index] + 1 });
+      const planned = order.map((stream, index) => ({
+        stream,
+        expectedVersion: versions[index] ?? 0,
+        eventNumber: index + 1,
+      }));
+      for (const { stream, expectedVersion, eventNumber } of planned) {
+        const result = yield* store.append(stream, expectedVersion, [event(eventNumber)]);
+        expect(result).toEqual({
+          firstVersion: expectedVersion + 1,
+          lastVersion: expectedVersion + 1,
+        });
       }
       const all = yield* collect(store.readAll());
       expect(all.map((entry) => entry.position)).toEqual([1n, 2n, 3n, 4n, 5n]);
