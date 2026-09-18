@@ -2,7 +2,7 @@
   "date": "2026-09-16",
   "issue": 89,
   "baselineRevision": "f661ce320e95f88ad352261a0c950dd2844e0763",
-  "candidateRevision": "ac0f8882431368334a3a4465df497c324d22c2da",
+  "candidateRevision": "bcbd228ce35955ea587eba58ed9318e5d4be9867",
   "sourceChanges": "packages/eventsourcing/src/memory.ts only; append mutates state containers in place inside the Ref critical section instead of copying. Tests added, no public API change.",
   "workloadSha256": "07cc0fe857287e0c370bef837e015b865c9c786fd12655e6c901aa915c1f10b9",
   "lockfileSha256": "5a440ca889a9012bc4862e2229eb9d05bf9575a35cf7bfeecd4b6431fda9f747",
