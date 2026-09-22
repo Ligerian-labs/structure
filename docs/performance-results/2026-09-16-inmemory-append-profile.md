@@ -36,3 +36,11 @@ Line 123 is the `[...state.all, ...stored]` global-array copy in `append`. The w
 | 2.1% | 26.3ms | 2.1% | 26.3ms | `(anonymous)` | `packages/eventsourcing/src/memory.ts:95` |
 
 The `memory.ts:123` hotspot disappears. The remaining store cost is the in-place `push` (line 128, 2.9%); the dominant cost moves into the Effect runtime's fiber bookkeeping. Profiled times are diagnostic and are not part of the timing comparison; see the timing record in `2026-09-16-inmemory-append.json`.
+
+## Scope inspection: the same copy pattern elsewhere
+
+Issue #89 asks for the pattern to be inspected in history import and `readAll` filtering before any scope extension.
+
+**`readAll` / `read` (memory.ts:148, 159).** Both readers escape the store state through `Array.prototype.filter`, which returns a fresh array, so in-place appends never leak a live container to a consumer and subscription snapshot semantics are unchanged. The filter is O(n) per read, but it runs once per `readAll` call rather than once per append, and the change does not touch the read path at all — the baseline profile recorded a 23.7 ms global read for 20,000 events against 2730.6 ms of appends, so reads were never the hotspot. No optimization warranted.
+
+**History import (`importBatch`, memory.ts:238-267).** Import deliberately keeps copy-on-write semantics: it builds a new `streams` map, new per-stream arrays and a fresh `all` array per committed batch (`all: [...state.all, ...batch.events]`). The cost is linear in store size **per batch**, not per event, and the batch count of an import is bounded by the exporter's batch size; the append-hotspot profile shows no import frames. Because imports replace the state wholesale (a new `all` array), later in-place appends write into the replacement with no aliasing of the pre-import array. Extending in-place mutation to imports would complicate the resume-token and target-not-empty checks for no measured benefit, so the scope stays append-only.
