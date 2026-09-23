@@ -1,10 +1,11 @@
 import { Settings } from "@structure-ai/config";
-import { type Config, Effect, Layer, Option, Schema } from "effect";
+import { type Config, Effect, Layer, Option, Redacted, Schema } from "effect";
 import type { EmailDriver } from "./driver.js";
 import { makeBrevoDriver } from "./drivers/brevo.js";
 import { makeCaptureDriver } from "./drivers/capture.js";
 import { makeResendDriver } from "./drivers/resend.js";
 import { isLoopbackHost, makeSmtpDriver, validateSmtpOptions } from "./drivers/smtp.js";
+import { driverFromDsn } from "./dsn.js";
 import { MailValidationError } from "./errors.js";
 import { Mailer, type MailerOptions, makeMailer } from "./mailer.js";
 import {
@@ -22,6 +23,12 @@ import {
  * host app needs its own namespace.
  */
 export const mailerSettings = Settings.struct({
+  dsn: Settings.optional(
+    Settings.secret("MAILER_DSN", {
+      description:
+        "Symfony-compatible mailer DSN (smtp://, smtps://, resend+api://, resend+smtp://, brevo+api://); when set it selects the driver and overrides the per-driver settings below",
+    }),
+  ),
   driver: Settings.literal("MAIL_DRIVER", ["capture", "smtp", "resend", "brevo"], {
     description: "outbound driver: smtp, resend, brevo, or capture (records in memory)",
     default: "capture",
@@ -151,6 +158,11 @@ export const driverFromSettings = (
   settings: MailerSettingsValue,
 ): Effect.Effect<EmailDriver, MailValidationError> =>
   Effect.gen(function* () {
+    // A DSN, when present, selects the driver outright (Symfony MAILER_DSN
+    // semantics) — the per-driver settings below never win against it.
+    if (Option.isSome(settings.dsn)) {
+      return yield* driverFromDsn(Redacted.value(settings.dsn.value));
+    }
     switch (settings.driver) {
       case "capture":
         return makeCaptureDriver();
