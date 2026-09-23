@@ -24,6 +24,7 @@ Living documentation for the framework. "Living" means every document here has a
 - [operations.md](operations.md) — startup order, migration policy, health, shutdown, telemetry signals, and recovery procedures (projection rebuilds, outbox dead letters).
 - [performance.md](performance.md) — profiling commands, before/after benchmarks, cache controls and review evidence.
 - [performance-audit-2026-09.md](performance-audit-2026-09.md) — measured baseline, current bottlenecks and follow-ups.
+- [performance-results/](performance-results/) — checked-in timing records and CPU profile excerpts; see `2026-09-16.json` (audit baseline), `2026-09-16-inmemory-append.json` (append optimization, issue #89) and their profile excerpts.
 - [decisions/](decisions/) — architecture decision records: numbered, immutable once accepted, superseded rather than edited.
 
 ## Rules for this directory
