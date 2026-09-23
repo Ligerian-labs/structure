@@ -176,11 +176,16 @@ test("a compound publish failure is never retried or marked published", async ()
               return Effect.failCause(cause);
             }),
           backoffBase: "1 millis",
+          lease: "1 millis",
         }),
       );
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) expect(exit.cause).toEqual(cause);
       expect(attempts).toBe(1);
+      // The relay died with the compound cause: nothing was recorded. The
+      // entry stays leased until the (short) lease lapses, then reappears
+      // with its attempt count untouched.
+      yield* Effect.sleep(5);
       expect((yield* outbox.pending(1))[0]?.attempts).toBe(0);
     }).pipe(Effect.provide(InMemoryOutbox)),
   );

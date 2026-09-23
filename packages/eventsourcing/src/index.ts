@@ -44,6 +44,7 @@ export {
   Inbox,
   type InboxService,
   Outbox,
+  type OutboxClaim,
   type OutboxEntry,
   type OutboxMessage,
   OutboxRelay,

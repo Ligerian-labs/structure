@@ -1,13 +1,15 @@
+import { randomUUID } from "node:crypto";
 import * as SqlClient from "@effect/sql/SqlClient";
 import { PersistenceError } from "@structure-ai/domain";
 import {
   Inbox,
   Outbox,
+  type OutboxClaim,
   type OutboxEntry,
   type OutboxMessage,
   type OutboxStatus,
 } from "@structure-ai/eventsourcing";
-import { Clock, Effect, Layer } from "effect";
+import { Clock, Duration, Effect, Layer } from "effect";
 import { jsonText, toNumber } from "./internal.js";
 import { type AdapterOptions, tableNames } from "./schema.js";
 
@@ -61,7 +63,11 @@ const messageColumns = (
  * per message id (`ON CONFLICT DO NOTHING`); enqueue order is the table's
  * `seq` (BIGSERIAL) order. `pending` returns only entries whose
  * `available_at` (epoch milliseconds, set by `enqueue` for scheduled
- * messages or by `markFailed` for the retry backoff) has elapsed.
+ * messages or by `markFailed` for the retry backoff) has elapsed, and
+ * whose claim lease (taken by `claim`) has not lapsed. `claim` takes a
+ * `FOR UPDATE SKIP LOCKED` lease on due entries in one statement, so
+ * concurrent relays never hold the same entry; settlements are fenced
+ * by the claim token (broker visibility-timeout semantics).
  */
 export const outboxLayer = (
   options?: AdapterOptions,
@@ -121,6 +127,7 @@ export const outboxLayer = (
                      status, attempts, last_error, available_at
               FROM ${sql(tables.outbox)}
               WHERE status = 'pending' AND (available_at IS NULL OR available_at <= ${now})
+                AND (claim_token IS NULL OR lease_until IS NULL OR lease_until <= ${now})
               ORDER BY seq ASC
               LIMIT ${limit}
             `.pipe(
@@ -133,43 +140,86 @@ export const outboxLayer = (
               ),
             ),
           ),
-        markPublished: (ids) =>
+        claim: (limit, lease) =>
+          Effect.flatMap(Clock.currentTimeMillis, (now) => {
+            const leaseUntil = now + Duration.toMillis(lease);
+            const token = randomUUID();
+            return Effect.gen(function* () {
+              const rows = yield* sql<OutboxRow>`
+                WITH picked AS (
+                  SELECT seq FROM ${sql(tables.outbox)}
+                  WHERE status = 'pending' AND (available_at IS NULL OR available_at <= ${now})
+                    AND (claim_token IS NULL OR lease_until IS NULL OR lease_until <= ${now})
+                  ORDER BY seq ASC
+                  LIMIT ${limit}
+                  FOR UPDATE SKIP LOCKED
+                )
+                UPDATE ${sql(tables.outbox)} AS outbox
+                SET claim_token = ${token}, lease_until = ${leaseUntil}, updated_at = now()
+                FROM picked
+                WHERE outbox.seq = picked.seq
+                RETURNING outbox.id, outbox.topic, outbox.payload::text AS payload,
+                          outbox.metadata::text AS metadata, outbox.status, outbox.attempts,
+                          outbox.last_error, outbox.available_at
+              `;
+              return yield* Effect.try({
+                try: () =>
+                  ({
+                    entries: rows.map(decodeEntry),
+                    token,
+                    leaseUntil,
+                  }) satisfies OutboxClaim,
+                catch: (cause) => new PersistenceError({ operation: "outbox.decode", cause }),
+              });
+            });
+          }).pipe(Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause }))),
+        markPublished: (ids, claim) =>
           ids.length === 0
-            ? Effect.void
-            : sql`
-                UPDATE ${sql(tables.outbox)}
-                SET status = 'published', updated_at = now()
-                WHERE id IN ${sql.in(ids)}
-              `.pipe(
+            ? Effect.succeed(false)
+            : Effect.flatMap(
+                sql<{ readonly id: string }>`
+                  UPDATE ${sql(tables.outbox)}
+                  SET status = 'published', claim_token = NULL, lease_until = NULL,
+                      updated_at = now()
+                  WHERE id IN ${sql.in(ids)} AND status = 'pending'
+                    ${claim === undefined ? sql`` : sql`AND claim_token = ${claim}`}
+                  RETURNING id
+                `,
+                (rows) => Effect.succeed(rows.length > 0),
+              ).pipe(
                 Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
-                Effect.asVoid,
               ),
-        markFailed: (id, error, attempts, retryAt) =>
-          sql`
-            UPDATE ${sql(tables.outbox)}
-            SET attempts = ${attempts}, last_error = ${error}, available_at = ${retryAt ?? null},
-                updated_at = now()
-            WHERE id = ${id}
-          `.pipe(
-            Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
-            Effect.asVoid,
-          ),
-        markDead: (id, error) =>
-          sql`
-            UPDATE ${sql(tables.outbox)}
-            SET status = 'dead', last_error = ${error}, updated_at = now()
-            WHERE id = ${id}
-          `.pipe(
-            Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),
-            Effect.asVoid,
-          ),
+        markFailed: (id, error, attempts, retryAt, claim) =>
+          Effect.flatMap(
+            sql<{ readonly id: string }>`
+              UPDATE ${sql(tables.outbox)}
+              SET attempts = ${attempts}, last_error = ${error}, available_at = ${retryAt ?? null},
+                  updated_at = now()
+              WHERE id = ${id} AND status = 'pending'
+                ${claim === undefined ? sql`` : sql`AND claim_token = ${claim}`}
+              RETURNING id
+            `,
+            (rows) => Effect.succeed(rows.length > 0),
+          ).pipe(Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause }))),
+        markDead: (id, error, claim) =>
+          Effect.flatMap(
+            sql<{ readonly id: string }>`
+              UPDATE ${sql(tables.outbox)}
+              SET status = 'dead', last_error = ${error}, claim_token = NULL, lease_until = NULL,
+                  updated_at = now()
+              WHERE id = ${id} AND status = 'pending'
+                ${claim === undefined ? sql`` : sql`AND claim_token = ${claim}`}
+              RETURNING id
+            `,
+            (rows) => Effect.succeed(rows.length > 0),
+          ).pipe(Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause }))),
         replay: (ids) =>
           ids.length === 0
             ? Effect.void
             : sql`
                 UPDATE ${sql(tables.outbox)}
                 SET status = 'pending', attempts = 0, last_error = NULL, available_at = NULL,
-                    updated_at = now()
+                    claim_token = NULL, lease_until = NULL, updated_at = now()
                 WHERE id IN ${sql.in(ids)} AND status = 'dead'
               `.pipe(
                 Effect.mapError((cause) => new PersistenceError({ operation: "Outbox", cause })),

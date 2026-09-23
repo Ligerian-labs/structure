@@ -207,16 +207,48 @@ const addOutboxAvailableAt = (
   });
 
 /**
+ * Rev 4: delivery ownership on `outbox` — `claim_token` (the fencing
+ * token a relay must present to settle an entry it claimed) and
+ * `lease_until` (epoch milliseconds after which a crashed or stalled
+ * relay's claim lapses and the entry is claimable again) — plus the
+ * partial index that serves `claim`/`pending`'s due-and-unleased filter.
+ * Existing rows are backfilled to NULL (unclaimed), matching pre-rev-4
+ * behavior.
+ */
+const addOutboxClaims = (
+  options?: AdapterOptions,
+): Effect.Effect<void, SqlError, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = tableNames(options);
+    yield* sql`
+      ALTER TABLE ${sql(tables.outbox)}
+      ADD COLUMN IF NOT EXISTS claim_token TEXT
+    `;
+    yield* sql`
+      ALTER TABLE ${sql(tables.outbox)}
+      ADD COLUMN IF NOT EXISTS lease_until BIGINT
+    `;
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS ${sql(`${tables.outbox}_claim_idx`)}
+      ON ${sql(tables.outbox)} (lease_until)
+      WHERE status = 'pending' AND claim_token IS NOT NULL
+    `;
+  });
+
+/**
  * The schema as ordered, idempotent steps, for consumers that keep their
  * own migration ledger (append each new `rev` as a new entry there). Rev 1
  * is the table set up to 0.0.14; rev 2 adds the generated `partition`
  * column and its index to `events`; rev 3 adds `outbox.available_at` and
- * its partial index.
+ * its partial index; rev 4 adds `outbox.claim_token`/`lease_until` and
+ * the claim index.
  */
 export const migrations: ReadonlyArray<SchemaMigration> = [
   { rev: 1, name: "eventsourcing-pg-tables", apply: createTables },
   { rev: 2, name: "eventsourcing-pg-events-partition", apply: addPartitionColumn },
   { rev: 3, name: "eventsourcing-pg-outbox-available-at", apply: addOutboxAvailableAt },
+  { rev: 4, name: "eventsourcing-pg-outbox-claims", apply: addOutboxClaims },
 ];
 
 /**

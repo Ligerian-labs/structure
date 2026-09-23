@@ -97,6 +97,8 @@ export const migrate = (
         attempts INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
         available_at INTEGER,
+        claim_token TEXT,
+        lease_until INTEGER,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
@@ -104,6 +106,13 @@ export const migrate = (
     // Databases created before the schedule column: add it in place.
     yield* sql`
       ALTER TABLE ${sql(tables.outbox)} ADD COLUMN available_at INTEGER
+    `.pipe(Effect.catchIf(isMissingColumn, () => Effect.void));
+    // Databases created before claim/lease delivery ownership: add in place.
+    yield* sql`
+      ALTER TABLE ${sql(tables.outbox)} ADD COLUMN claim_token TEXT
+    `.pipe(Effect.catchIf(isMissingColumn, () => Effect.void));
+    yield* sql`
+      ALTER TABLE ${sql(tables.outbox)} ADD COLUMN lease_until INTEGER
     `.pipe(Effect.catchIf(isMissingColumn, () => Effect.void));
     yield* sql`
       CREATE TABLE IF NOT EXISTS ${sql(tables.inbox)} (

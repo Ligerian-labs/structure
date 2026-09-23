@@ -2,6 +2,7 @@ import { ConcurrencyConflict } from "@structure-ai/domain";
 import {
   Clock,
   Context,
+  Duration,
   Effect,
   Either,
   Layer,
@@ -27,7 +28,7 @@ import {
   prepareHistoryImportBatch,
   validateHistoryImportContinuation,
 } from "./HistoryImport.js";
-import { Inbox, Outbox, type OutboxEntry } from "./Outbox.js";
+import { Inbox, Outbox, type OutboxClaim, type OutboxEntry } from "./Outbox.js";
 import { type Snapshot, SnapshotStore } from "./SnapshotStore.js";
 
 /**
@@ -305,26 +306,62 @@ export const InMemoryCheckpointStore: Layer.Layer<CheckpointStore> = Layer.effec
  * In-memory `Outbox`: entries keep enqueue order; `enqueue` is idempotent
  * per message id. Marking an unknown id is a no-op. `pending` returns only
  * entries whose `availableAt` (set at enqueue or by `markFailed`) has
- * elapsed, mirroring the SQL adapters' due filter.
+ * elapsed and whose claim lease (if any) has lapsed, mirroring the SQL
+ * adapters' due filter and lease semantics.
  */
 export const InMemoryOutbox: Layer.Layer<Outbox> = Layer.effect(
   Outbox,
   Effect.gen(function* () {
-    const ref = yield* Ref.make<ReadonlyMap<string, OutboxEntry>>(new Map());
+    /** Delivery ownership: the claim's token and when its lease lapses. */
+    interface ClaimState {
+      readonly token: string;
+      readonly leaseUntil: number;
+    }
+    interface OutboxState {
+      readonly entries: ReadonlyMap<string, OutboxEntry>;
+      /** Live claims by entry id — cleared on settle or lease expiry. */
+      readonly claims: ReadonlyMap<string, ClaimState>;
+      /** Monotonic counter for readable claim tokens. */
+      readonly nextToken: number;
+    }
+    const ref = yield* Ref.make<OutboxState>({
+      entries: new Map(),
+      claims: new Map(),
+      nextToken: 0,
+    });
     const update = (id: string, patch: (entry: OutboxEntry) => OutboxEntry): Effect.Effect<void> =>
-      Ref.update(ref, (entries) => {
-        const entry = entries.get(id);
+      Ref.update(ref, (state) => {
+        const entry = state.entries.get(id);
         if (entry === undefined) {
-          return entries;
+          return state;
         }
-        return new Map(entries).set(id, patch(entry));
+        return {
+          ...state,
+          entries: new Map(state.entries).set(id, patch(entry)),
+          claims: withoutClaim(state.claims, id),
+        };
       });
     const due = (entry: OutboxEntry, now: number): boolean =>
       entry.availableAt === undefined || entry.availableAt <= now;
+    /** A claimed entry is deliverable once its lease has lapsed. */
+    const leaseLapsed = (state: OutboxState, id: string, now: number): boolean => {
+      const claim = state.claims.get(id);
+      return claim === undefined || claim.leaseUntil <= now;
+    };
+    /** The claim map without `id` (a settled entry releases its claim). */
+    const withoutClaim = (
+      claims: ReadonlyMap<string, ClaimState>,
+      id: string,
+    ): ReadonlyMap<string, ClaimState> => {
+      if (!claims.has(id)) return claims;
+      const next = new Map(claims);
+      next.delete(id);
+      return next;
+    };
     return Outbox.of({
       enqueue: (messages) =>
-        Ref.update(ref, (entries) => {
-          const next = new Map(entries);
+        Ref.update(ref, (state) => {
+          const next = new Map(state.entries);
           for (const message of messages) {
             if (!next.has(message.id)) {
               const entry: OutboxEntry = { message, status: "pending", attempts: 0 };
@@ -336,29 +373,91 @@ export const InMemoryOutbox: Layer.Layer<Outbox> = Layer.effect(
               );
             }
           }
-          return next;
+          return { ...state, entries: next };
         }),
       pending: (limit) =>
         Effect.flatMap(Clock.currentTimeMillis, (now) =>
-          Effect.map(Ref.get(ref), (entries) =>
-            [...entries.values()]
-              .filter((entry) => entry.status === "pending" && due(entry, now))
+          Effect.map(Ref.get(ref), (state) =>
+            [...state.entries.values()]
+              .filter(
+                (entry) =>
+                  entry.status === "pending" &&
+                  due(entry, now) &&
+                  leaseLapsed(state, entry.message.id, now),
+              )
               .slice(0, limit),
           ),
         ),
-      markPublished: (ids) =>
-        Effect.forEach(ids, (id) => update(id, (entry) => ({ ...entry, status: "published" })), {
-          discard: true,
+      claim: (limit, lease) =>
+        Effect.flatMap(Clock.currentTimeMillis, (now) =>
+          Ref.modify(ref, (state): readonly [OutboxClaim, OutboxState] => {
+            const leaseUntil = now + Duration.toMillis(lease);
+            const token = `mem-${state.nextToken}`;
+            const claimed: Array<OutboxEntry> = [];
+            const claims = new Map(state.claims);
+            for (const entry of state.entries.values()) {
+              if (claimed.length >= limit) break;
+              if (entry.status !== "pending") continue;
+              if (!due(entry, now)) continue;
+              if (!leaseLapsed(state, entry.message.id, now)) continue;
+              claimed.push(entry);
+              claims.set(entry.message.id, { token, leaseUntil });
+            }
+            const next: OutboxState =
+              claimed.length > 0 ? { ...state, claims, nextToken: state.nextToken + 1 } : state;
+            return [{ entries: claimed, token, leaseUntil }, next];
+          }),
+        ),
+      markPublished: (ids, claim) =>
+        Ref.modify(ref, (state): readonly [boolean, OutboxState] => {
+          let applied = false;
+          let next = state;
+          for (const id of ids) {
+            const entry = state.entries.get(id);
+            if (entry === undefined) continue;
+            const held = owns(state, id, claim);
+            if (!held) continue;
+            applied = true;
+            next = {
+              ...next,
+              entries: new Map(next.entries).set(id, { ...entry, status: "published" }),
+              claims: withoutClaim(next.claims, id),
+            };
+          }
+          return [applied, next];
         }),
-      markFailed: (id, error, attempts, retryAt) =>
-        update(id, (entry) => {
+      markFailed: (id, error, attempts, retryAt, claim) =>
+        Ref.modify(ref, (state): readonly [boolean, OutboxState] => {
+          const entry = state.entries.get(id);
+          if (entry === undefined || !owns(state, id, claim)) {
+            return [false, state];
+          }
           const { availableAt: _previous, ...rest } = entry;
-          return retryAt === undefined
-            ? { ...rest, attempts, lastError: error }
-            : { ...rest, attempts, lastError: error, availableAt: retryAt };
+          const failed =
+            retryAt === undefined
+              ? { ...rest, attempts, lastError: error }
+              : { ...rest, attempts, lastError: error, availableAt: retryAt };
+          return [true, { ...state, entries: new Map(state.entries).set(id, failed) }];
         }),
-      markDead: (id, error) =>
-        update(id, (entry) => ({ ...entry, status: "dead", lastError: error })),
+      markDead: (id, error, claim) =>
+        Ref.modify(ref, (state): readonly [boolean, OutboxState] => {
+          const entry = state.entries.get(id);
+          if (entry === undefined || !owns(state, id, claim)) {
+            return [false, state];
+          }
+          return [
+            true,
+            {
+              ...state,
+              entries: new Map(state.entries).set(id, {
+                ...entry,
+                status: "dead",
+                lastError: error,
+              }),
+              claims: withoutClaim(state.claims, id),
+            },
+          ];
+        }),
       replay: (ids) =>
         Effect.forEach(
           ids,
@@ -373,10 +472,16 @@ export const InMemoryOutbox: Layer.Layer<Outbox> = Layer.effect(
           { discard: true },
         ),
       deadLetters: () =>
-        Effect.map(Ref.get(ref), (entries) =>
-          [...entries.values()].filter((entry) => entry.status === "dead"),
+        Effect.map(Ref.get(ref), (state) =>
+          [...state.entries.values()].filter((entry) => entry.status === "dead"),
         ),
     });
+    /** Whether `id` may be settled under `claim` (no token = unfenced single writer). */
+    function owns(state: OutboxState, id: string, claim: string | undefined): boolean {
+      if (claim === undefined) return true;
+      const held = state.claims.get(id);
+      return held !== undefined && held.token === claim;
+    }
   }),
 );
 
