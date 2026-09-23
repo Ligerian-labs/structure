@@ -24,7 +24,7 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 | --- | --- |
 | `layer(config?)` | `PgClient` + `migrate` + every adapter, and the client itself. `config`: `url`, `maxConnections`, `applicationName`, plus the adapter options. |
 | `storesLayer(options?)` | Every adapter on top of an ambient `SqlClient` (no migration). |
-| `migrate(options?)` | Applies every step of `migrations` in order, idempotently: the tables for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency (rev 1), then the generated `partition` column and its index on `events` (rev 2), then `outbox.available_at` with its partial index for scheduled delivery (rev 3), all prefixed by `tablePrefix`. |
+| `migrate(options?)` | Applies every step of `migrations` in order, idempotently: the tables for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency (rev 1), then the generated `partition` column and its index on `events` (rev 2), then `outbox.available_at` with its partial index for scheduled delivery (rev 3), then `outbox.claim_token`/`lease_until` with the claim index for delivery ownership (rev 4), all prefixed by `tablePrefix`. |
 | `migrations` | The same schema as ordered `{ rev, name, apply(options?) }` steps, for consumers keeping their own migration ledger: record each `rev` as its own entry and append the next one on upgrade. |
 | `tableNames(options?)` | Resolved table names for a prefix — use it for test isolation and cleanup. |
 | `appendWithOutbox(stream, expectedVersion, events, messages)` | Events and outbox rows committed in one transaction. |
@@ -37,6 +37,10 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 ## Partition column
 
 Rev 2 adds `partition TEXT GENERATED ALWAYS AS (metadata->>'partition') STORED` to `events` with an index on `(partition, position)`. The envelope stays the single source of truth (appends never write the column); `readAll({ partition })` filters on it before ordering by position. Upgrading a store that already holds events rewrites the table once, under an exclusive lock for the duration of the `ALTER TABLE` — plan it in a maintenance window on a large store, either by running `migrations[1].apply()` ahead of the deploy or by accepting the pause at the first `migrate()` of the new version. Rows written before the upgrade get `NULL` unless their envelope already carried a `partition`.
+
+## Outbox delivery ownership
+
+Rev 4 adds `outbox.claim_token` and `outbox.lease_until`, backing `Outbox.claim(limit, lease)`: one `UPDATE … WHERE … FOR UPDATE SKIP LOCKED` statement atomically leases due entries to a relay, so concurrent relays get disjoint batches and never publish the same entry within a lease. Settlements (`markPublished`/`markFailed`/`markDead`) carry the claim's token and are fenced: a settlement arriving after its lease lapsed and was recovered by another relay matches no row and writes nothing. `ALTER TABLE … ADD COLUMN IF NOT EXISTS` only — no table rewrite, no exclusive lock; existing rows keep `NULL` (unclaimed), matching pre-rev-4 behavior.
 
 ## Unit of work
 

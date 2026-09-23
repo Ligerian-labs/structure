@@ -35,6 +35,23 @@ export interface OutboxEntry {
 }
 
 /**
+ * A batch of pending entries atomically claimed for delivery, plus the
+ * claim token that settles them. The token is the relay's private lease
+ * identity: it must never be logged or attached to error context.
+ */
+export interface OutboxClaim {
+  /** The claimed entries, in stable enqueue order. */
+  readonly entries: ReadonlyArray<OutboxEntry>;
+  /** Opaque token required by `markPublished`/`markFailed`/`markDead` to settle. */
+  readonly token: string;
+  /**
+   * Epoch milliseconds until which the claim is valid. Settlement with
+   * this claim's token after that instant is rejected (fenced out).
+   */
+  readonly leaseUntil: number;
+}
+
+/**
  * Transactional outbox port. Adapters call `enqueue` in the same
  * transaction as the event append so a message is staged iff the events
  * committed; the relay then delivers staged messages at-least-once.
@@ -43,6 +60,12 @@ export interface OutboxEntry {
  * `availableAt` has elapsed, and the relay persists the next eligible
  * time on every failed attempt, so delayed delivery and retry backoff
  * survive process restarts.
+ *
+ * Delivery ownership is claim-based: `claim` atomically takes a lease on
+ * up to `limit` due entries so concurrent relays never deliver the same
+ * entry twice within a lease; `markPublished`/`markFailed`/`markDead`
+ * require the claim's token, which fences out settlements from crashed
+ * or slow workers whose lease expired and was recovered elsewhere.
  */
 export interface OutboxService {
   /**
@@ -58,22 +81,56 @@ export interface OutboxService {
    * off after a failed attempt) are not returned until their time comes.
    */
   readonly pending: (limit: number) => Effect.Effect<ReadonlyArray<OutboxEntry>, PersistenceError>;
-  /** Marks entries as successfully published. */
-  readonly markPublished: (ids: ReadonlyArray<string>) => Effect.Effect<void, PersistenceError>;
+  /**
+   * Atomically claims up to `limit` pending entries that are due now,
+   * taking a lease of `lease` (a `DurationInput`) on each: other relays'
+   * `pending`/`claim` cannot see the claimed entries until the lease
+   * lapses or the claim settles. Claimed entries whose lease has expired
+   * (a crashed or stalled worker) are eligible again, so at-least-once
+   * delivery survives worker crashes.
+   */
+  readonly claim: (
+    limit: number,
+    lease: Duration.DurationInput,
+  ) => Effect.Effect<OutboxClaim, PersistenceError>;
+  /**
+   * Marks entries as successfully published. Returns whether every entry
+   * was applied: with a `claim` token, entries settled under a foreign or
+   * expired claim are fenced out (false) — the caller's lease was lost.
+   * Without a token, any pending entry is settled (single-writer mode).
+   */
+  readonly markPublished: (
+    ids: ReadonlyArray<string>,
+    claim?: string,
+  ) => Effect.Effect<boolean, PersistenceError>;
   /**
    * Records a failed attempt: the entry stays pending with
    * `attempts`/`error` updated and becomes eligible again at `retryAt`
    * (epoch milliseconds; absent means immediately). Persisting the
-   * schedule here is what makes relay backoff restart-safe.
+   * schedule here is what makes relay backoff restart-safe. The claim
+   * token, when given, must match the entry's live claim — a lost lease
+   * returns false and changes nothing. A failed attempt does NOT release
+   * the claim: the owning relay keeps retrying under its lease (broker
+   * visibility semantics), and the entry becomes visible to other relays
+   * only once that lease lapses.
    */
   readonly markFailed: (
     id: string,
     error: string,
     attempts: number,
     retryAt?: number,
-  ) => Effect.Effect<void, PersistenceError>;
-  /** Moves an entry to the dead letters, keeping the final error text. */
-  readonly markDead: (id: string, error: string) => Effect.Effect<void, PersistenceError>;
+    claim?: string,
+  ) => Effect.Effect<boolean, PersistenceError>;
+  /**
+   * Moves an entry to the dead letters, keeping the final error text.
+   * Fenced by the claim token like the other settlements; returns whether
+   * it was applied.
+   */
+  readonly markDead: (
+    id: string,
+    error: string,
+    claim?: string,
+  ) => Effect.Effect<boolean, PersistenceError>;
   /**
    * Requeues dead-lettered entries: back to pending with the attempt
    * count, last error, and any delivery schedule cleared, so the next
@@ -119,9 +176,17 @@ export interface OutboxRelayOptions<EP, RP> {
   /**
    * Jitter spread of the retry backoff, as a fraction of the computed
    * delay (0.2 keeps the delay within ±20%). Default 0.2, matching
-   * `Schedule.jittered`. 0 disables jitter (deterministic tests).
+   * `Schedule.jittered`. 0 disables jitter (deterministic).
    */
   readonly backoffJitter?: number;
+  /**
+   * Lease taken on each claim, bounding how long a crashed or stalled
+   * relay can hold entries before another relay recovers them. Default 30
+   * seconds. Publishing must finish well within it, and every settlement
+   * carries the claim token — a settlement arriving after the lease
+   * lapsed and was recovered elsewhere is fenced out.
+   */
+  readonly lease?: Duration.DurationInput;
 }
 
 /**
@@ -142,17 +207,29 @@ const backoffDelay = (
   return Random.nextRange(1 - spread, 1 + spread).pipe(Effect.map((factor) => bounded * factor));
 };
 
+/**
+ * Publishes one claimed entry. Settlements are fenced by the claim token:
+ * when the lease lapses mid-retry and another relay recovers the entry,
+ * the original relay stops retrying and leaves the entry to its new
+ * owner. Returns whether this relay still owned the entry at the end
+ * (published, dead-lettered, or released for its retried schedule);
+ * false means ownership was lost and the caller must not touch it again.
+ */
 const publishEntry = <EP, RP>(
   outbox: OutboxService,
   entry: OutboxEntry,
+  token: string,
   options: OutboxRelayOptions<EP, RP>,
-): Effect.Effect<void, PersistenceError | EP, RP> =>
+): Effect.Effect<boolean, PersistenceError | EP, RP> =>
   Effect.gen(function* () {
     const maxAttempts = options.maxAttempts ?? 5;
     if (entry.attempts >= maxAttempts) {
+      // Dead-lettering the pre-exhausted entry: fenced out iff the lease
+      // was already recovered elsewhere (false — nothing was written).
       return yield* outbox.markDead(
         entry.message.id,
         entry.lastError ?? "exhausted attempts before this pass",
+        token,
       );
     }
     let attempts = entry.attempts;
@@ -160,7 +237,10 @@ const publishEntry = <EP, RP>(
     while (true) {
       const outcome = yield* Effect.exit(options.publish(entry));
       if (Exit.isSuccess(outcome)) {
-        return yield* outbox.markPublished([entry.message.id]);
+        // Published on the broker. A false settlement means another relay
+        // recovered the expired lease meanwhile and owns the record; this
+        // relay is done with the entry either way.
+        return yield* outbox.markPublished([entry.message.id], token);
       }
       if (!Cause.isFailType(outcome.cause)) return yield* Effect.failCause(outcome.cause);
       const text = describeError(outcome.cause.error);
@@ -169,24 +249,30 @@ const publishEntry = <EP, RP>(
       // Record every attempt (the dead letter keeps the final count for
       // diagnosis), then give up once the budget is spent.
       if (attempts >= maxAttempts) {
-        yield* outbox.markFailed(entry.message.id, text, attempts);
-        return yield* outbox.markDead(entry.message.id, lastError);
+        yield* outbox.markFailed(entry.message.id, text, attempts, undefined, token);
+        return yield* outbox.markDead(entry.message.id, lastError, token);
       }
       // Persist the schedule before sleeping: a crash mid-backoff must not
-      // make the entry immediately eligible again on restart.
+      // make the entry immediately eligible again on restart. Settlement
+      // fails when this relay lost the lease while publishing — the entry
+      // belongs to whoever recovered it.
       const delayMillis = yield* backoffDelay(attempts, options);
       const retryAt = (yield* Clock.currentTimeMillis) + delayMillis;
-      yield* outbox.markFailed(entry.message.id, text, attempts, retryAt);
+      const held = yield* outbox.markFailed(entry.message.id, text, attempts, retryAt, token);
+      if (!held) {
+        return false;
+      }
       yield* Effect.sleep(delayMillis);
     }
   });
 
 /**
- * Delivers every currently pending entry, then returns: polls `pending`,
- * publishes each entry with bounded retries (exponential backoff with
- * jitter), and loops until nothing is pending — every entry ends either
- * published or dead-lettered with its last error. Intended for tests and
- * one-shot flushing.
+ * Delivers every currently pending entry, then returns: claims batches of
+ * due entries, publishes each with bounded retries (exponential backoff
+ * with jitter), and loops until nothing is claimable — every entry ends
+ * either published or dead-lettered with its last error, and concurrent
+ * drains deliver each message at most once per lease. Intended for tests
+ * and one-shot flushing.
  */
 export const drain = <EP, RP>(
   options: OutboxRelayOptions<EP, RP>,
@@ -194,12 +280,15 @@ export const drain = <EP, RP>(
   Effect.gen(function* () {
     const outbox = yield* Outbox;
     while (true) {
-      const entries = yield* outbox.pending(options.batchSize ?? 32);
+      const { entries, token } = yield* outbox.claim(
+        options.batchSize ?? 32,
+        options.lease ?? "30 seconds",
+      );
       if (entries.length === 0) {
         return;
       }
       for (const entry of entries) {
-        yield* publishEntry(outbox, entry, options);
+        yield* publishEntry(outbox, entry, token, options);
       }
     }
   });
