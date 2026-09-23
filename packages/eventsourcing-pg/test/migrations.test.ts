@@ -1,7 +1,8 @@
 /**
  * The schema as versioned steps: rev 1 is the table set as it shipped up
  * to 0.0.14, rev 2 adds the generated `partition` column and its index on
- * `events`, rev 3 adds `outbox.available_at` with its partial index.
+ * `events`, rev 3 adds `outbox.available_at` with its partial index, rev 4
+ * adds `outbox.claim_token`/`lease_until` with the claim index.
  * `migrate()` applies every step in order and is idempotent.
  *
  * Runs against `DATABASE_URL` only (see pg.test.ts).
@@ -91,6 +92,25 @@ const outboxAvailableAtIndex = (outbox: string) =>
     `,
   );
 
+const outboxClaimColumns = (outbox: string) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql<OutboxColumnRow>`
+      SELECT column_name, is_nullable, data_type
+      FROM information_schema.columns
+      WHERE table_name = ${outbox} AND column_name IN ('claim_token', 'lease_until')
+    `,
+  );
+
+const outboxClaimIndex = (outbox: string) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql<OutboxIndexRow>`
+      SELECT indexname, indexdef FROM pg_indexes
+      WHERE tablename = ${outbox} AND indexname = ${`${outbox}_claim_idx`}
+    `,
+  );
+
 const insertEvent = (events: string, streamName: string, version: number, partition?: string) =>
   Effect.flatMap(SqlClient.SqlClient, (sql) => {
     const metadata = JSON.stringify(
@@ -124,8 +144,8 @@ const runTest = (
 };
 
 describe.skipIf(databaseUrl === undefined)("pg schema migration steps (needs DATABASE_URL)", () => {
-  test("migrations are rev 1 (the 0.0.14 tables), rev 2 (partition column + index), and rev 3 (outbox available_at + index), in order", () => {
-    expect(migrations.map((migration) => migration.rev)).toEqual([1, 2, 3]);
+  test("migrations are rev 1 (0.0.14 tables), rev 2 (partition), rev 3 (available_at), rev 4 (claims), in order", () => {
+    expect(migrations.map((migration) => migration.rev)).toEqual([1, 2, 3, 4]);
     for (const migration of migrations) {
       expect(migration.name.length).toBeGreaterThan(0);
     }
@@ -206,6 +226,47 @@ describe.skipIf(databaseUrl === undefined)("pg schema migration steps (needs DAT
         // partial: serves pending's due filter (status pending AND available_at set)
         expect(indexes[0]?.indexdef).toContain("status = 'pending'");
         expect(indexes[0]?.indexdef).toContain("available_at IS NOT NULL");
+      }),
+    ));
+
+  test("rev 4 on an outbox already holding rows: claim columns added nullable, existing rows unclaimed, claim index present", () =>
+    runTest((options) =>
+      Effect.gen(function* () {
+        const tables = tableNames(options);
+        yield* step(1).apply(options);
+        yield* step(2).apply(options);
+        yield* step(3).apply(options);
+        // an outbox row from before rev 4: no claim columns yet
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO ${sql(tables.outbox)} (id, topic, payload, metadata)
+          VALUES ('pre-rev-4', 'orders', '{}'::jsonb, '{}'::jsonb)
+        `;
+        expect(yield* outboxClaimColumns(tables.outbox)).toEqual([]);
+
+        yield* step(4).apply(options);
+
+        const columns = yield* outboxClaimColumns(tables.outbox);
+        expect(columns.length).toBe(2);
+        expect(columns.map((column) => column.column_name).sort()).toEqual([
+          "claim_token",
+          "lease_until",
+        ]);
+        expect(columns.every((column) => column.is_nullable === "YES")).toBe(true);
+        expect(columns.find((column) => column.column_name === "lease_until")?.data_type).toBe(
+          "bigint",
+        );
+        // NULL claim means unclaimed: the pre-rev-4 row keeps its behavior
+        const rows = yield* sql<{ readonly claim_token: string | null }>`
+          SELECT claim_token FROM ${sql(tables.outbox)} WHERE id = 'pre-rev-4'
+        `;
+        expect(rows.map((row) => row.claim_token)).toEqual([null]);
+
+        const indexes = yield* outboxClaimIndex(tables.outbox);
+        expect(indexes.length).toBe(1);
+        // partial: serves pending's claimed-and-lease-lapsed re-claim scan
+        expect(indexes[0]?.indexdef).toContain("status = 'pending'");
+        expect(indexes[0]?.indexdef).toContain("claim_token IS NOT NULL");
       }),
     ));
 
