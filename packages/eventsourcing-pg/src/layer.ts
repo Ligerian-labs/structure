@@ -9,6 +9,7 @@ import type {
   Inbox,
   Outbox,
   SnapshotStore,
+  StreamEraser,
 } from "@structure-ai/eventsourcing";
 import { Layer, Redacted } from "effect";
 import { checkpointStoreLayer } from "./CheckpointStore.js";
@@ -18,10 +19,11 @@ import { inboxLayer, outboxLayer } from "./Outbox.js";
 import { snapshotStoreLayer } from "./SnapshotStore.js";
 import { type AdapterOptions, migrate } from "./schema.js";
 
-/** Eventsourcing ports, frozen-history importer, and the cqrs idempotency store. */
+/** Eventsourcing ports, frozen-history importer, stream erasure, and the cqrs idempotency store. */
 export type StoreServices =
   | EventStore
   | HistoryImporter
+  | StreamEraser
   | SnapshotStore
   | CheckpointStore
   | Outbox

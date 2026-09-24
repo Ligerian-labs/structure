@@ -7,6 +7,7 @@ import type {
   Inbox,
   Outbox,
   SnapshotStore,
+  StreamEraser,
 } from "@structure-ai/eventsourcing";
 import { Layer } from "effect";
 import type { ConfigError } from "effect/ConfigError";
@@ -16,8 +17,14 @@ import { inboxLayer, outboxLayer } from "./Outbox.js";
 import { snapshotStoreLayer } from "./SnapshotStore.js";
 import { type AdapterOptions, migrate } from "./schema.js";
 
-/** All five ports this package implements. */
-export type StoreServices = EventStore | SnapshotStore | CheckpointStore | Outbox | Inbox;
+/** All the ports this package implements. */
+export type StoreServices =
+  | EventStore
+  | StreamEraser
+  | SnapshotStore
+  | CheckpointStore
+  | Outbox
+  | Inbox;
 
 /**
  * Every adapter merged, on top of an existing `SqlClient`. Assumes the

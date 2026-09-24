@@ -1,6 +1,6 @@
 # @structure-ai/eventsourcing-pg
 
-PostgreSQL adapters (`@effect/sql-pg`) for the `@structure-ai/eventsourcing` ports, including `EventStore`, `HistoryImporter`, snapshots, checkpoints, outbox, and inbox, plus a durable `IdempotencyStore` for `@structure-ai/cqrs`.
+PostgreSQL adapters (`@effect/sql-pg`) for the `@structure-ai/eventsourcing` ports, including `EventStore`, `HistoryImporter`, `StreamEraser`, snapshots, checkpoints, outbox, and inbox, plus a durable `IdempotencyStore` for `@structure-ai/cqrs`.
 
 ## Usage
 
@@ -30,6 +30,7 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 | `appendWithOutbox(stream, expectedVersion, events, messages)` | Events and outbox rows committed in one transaction. |
 | `withUnitOfWork(effect)` | Application unit of work: every write `effect` performs through the ambient `SqlClient` — appends, `appendWithOutbox`, outbox/inbox/idempotency/snapshot writes, and application-owned SQL — commits as one transaction; any failure rolls it all back. Nested calls become SAVEPOINTs, so an inner unit can fail while the outer one continues. |
 | `HistoryImporter` from `eventStoreLayer`/`storesLayer` | Preserves frozen source positions and versions in atomic, resumable batches. Import bookkeeping makes identical retries no-ops and rejects divergence. |
+| `StreamEraser` from `eventStoreLayer`/`storesLayer` | Destructive per-stream retention (`eraseStream`) backed by the `erased_streams` ledger: payload-bearing rows become `Erased` tombstones (positions kept, checkpoints valid), the stream's snapshot is deleted in the same transaction, and the stream is pinned against future appends. Append and erasure are serialized per stream with a transaction-scoped advisory lock, so the mutual exclusion holds across pool connections and processes. See the `@structure-ai/eventsourcing` README for the full semantics. |
 | `idempotencyStoreLayer(options?)` | `@structure-ai/cqrs` `IdempotencyStore` over the `idempotency` table. |
 | `purgeExpiredIdempotency(options?)` | Deletes idempotency records past their TTL; returns the count. |
 | `AdapterOptions` | `tablePrefix` (default none) and `idempotencyTtl` (default 24 hours). |

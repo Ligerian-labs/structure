@@ -28,6 +28,7 @@ const program = Effect.gen(function* () {
 | --- | --- |
 | `EventRegistry.make(entries)` | Schema-based codec: `{ schema, schemaVersion, upcasters? }` per event; decode applies upcasters from the stored version up before validating. |
 | `EventStore` | `append(stream, expectedVersion, events)` failing `ConcurrencyConflict | PersistenceError` (version 0 = stream must not exist); `read` per stream; `readAll` in global order for projections, optionally narrowed to one or several envelope partitions (`readAll({ partition })`: same positions, same order, same checkpoint guarantee; events without a partition never match, so an unpartitioned store filtered by partition yields nothing). |
+| `StreamEraser` + `ERASED_EVENT_TYPE` | Destructive retention for one stream: `eraseStream({ streamName, expectedVersion, reason })` rewrites every event to a payload-free `Erased` tombstone (positions/versions intact, `readAll` gap-free, checkpoints stay valid), deletes the stream's snapshot, and pins the stream against future appends. Idempotent; audit reason kept. In-memory, SQLite, and PostgreSQL adapters (not Nisshi — immutable topic, ADR-0015). |
 | `HistoryImporter` + `HistoryImport.checksum` | Imports a frozen history with source positions, stream versions, ids, timestamps, correlation/causation, actor, partition, origin and extensions intact. Batches are atomic, checksum-verified, resumable, and idempotent. |
 | `AggregateStore.make(aggregate, registry, opts?)` | `load` (fold history), `execute` (load → decide → append with expected version), `executeWithRetry` (reload+retry on conflict only, default 3); stamps `EventMetadata` including correlation, causation, optional actor, and the command's `partition` and `extensions` (never `origin`). Stream naming: `<AggregateName>-<id>` (aggregate names must not contain `-`). |
 | `SnapshotStore` | Optional; picked up from context when provided, written every `snapshotEvery` events. |
@@ -61,3 +62,32 @@ From the repository root, `bun run bench:eventsourcing 10000 100` appends 10,000
 Storage operations preserve expected SQL, broker and stored-data failures in the typed `PersistenceError` channel, with an operation name and the original diagnostic cause. The error is exported by `@structure-ai/domain`. Aggregate loading, projections, inbox/outbox workflows and view hydration propagate it. Recover with `Effect.catchTag("PersistenceError", handler)` where the application can make a recovery decision. It is classified `permanent` to prevent automatic retries of writes whose commit status may be unknown. Defects and cancellation remain separate.
 
 Outbox publishing retries only a single expected publish failure. A compound cause propagates unchanged, so `OutboxRelay.drain/run` also retain the publisher error type for those causes. Defects and cancellation are never treated as retryable publish failures.
+
+## Erasing a stream (destructive retention)
+
+When a retention policy (GDPR erasure, tenant offboarding) requires destroying the content of one aggregate stream, use `StreamEraser` — never hand-written `DELETE`s:
+
+```ts
+import { StreamEraser } from "@structure-ai/eventsourcing";
+import { Effect } from "effect";
+
+const erase = StreamEraser.pipe(
+  Effect.flatMap((eraser) =>
+    eraser.eraseStream({ streamName: "Conversation-42", expectedVersion: 7, reason: "gdpr-erasure ticket 1001" }),
+  ),
+);
+```
+
+Semantics, identical across the in-memory, SQLite, and PostgreSQL adapters:
+
+- **Content is destroyed, order is preserved.** Every event of the stream is rewritten in place to a synthetic `Erased` tombstone: same `position` and `version`, no payload, no original metadata (correlation/causation/actor gone), only the stream identity and erasure timestamp. `readAll` stays gap-free, so projection checkpoints remain valid and catch-up continues without adjustment. Tombstones never decode into domain events — registries must not register a type named `Erased` (`ERASED_EVENT_TYPE`); decoders fail `EventDecodeError` ("unknown event type"), and `Projection` counts them `skipped`.
+- **`expectedVersion` guards the race.** Like `append`: pass the stream version you observed (0 = the stream must be empty or absent). If the stream moved on, erasure fails `StreamErasureError` with reason `stream-modified` (classification `conflict`) and nothing changes; reload and retry. Malformed requests fail `invalid-request` (classification `permanent`) before any state is touched.
+- **The stream is pinned forever.** The erasure ledger remembers the erased version; every later append — any `expectedVersion` — fails `ConcurrencyConflict` at that version. The erased version range can never be resurrected. Erasing a stream that never existed succeeds trivially and pins it empty.
+- **Snapshots go with the content.** The stream's snapshot is deleted in the same operation (same transaction in the SQL adapters).
+- **Idempotent.** Re-erasing an already-erased stream with the same `expectedVersion` rewrites nothing and returns the originally recorded outcome (`erasedEvents: 0`, original `erasedAt`/`reason`).
+- **Auditable.** The ledger row (`erased_streams` in the SQL adapters) keeps the stream name, erased version, timestamp, and the caller's `reason`. The result carries the same fields back.
+
+What erasure does **not** do: it does not touch projections that already consumed the events, outbox messages already published, or integration data downstream. Drop already-materialized read-model rows through those models' own delete paths. A projection that never saw the stream skips the tombstones. Rebuilding a projection after erasure replays tombstones (skipped), not the original content — so a rebuild never resurrects erased state.
+
+Concurrency: append and erasure to the same stream are mutually exclusive — exactly one wins, the loser gets `ConcurrencyConflict` (append) or `stream-modified` (erasure). The PostgreSQL adapter serializes the two with a transaction-scoped advisory lock keyed on the stream name, so this holds across pool connections and processes.
+>>>>>>> Stashed changes

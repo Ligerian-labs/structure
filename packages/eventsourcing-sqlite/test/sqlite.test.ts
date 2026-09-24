@@ -1,7 +1,7 @@
 import { describe } from "bun:test";
 import { Effect } from "effect";
 import { layer } from "../src/index.js";
-import { registerScenarios, type Scenario } from "./scenarios.js";
+import { registerScenarios, registerStreamErasureScenarios, type Scenario } from "./scenarios.js";
 
 /** Each scenario gets its own fresh in-memory database, unprefixed tables. */
 const runTest = (scenario: Scenario): Promise<void> =>
@@ -9,4 +9,5 @@ const runTest = (scenario: Scenario): Promise<void> =>
 
 describe("sqlite adapters", () => {
   registerScenarios(runTest);
+  registerStreamErasureScenarios(runTest);
 });

@@ -56,6 +56,13 @@ export const snapshotStoreLayer = (
               Effect.asVoid,
             );
           }),
+        remove: (streamName) =>
+          sql`
+            DELETE FROM ${sql(tables.snapshots)} WHERE stream_name = ${streamName}
+          `.pipe(
+            Effect.mapError((cause) => new PersistenceError({ operation: "SnapshotStore", cause })),
+            Effect.asVoid,
+          ),
       });
     }),
   );

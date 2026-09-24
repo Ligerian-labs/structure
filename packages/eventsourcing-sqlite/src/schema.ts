@@ -26,6 +26,7 @@ export interface AdapterOptions {
 /** Resolved table names for one `tablePrefix`. */
 export interface TableNames {
   readonly events: string;
+  readonly erasedStreams: string;
   readonly snapshots: string;
   readonly checkpoints: string;
   readonly outbox: string;
@@ -37,6 +38,7 @@ export const tableNames = (options?: AdapterOptions): TableNames => {
   const prefix = options?.tablePrefix ?? "";
   return {
     events: `${prefix}events`,
+    erasedStreams: `${prefix}erased_streams`,
     snapshots: `${prefix}snapshots`,
     checkpoints: `${prefix}checkpoints`,
     outbox: `${prefix}outbox`,
@@ -73,6 +75,14 @@ export const migrate = (
     yield* sql`
       CREATE INDEX IF NOT EXISTS ${sql(`${tables.events}_partition_position_idx`)}
       ON ${sql(tables.events)} (json_extract(metadata, '$.partition'), position)
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.erasedStreams)} (
+        stream_name TEXT PRIMARY KEY,
+        last_version INTEGER NOT NULL,
+        erased_at TEXT NOT NULL,
+        reason TEXT NOT NULL
+      )
     `;
     yield* sql`
       CREATE TABLE IF NOT EXISTS ${sql(tables.snapshots)} (
