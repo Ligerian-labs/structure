@@ -24,6 +24,43 @@ serve({ port: 3000 }).pipe(
 
 `serve` installs the standard middleware stack — correlation ids, one structured log line per request, boundary metrics, problem mapping — and graceful shutdown (readiness flips unready before the listener stops).
 
+## Configurable middleware stack
+
+The standard stack is the default; a `middleware` option on `serve`/`serveTestWith` adapts it without giving up the graceful Bun composition (mounts, static dispatch, readiness flip and drain stay in place):
+
+```ts
+serve({
+  port: 3000,
+  middleware: {
+    correlation: {
+      incoming: "reject",                                  // never trust incoming ids
+      headers: { request: "X-Trace-Id", correlation: null }, // emit one, custom name
+    },
+  },
+});
+```
+
+- `middleware.correlation.incoming` — `"sanitize"` (default, today's behavior), `"reject"` (always mint fresh ids), or a predicate `(id) => boolean` keeping only the ids it accepts. Header-safety (`isSafeId`) always applies: an unsafe id is never echoed, whatever the policy.
+- `middleware.correlation.generate` — mint ids with your own generator (default `Correlation.newId`).
+- `middleware.correlation.headers` — response header names: a string overrides the standard `x-request-id`/`x-correlation-id`, `null` suppresses that header. Incoming ids are always read from the standard names.
+
+To reproduce an existing boundary contract exactly, `middleware.boundary` replaces the whole standard stack (correlation, logging, metrics, problem mapping) with your own middleware function. It receives the app with mounts and static dispatch already composed, plus the mounted api (for `Middleware.routeLabel`), and whatever it produces is served by the same server:
+
+```ts
+serve({
+  port: 3000,
+  middleware: {
+    boundary: (app, api) =>
+      Middleware.standard(app, {
+        routeLabel: Middleware.routeLabel(api),
+        correlation: { incoming: (id) => id.startsWith("acc-") },
+      }),
+  },
+});
+```
+
+A replacement owns its failure mapping: unmatched routes fail `RouteNotFound` into the replacement, and the platform answers an unhandled one with its own empty 404 — bring `Middleware.problems` (as `Middleware.standard` does) when the problem taxonomy is wanted. `correlation` cannot be combined with `boundary` (the replacement owns its own); invalid options (malformed header names, duplicate names, unknown policies) fail the layer at startup with `InvalidMiddlewareOptions`.
+
 ## Boundary telemetry
 
 Every request produces one `http request` log line and a set of metrics, all labelled by the **matched endpoint template** (`/things/:id`), never by the requested path — a path segment can carry a share secret or an invitation token, and a template keeps metric cardinality bounded. Requests that match no endpoint are labelled `(unmatched)`, so probed URLs never reach the logs either.

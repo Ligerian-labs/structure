@@ -43,6 +43,10 @@ export {
 } from "./errors.js";
 export * as Health from "./health.js";
 export * as Middleware from "./middleware.js";
+export {
+  type CorrelationOptions,
+  correlationViolations,
+} from "./middleware.js";
 export { InvalidMounts, type Mount } from "./mounts.js";
 export {
   type ClientIpOptions,
@@ -62,6 +66,9 @@ export {
 export { makeRedisStore, type RedisStoreOptions } from "./rateLimitRedis.js";
 export { makeRedisClient, type RedisClient, RedisError } from "./redis.js";
 export {
+  InvalidMiddlewareOptions,
+  type MiddlewareStackOptions,
+  type MountedApi,
   type ServeOptions,
   type ServeTestOptions,
   serve,
