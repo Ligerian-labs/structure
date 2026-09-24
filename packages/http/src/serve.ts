@@ -1,6 +1,7 @@
 import type * as Etag from "@effect/platform/Etag";
 import * as HttpApi from "@effect/platform/HttpApi";
 import * as HttpApiBuilder from "@effect/platform/HttpApiBuilder";
+import type * as HttpApiGroup from "@effect/platform/HttpApiGroup";
 import * as HttpApp from "@effect/platform/HttpApp";
 import type * as HttpPlatform from "@effect/platform/HttpPlatform";
 import * as HttpServer from "@effect/platform/HttpServer";
@@ -10,7 +11,7 @@ import type * as BunContext from "@effect/platform-bun/BunContext";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
 import { Correlation } from "@structure-ai/observability";
 import { Readiness } from "@structure-ai/runtime";
-import { Cause, type Duration, Effect, Layer, Option } from "effect";
+import { Cause, Data, type Duration, Effect, Layer, Option } from "effect";
 import { defaultErrorResponse } from "./errors.js";
 import * as Middleware from "./middleware.js";
 import { compileMounts, InvalidMounts, type Mount, type MountTable, matchMount } from "./mounts.js";
@@ -20,6 +21,54 @@ import {
   type StaticOptions,
   type StaticServer,
 } from "./static.js";
+
+/** The mounted api a boundary replacement may need (route templates, docs). */
+export type MountedApi = HttpApi.HttpApi<string, HttpApiGroup.HttpApiGroup.AnyWithProps>;
+
+/** Options for {@link serve} governing the middleware stack. */
+export interface MiddlewareStackOptions {
+  /**
+   * Configure the standard stack's correlation policy and response headers
+   * without replacing it. Cannot be combined with `boundary` (a replacement
+   * owns its own correlation).
+   */
+  readonly correlation?: Middleware.CorrelationOptions;
+  /**
+   * Replace the standard boundary middleware (correlation, logging, metrics,
+   * problem mapping) with your own. The replacement receives the app with
+   * mounts and static dispatch already composed and the mounted api, and must
+   * answer every failure it receives (unmatched routes fail
+   * `RouteNotFound`); everything it produces is served by the same graceful
+   * Bun composition — you replace the boundary, not the server.
+   */
+  readonly boundary?: (
+    app: HttpApp.Default,
+    api: MountedApi,
+  ) => HttpApp.Default<never, HttpServerRequest.HttpServerRequest>;
+}
+
+/** Middleware stack options that cannot be served. */
+export class InvalidMiddlewareOptions extends Data.TaggedError("InvalidMiddlewareOptions")<{
+  readonly violations: ReadonlyArray<string>;
+}> {
+  readonly classification: "permanent" = "permanent";
+  override get message(): string {
+    return `invalid middleware options: ${this.violations.join("; ")}`;
+  }
+}
+
+const middlewareViolations = (
+  options: MiddlewareStackOptions | undefined,
+): ReadonlyArray<string> => {
+  if (options === undefined) return [];
+  const violations = [...Middleware.correlationViolations(options.correlation)];
+  if (options.correlation !== undefined && options.boundary !== undefined) {
+    violations.push(
+      "middleware.correlation configures the standard stack but middleware.boundary replaces it — choose one",
+    );
+  }
+  return violations;
+};
 
 /** Options for {@link serve}. */
 export interface ServeOptions {
@@ -49,6 +98,15 @@ export interface ServeOptions {
    * with {@link InvalidStaticOptions}.
    */
   readonly static?: StaticOptions;
+  /**
+   * The middleware stack. Default: the standard stack (correlation, boundary
+   * logging, metrics, problem mapping). Pass `correlation` to configure its
+   * id policy and response headers, or `boundary` to replace the whole stack
+   * while keeping the same graceful server composition — see
+   * {@link MiddlewareStackOptions}. Invalid combinations fail the layer with
+   * {@link InvalidMiddlewareOptions}.
+   */
+  readonly middleware?: MiddlewareStackOptions;
 }
 
 /** {@link ServeOptions} minus the listener details, for {@link serveTestWith}. */
@@ -145,6 +203,10 @@ const composed = (options: ServeTestOptions): Layer.Layer<never, never, HttpApi.
   if (mountViolations.length > 0) {
     return Layer.die(new InvalidMounts({ violations: mountViolations }));
   }
+  const stackViolations = middlewareViolations(options.middleware);
+  if (stackViolations.length > 0) {
+    return Layer.die(new InvalidMiddlewareOptions({ violations: stackViolations }));
+  }
   const compiled = options.static === undefined ? undefined : makeStatic(options.static);
   if (compiled !== undefined && compiled.violations.length > 0) {
     return Layer.die(new InvalidStaticOptions({ violations: compiled.violations }));
@@ -156,14 +218,17 @@ const composed = (options: ServeTestOptions): Layer.Layer<never, never, HttpApi.
     mount.prefix === "/" ? [] : [mount.prefix, `${mount.prefix}/*`].filter(isTemplate),
   );
   return HttpApiBuilder.middleware(
-    Effect.map(
-      HttpApi.Api,
-      ({ api }) =>
-        (app: HttpApp.Default) =>
-          Middleware.standard(withDispatch(app), {
+    Effect.map(HttpApi.Api, ({ api }) => (app: HttpApp.Default) => {
+      const dispatched = withDispatch(app);
+      return options.middleware?.boundary === undefined
+        ? Middleware.standard(dispatched, {
             routeLabel: Middleware.routeLabel(api, { extra: mountTemplates }),
-          }),
-    ),
+            ...(options.middleware?.correlation !== undefined && {
+              correlation: options.middleware.correlation,
+            }),
+          })
+        : options.middleware.boundary(dispatched, api);
+    }),
   );
 };
 

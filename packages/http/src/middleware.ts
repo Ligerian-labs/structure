@@ -32,8 +32,104 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
  */
 export const isSafeId = (value: string): boolean => SAFE_ID.test(value);
 
-const propagatedId = (value: string | undefined): string =>
-  value !== undefined && isSafeId(value) ? value : Correlation.newId();
+/** Options for {@link correlation}. */
+export interface CorrelationOptions {
+  /**
+   * What to do with an incoming `x-request-id` / `x-correlation-id` header:
+   *
+   * - `"sanitize"` (default) — keep the id when {@link isSafeId} accepts it,
+   *   mint a fresh one otherwise (today's behavior);
+   * - `"reject"` — never trust incoming ids, always mint fresh ones;
+   * - a predicate — keep the id only when the predicate returns `true`.
+   *   Header-safety still applies: an id that fails {@link isSafeId} is never
+   *   echoed back, whatever the predicate says.
+   */
+  readonly incoming?: "sanitize" | "reject" | ((id: string) => boolean);
+  /** Mint ids with this instead of a fresh uuid (`Correlation.newId`). */
+  readonly generate?: () => string;
+  /**
+   * Which headers the outgoing response carries: a name overrides the
+   * standard one, `null` suppresses that header. Default
+   * `{ request: "x-request-id", correlation: "x-correlation-id" }`. Incoming
+   * ids are always read from the standard names.
+   */
+  readonly headers?: {
+    readonly request?: string | null;
+    readonly correlation?: string | null;
+  };
+}
+
+/** RFC 7230 token — the only shape safe to use as a response header name. */
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * Validates {@link CorrelationOptions} and lists every violation (malformed
+ * header names, duplicate names, unknown policies). Composition bugs surface
+ * at startup, not on the first response.
+ */
+export const correlationViolations = (
+  options: CorrelationOptions | undefined,
+): ReadonlyArray<string> => {
+  if (options === undefined) return [];
+  const violations: Array<string> = [];
+  const { incoming, generate, headers } = options;
+  if (
+    incoming !== undefined &&
+    incoming !== "sanitize" &&
+    incoming !== "reject" &&
+    typeof incoming !== "function"
+  ) {
+    violations.push(`correlation.incoming must be "sanitize", "reject" or a predicate`);
+  }
+  if (generate !== undefined && typeof generate !== "function") {
+    violations.push("correlation.generate must be a function");
+  }
+  if (headers !== undefined) {
+    for (const [slot, name] of [
+      ["request", headers.request],
+      ["correlation", headers.correlation],
+    ] as const) {
+      if (name === undefined || name === null) continue;
+      if (typeof name !== "string" || !HEADER_NAME.test(name)) {
+        violations.push(
+          `correlation.headers.${slot} (${JSON.stringify(name)}) is not a valid header name`,
+        );
+      }
+    }
+    if (typeof headers.request === "string" && headers.request === headers.correlation) {
+      violations.push(
+        `correlation.headers.request and .correlation must differ ("${headers.request}" used twice)`,
+      );
+    }
+  }
+  return violations;
+};
+
+interface ResolvedCorrelation {
+  readonly resolveId: (value: string | undefined) => string;
+  /** `[headerName, idKey]` pairs to stamp on the response, in order. */
+  readonly emit: ReadonlyArray<readonly [name: string, key: "requestId" | "correlationId"]>;
+}
+
+const resolveCorrelation = (options: CorrelationOptions | undefined): ResolvedCorrelation => {
+  const generate = options?.generate ?? Correlation.newId;
+  const incoming = options?.incoming;
+  const resolveId = (value: string | undefined): string => {
+    if (value === undefined) return generate();
+    if (typeof incoming === "function")
+      return isSafeId(value) && incoming(value) ? value : generate();
+    if (incoming === "reject") return generate();
+    return isSafeId(value) ? value : generate();
+  };
+  const request =
+    options?.headers?.request === undefined ? "x-request-id" : options.headers.request;
+  const correlation =
+    options?.headers?.correlation === undefined ? "x-correlation-id" : options.headers.correlation;
+  const emit: Array<readonly [string, "requestId" | "correlationId"]> = [];
+  if (request !== null) emit.push([request, "requestId"]);
+  if (correlation !== null) emit.push([correlation, "correlationId"]);
+  return { resolveId, emit };
+};
 
 /**
  * Request correlation: reads `x-request-id` / `x-correlation-id` from the
@@ -42,24 +138,30 @@ const propagatedId = (value: string | undefined): string =>
  * log line, span and CQRS dispatch below carries the ids, and stamps both
  * (sanitized) headers on the outgoing response, whatever produced it, via a
  * pre-response handler.
+ *
+ * `options` customizes the incoming-id policy, the generator and the emitted
+ * header names; {@link correlationViolations} lists what makes them invalid.
  */
 export const correlation = <E, R>(
   app: HttpApp.Default<E, R>,
-): HttpApp.Default<E, R | HttpServerRequest.HttpServerRequest> =>
-  Effect.gen(function* () {
+  options?: CorrelationOptions,
+): HttpApp.Default<E, R | HttpServerRequest.HttpServerRequest> => {
+  const { resolveId, emit } = resolveCorrelation(options);
+  const stamp = (requestId: string, correlationId: string): Record<string, string> => {
+    const headers: Record<string, string> = {};
+    for (const [name, key] of emit) headers[name] = key === "requestId" ? requestId : correlationId;
+    return headers;
+  };
+  return Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const requestId = propagatedId(request.headers["x-request-id"]);
-    const correlationId = propagatedId(request.headers["x-correlation-id"]);
+    const requestId = resolveId(request.headers["x-request-id"]);
+    const correlationId = resolveId(request.headers["x-correlation-id"]);
     yield* HttpApp.appendPreResponseHandler((_request, response) =>
-      Effect.succeed(
-        HttpServerResponse.setHeaders(response, {
-          "x-request-id": requestId,
-          "x-correlation-id": correlationId,
-        }),
-      ),
+      Effect.succeed(HttpServerResponse.setHeaders(response, stamp(requestId, correlationId))),
     );
     return yield* Correlation.within({ requestId, correlationId })(app);
   });
+};
 
 // --- route labels ------------------------------------------------------------
 
@@ -315,6 +417,12 @@ export interface StandardOptions {
    * endpoint templates.
    */
   readonly routeLabel?: RouteLabel;
+  /**
+   * Correlation policy: which incoming ids are trusted and which headers the
+   * response carries. Default: today's behavior (`sanitize`, `x-request-id`
+   * and `x-correlation-id`). See {@link CorrelationOptions}.
+   */
+  readonly correlation?: CorrelationOptions;
 }
 
 /**
@@ -326,7 +434,7 @@ export const standard = <E, R>(
   options?: StandardOptions,
 ): HttpApp.Default<E, R | HttpServerRequest.HttpServerRequest> =>
   withRouteLabel(options?.routeLabel ?? (() => UNMATCHED_ROUTE))(
-    correlation(logger(metrics(problems(app)))),
+    correlation(logger(metrics(problems(app))), options?.correlation),
   );
 
 /**
