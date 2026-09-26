@@ -257,6 +257,14 @@ export const passkeyMetadataStatements = (options: AdapterOptions = {}): Readonl
 };
 
 /**
+ * Additive OAuth flow-context column for an existing auth schema: bounded
+ * application context persisted with the one-time OAuth state.
+ */
+export const oauthFlowContextStatements = (options: AdapterOptions = {}): ReadonlyArray<string> => [
+  `ALTER TABLE ${ident(tableNames(options).oauthStates)} ADD COLUMN IF NOT EXISTS flow_context TEXT`,
+];
+
+/**
  * Additive columns since the base schema, as idempotent DDL: the second
  * step of the auth schema (v2). Kept apart from `schemaStatements` so the
  * base migration's checksum, recorded by installs that ran it, never
@@ -350,11 +358,26 @@ export const passkeyMetadataMigration = (id: number, options: AdapterOptions = {
   );
 
 /**
+ * Forward-only upgrade that adds the nullable OAuth `flow_context` column.
+ * Place it after `passkeyMetadataMigration` in the application's migration set.
+ */
+export const oauthFlowContextMigration = (
+  id: number,
+  options: AdapterOptions = {},
+): AuthMigration =>
+  migrationOf(
+    id,
+    `add_${options.tablePrefix ?? DEFAULT_PREFIX}oauth_flow_context`,
+    oauthFlowContextStatements(options),
+  );
+
+/**
  * Creates the complete auth schema in one transaction over a Bun `SQL`
  * handle — the all-in-one path for apps without a `@structure-ai/migrations`
  * set (and for tests). Same DDL as `migration` followed by
- * `upgradeMigration` and `passkeyMetadataMigration`. Run from the designated
- * migrator; the stores never migrate implicitly.
+ * `upgradeMigration`, `passkeyMetadataMigration`, and
+ * `oauthFlowContextMigration`. Run from the designated migrator; the stores
+ * never migrate implicitly.
  */
 export const migrate = (
   sql: SQL,
@@ -367,6 +390,7 @@ export const migrate = (
           ...schemaStatements(options),
           ...upgradeStatements(options),
           ...passkeyMetadataStatements(options),
+          ...oauthFlowContextStatements(options),
         ];
         for (const statement of statements) {
           await tx.unsafe(statement);

@@ -177,6 +177,52 @@ export const registerStoreScenarios = (makeHarness: MakeHarness): void => {
       expect(await run(store.findSession("tenant-b", "session-b-hash", now))).toBeDefined();
     }));
 
+  test("persists OAuth flow context with the state and returns it exactly once on consume", () =>
+    withHarness(makeHarness, async ({ store, remake }) => {
+      const state: OAuthStateRecord = {
+        tenantId: "tenant-a",
+        provider: "github",
+        stateHash: "flow-hash",
+        codeVerifier: Redacted.make("pkce-verifier"),
+        redirectUri: "https://example.com/auth/oauth/github/callback",
+        flowContext: { intent: "sign-up", distinctId: "anon-42" },
+        expiresAt: later,
+      };
+      await run(store.putOAuthState(state));
+      // survives a store remake (durable roundtrip)
+      const consumed = await run(
+        remake().consumeOAuthState("tenant-a", "github", "flow-hash", now),
+      );
+      expect(consumed?.flowContext).toEqual({ intent: "sign-up", distinctId: "anon-42" });
+      expect(
+        await run(store.consumeOAuthState("tenant-a", "github", "flow-hash", now)),
+      ).toBeUndefined();
+    }));
+
+  test("does not consume OAuth state scoped to another provider", () =>
+    withHarness(makeHarness, async ({ store }) => {
+      const state: OAuthStateRecord = {
+        tenantId: "tenant-a",
+        provider: "google",
+        stateHash: "mismatch-hash",
+        codeVerifier: Redacted.make("pkce-verifier"),
+        redirectUri: "https://example.com/auth/oauth/google/callback",
+        flowContext: { intent: "sign-up" },
+        expiresAt: later,
+      };
+      await run(store.putOAuthState(state));
+      expect(
+        await run(store.consumeOAuthState("tenant-a", "github", "mismatch-hash", now)),
+      ).toBeUndefined();
+      const consumed = await run(
+        store.consumeOAuthState("tenant-a", "google", "mismatch-hash", now),
+      );
+      expect(consumed?.flowContext).toEqual({ intent: "sign-up" });
+      expect(
+        await run(store.consumeOAuthState("tenant-a", "google", "mismatch-hash", now)),
+      ).toBeUndefined();
+    }));
+
   test("consumes OAuth state once and enforces provider identity uniqueness", () =>
     withHarness(makeHarness, async ({ store }) => {
       const state: OAuthStateRecord = {
@@ -188,9 +234,11 @@ export const registerStoreScenarios = (makeHarness: MakeHarness): void => {
         expiresAt: later,
       };
       await run(store.putOAuthState(state));
-      const consumed = await run(store.consumeOAuthState("tenant-a", "state-hash", now));
+      const consumed = await run(store.consumeOAuthState("tenant-a", "github", "state-hash", now));
       expect(Redacted.value(consumed?.codeVerifier ?? Redacted.make(""))).toBe("pkce-verifier");
-      expect(await run(store.consumeOAuthState("tenant-a", "state-hash", now))).toBeUndefined();
+      expect(
+        await run(store.consumeOAuthState("tenant-a", "github", "state-hash", now)),
+      ).toBeUndefined();
 
       const oauthUser = user("tenant-a", "oauth-user", "oauth@example.com");
       await run(

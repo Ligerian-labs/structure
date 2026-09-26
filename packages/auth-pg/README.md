@@ -41,6 +41,7 @@ The `Migration` value carries a `checksum` computed like `defineMigration` with 
 ```ts
 import {
   migration as authMigration,
+  oauthFlowContextMigration,
   upgradeMigration as authUpgradeMigration,
   passkeyMetadataMigration,
 } from "@structure-ai/auth-pg";
@@ -53,14 +54,15 @@ const migrations = makeSet([
   authMigration(2), // or authMigration(2, { tablePrefix: "application_auth_" })
   authUpgradeMigration(3), // the v2 columns, right after the base schema
   passkeyMetadataMigration(3),
-  ViewModel.migration(OrderSummary, 4),
+  oauthFlowContextMigration(4),
+  ViewModel.migration(OrderSummary, 5),
 ]);
 
 // designated migrator only, on the app's SqlClient (e.g. @effect/sql-pg PgClient.layer):
 await Effect.runPromise(run(migrations).pipe(Effect.provide(PgClient.layer({ url }))));
 ```
 
-`migration(id, options?)` is the frozen initial schema. `passkeyMetadataMigration(id, options?)` is the forward-only nullable `label` and `aaguid` upgrade. Existing applications add it under their next unused id and do not change the id of their applied `migration`. Both return an `Effect<void, SqlError, SqlClient>` in the same shape as a `Migration` from `@structure-ai/migrations`. The package does not depend on `@structure-ai/migrations`; a type-level test in `test/pg.test.ts` keeps the values structurally assignable.
+`migration(id, options?)` is the frozen initial schema. `passkeyMetadataMigration(id, options?)` is the forward-only nullable `label` and `aaguid` upgrade; `oauthFlowContextMigration(id, options?)` is the forward-only nullable `flow_context` column for OAuth flow context (see the auth README). Existing applications add each under their next unused id and do not change the id of their applied `migration`. Both return an `Effect<void, SqlError, SqlClient>` in the same shape as a `Migration` from `@structure-ai/migrations`. The package does not depend on `@structure-ai/migrations`; a type-level test in `test/pg.test.ts` keeps the values structurally assignable.
 
 **Schema upgrades are their own migrations.** The base statements behind `migration` are frozen, so the checksum an install recorded for it never drifts. Additive columns since then live in `upgradeStatements` / `upgradeMigration(id, options?)` (named `upgrade_<prefix>schema_v2`: `oauth2_tokens.family_id` and `rotated_at` for refresh-token families, `totp.last_used_step` for one-time TOTP codes). Append it to the set right after the base migration; an existing install applies it as one more pending migration, a fresh install runs both in order.
 
@@ -87,6 +89,7 @@ Both workflows are idempotent (`CREATE ... IF NOT EXISTS`, `ADD COLUMN IF NOT EX
 | `migrate(sql, options?)` | Base schema plus upgrade over a Bun `SQL` handle, one transaction. |
 | `migration(id, options?)` | The schema as a `@structure-ai/migrations`-compatible `AuthMigration` over `SqlClient`. |
 | `passkeyMetadataMigration(id, options?)` | Forward-only nullable passkey metadata upgrade over `SqlClient`. |
+| `oauthFlowContextMigration(id, options?)` | Forward-only nullable `flow_context` column for OAuth flow context, over `SqlClient`. |
 | `migrate(sql, options?)` | Create and upgrade the schema over a Bun `SQL` handle, in one transaction. |
 | `tableNames(options?)` | Resolved table names for a prefix (tests drop them after a run). |
 | `AdapterOptions`, `TableNames`, `AuthMigration` | Types. |

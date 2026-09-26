@@ -31,6 +31,7 @@ import {
   type OAuthHttpClient,
   type OAuthProviderResolver,
   pkceChallenge,
+  validateFlowContext,
   validateReturnTo,
 } from "./oauth.js";
 import {
@@ -113,6 +114,11 @@ export interface BeginOAuthOptions {
   readonly returnTo?: string;
   /** Absolute application path compiled from the handler's OAuth callback route. */
   readonly callbackPath?: string;
+  /**
+   * Bounded, JSON-safe application context (flat record of primitives, at
+   * most 2048 encoded bytes) returned by `completeOAuth` exactly once.
+   */
+  readonly flowContext?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 /** An unknown external identity asking to become an account. */
@@ -214,7 +220,11 @@ export interface AuthService {
     readonly code: Redacted.Redacted<string>;
     readonly currentSessionToken?: Redacted.Redacted<string>;
   }) => Effect.Effect<
-    { readonly session: AuthSession; readonly returnTo?: string },
+    {
+      readonly session: AuthSession;
+      readonly returnTo?: string;
+      readonly flowContext?: Readonly<Record<string, string | number | boolean | null>>;
+    },
     AuthServiceError
   >;
   readonly beginPasskeyRegistration: (
@@ -925,6 +935,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         const beginOptions: BeginOAuthOptions =
           typeof input === "string" ? { returnTo: input } : (input ?? {});
         const safeReturnTo = yield* validateReturnTo(config, beginOptions.returnTo);
+        const safeFlowContext = yield* validateFlowContext(beginOptions.flowContext);
         const state = primitives.randomToken(32);
         const verifier = primitives.randomToken(48);
         const challenge = yield* pkceChallenge(verifier);
@@ -941,6 +952,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
           codeVerifier: Redacted.make(verifier),
           redirectUri,
           ...(safeReturnTo === undefined ? {} : { returnTo: safeReturnTo }),
+          ...(safeFlowContext === undefined ? {} : { flowContext: safeFlowContext }),
           expiresAt: new Date(
             primitives.now().getTime() + (config.tokens?.oauthStateTtlMillis ?? 10 * 60 * 1_000),
           ),
@@ -962,10 +974,11 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         const stateHash = yield* primitives.hashToken(tokenValue(input.state));
         const state = yield* options.store.consumeOAuthState(
           input.tenantId,
+          input.provider,
           stateHash,
           primitives.now(),
         );
-        if (state === undefined || state.provider !== input.provider) {
+        if (state === undefined) {
           return yield* new InvalidAuthToken({ purpose: "oauth-state" });
         }
         const provider = yield* oauthProviders.resolve(input.tenantId, input.provider, config);
@@ -1016,6 +1029,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
           return {
             session,
             ...(state.returnTo === undefined ? {} : { returnTo: state.returnTo }),
+            ...(state.flowContext === undefined ? {} : { flowContext: state.flowContext }),
           };
         }
 
@@ -1105,6 +1119,7 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         return {
           session,
           ...(state.returnTo === undefined ? {} : { returnTo: state.returnTo }),
+          ...(state.flowContext === undefined ? {} : { flowContext: state.flowContext }),
         };
       }),
     beginPasskeyRegistration: (tenantId, sessionToken) =>

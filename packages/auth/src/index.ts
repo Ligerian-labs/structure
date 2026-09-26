@@ -75,11 +75,13 @@ export {
   denyAccountLinking,
   exchangeOAuthCode,
   fetchOAuthHttpClient,
+  MAX_OAUTH_FLOW_CONTEXT_BYTES,
   type OAuthHttpClient,
   type OAuthProvider,
   type OAuthProviderResolver,
   type OAuthTokens,
   pkceChallenge,
+  validateFlowContext,
   validateReturnTo,
 } from "./oauth.js";
 export {
