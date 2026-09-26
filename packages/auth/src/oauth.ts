@@ -374,3 +374,48 @@ export const validateReturnTo = (
       }),
   });
 };
+
+/**
+ * The encoded bound for application OAuth flow context: small enough to keep
+ * the persisted state row tight, large enough for intent flags and ids.
+ */
+export const MAX_OAUTH_FLOW_CONTEXT_BYTES = 2_048;
+
+const isJsonPrimitive = (value: unknown): boolean =>
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean" ||
+  value === null;
+
+/**
+ * Accepts only a flat record of JSON primitives within the encoded size
+ * bound, so the context can round-trip every store without schema knowledge
+ * and can never smuggle structured payloads past validation.
+ */
+export const validateFlowContext = (
+  flowContext: Record<string, string | number | boolean | null> | undefined,
+): Effect.Effect<
+  Record<string, string | number | boolean | null> | undefined,
+  AuthValidationError
+> => {
+  if (flowContext === undefined) return Effect.succeed(undefined);
+  const entries = Object.entries(flowContext);
+  if (entries.length === 0) return Effect.succeed(undefined);
+  if (entries.some(([, value]) => !isJsonPrimitive(value))) {
+    return Effect.fail(
+      new AuthValidationError({
+        field: "flowContext",
+        reason: "values must be JSON primitives (string, number, boolean, or null)",
+      }),
+    );
+  }
+  if (new TextEncoder().encode(JSON.stringify(flowContext)).length > MAX_OAUTH_FLOW_CONTEXT_BYTES) {
+    return Effect.fail(
+      new AuthValidationError({
+        field: "flowContext",
+        reason: `must encode to at most ${MAX_OAUTH_FLOW_CONTEXT_BYTES} bytes`,
+      }),
+    );
+  }
+  return Effect.succeed(flowContext);
+};

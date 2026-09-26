@@ -143,6 +143,37 @@ const stringArray = (
     : Effect.fail(new AuthValidationError({ field, reason: "must be an array of strings" }));
 };
 
+const flowContextField = (
+  body: Record<string, unknown>,
+): Effect.Effect<
+  Record<string, string | number | boolean | null> | undefined,
+  AuthValidationError
+> => {
+  const value = body.flowContext;
+  if (value === undefined) return Effect.succeed(undefined);
+  if (!isRecord(value)) {
+    return Effect.fail(
+      new AuthValidationError({ field: "flowContext", reason: "must be an object" }),
+    );
+  }
+  for (const entry of Object.values(value)) {
+    if (
+      typeof entry !== "string" &&
+      typeof entry !== "number" &&
+      typeof entry !== "boolean" &&
+      entry !== null
+    ) {
+      return Effect.fail(
+        new AuthValidationError({
+          field: "flowContext",
+          reason: "values must be JSON primitives (string, number, boolean, or null)",
+        }),
+      );
+    }
+  }
+  return Effect.succeed(value as Record<string, string | number | boolean | null>);
+};
+
 const registrationResponse = (
   body: Record<string, unknown>,
 ): Effect.Effect<PasskeyRegistrationResponse, AuthValidationError> =>
@@ -603,6 +634,7 @@ export const makeAuthHandler = (
           }
           const body = yield* decodeBody(request, maxBodyBytes);
           const returnTo = yield* stringField(body, "returnTo", true);
+          const flowContext = yield* flowContextField(body);
           const redirectTo = returnTo ?? options.oauthCallbackRedirect;
           return jsonResponse(
             200,
@@ -612,6 +644,7 @@ export const makeAuthHandler = (
               {
                 ...(redirectTo === undefined ? {} : { returnTo: redirectTo }),
                 callbackPath: pathForRoute(routes, "oauthCallback", provider),
+                ...(flowContext === undefined ? {} : { flowContext }),
               },
               caller,
             ),
@@ -649,7 +682,11 @@ export const makeAuthHandler = (
           }
           return jsonResponse(
             200,
-            { user: completed.session.user, returnTo: completed.returnTo },
+            {
+              user: completed.session.user,
+              returnTo: completed.returnTo,
+              flowContext: completed.flowContext,
+            },
             {
               "set-cookie": sessionCookie,
             },
