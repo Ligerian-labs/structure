@@ -5,6 +5,8 @@ export {
   type AuthMigration,
   migrate,
   migration,
+  oauthFlowContextMigration,
+  oauthFlowContextStatements,
   passkeyMetadataMigration,
   type TableNames,
   tableNames,
