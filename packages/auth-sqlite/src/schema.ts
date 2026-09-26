@@ -122,10 +122,14 @@ export const migrate = (
             code_verifier TEXT NOT NULL,
             redirect_uri TEXT NOT NULL,
             return_to TEXT,
+            flow_context TEXT,
             expires_at TEXT NOT NULL,
             PRIMARY KEY (tenant_id, state_hash)
           )
         `;
+        await tx`ALTER TABLE ${tx(tables.oauthStates)} ADD COLUMN flow_context TEXT`.catch(
+          () => undefined,
+        );
         await tx`
           CREATE TABLE IF NOT EXISTS ${tx(tables.oauthIdentities)} (
             tenant_id TEXT NOT NULL,

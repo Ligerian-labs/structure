@@ -62,8 +62,14 @@ export interface AuthStore {
   readonly revokeSession: (tenantId: TenantId, tokenHash: string) => StoreEffect<void>;
   readonly revokeUserSessions: (tenantId: TenantId, userId: UserId) => StoreEffect<void>;
   readonly putOAuthState: (record: OAuthStateRecord) => StoreEffect<void>;
+  /**
+   * Atomically removes and returns the pending OAuth state, but only when it
+   * belongs to `provider`: a callback routed to the wrong provider must not
+   * burn the state (or its flow context) for the correct one.
+   */
   readonly consumeOAuthState: (
     tenantId: TenantId,
+    provider: OAuthProviderId,
     stateHash: string,
     now: Date,
   ) => StoreEffect<OAuthStateRecord | undefined>;
@@ -354,14 +360,14 @@ export const inMemoryAuthStore = (): InMemoryAuthStore => {
       Effect.sync(() => {
         state.oauthStates.set(scoped(record.tenantId, record.stateHash), record);
       }),
-    consumeOAuthState: (tenantId, hash, now) =>
+    consumeOAuthState: (tenantId, provider, hash, now) =>
       Effect.sync(() => {
         const key = scoped(tenantId, hash);
         const record = state.oauthStates.get(key);
+        // A callback for another provider must not burn this state.
+        if (record === undefined || record.provider !== provider) return undefined;
         state.oauthStates.delete(key);
-        return record === undefined || record.expiresAt.getTime() <= now.getTime()
-          ? undefined
-          : record;
+        return record.expiresAt.getTime() <= now.getTime() ? undefined : record;
       }),
     findOAuthIdentity: (tenantId, provider, subject) =>
       Effect.sync(() => state.oauthIdentities.get(oauthKey(tenantId, provider, subject))),

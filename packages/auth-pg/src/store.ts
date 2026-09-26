@@ -17,7 +17,7 @@ import {
   type TotpRecord,
 } from "@structure-ai/auth";
 import type { SQL } from "bun";
-import { Effect, Redacted } from "effect";
+import { Effect, Option, Redacted } from "effect";
 import { type AdapterOptions, tableNames } from "./schema.js";
 
 type DateValue = Date | string;
@@ -66,6 +66,7 @@ interface OAuthStateRow {
   readonly code_verifier: string;
   readonly redirect_uri: string;
   readonly return_to: string | null;
+  readonly flow_context: string | null;
   readonly expires_at: DateValue;
 }
 
@@ -167,15 +168,37 @@ const decodeSession = (row: SessionRow): SessionRecord => ({
   ...(row.elevated_at === null ? {} : { elevatedAt: date(row.elevated_at) }),
 });
 
-const decodeOAuthState = (row: OAuthStateRow): OAuthStateRecord => ({
-  tenantId: row.tenant_id,
-  provider: row.provider,
-  stateHash: row.state_hash,
-  codeVerifier: Redacted.make(row.code_verifier),
-  redirectUri: row.redirect_uri,
-  ...(row.return_to === null ? {} : { returnTo: row.return_to }),
-  expiresAt: date(row.expires_at),
-});
+const decodeFlowContext = (
+  value: string,
+): Record<string, string | number | boolean | null> | undefined => {
+  const parse = Option.liftThrowable((text: string) => JSON.parse(text) as unknown);
+  const parsed = Option.getOrUndefined(parse(value));
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  const entries = Object.entries(parsed as Record<string, unknown>).flatMap(
+    ([key, entry]): Array<[string, string | number | boolean | null]> =>
+      typeof entry === "string" ||
+      typeof entry === "number" ||
+      typeof entry === "boolean" ||
+      entry === null
+        ? [[key, entry]]
+        : [],
+  );
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+};
+
+const decodeOAuthState = (row: OAuthStateRow): OAuthStateRecord => {
+  const flowContext = row.flow_context === null ? undefined : decodeFlowContext(row.flow_context);
+  return {
+    tenantId: row.tenant_id,
+    provider: row.provider,
+    stateHash: row.state_hash,
+    codeVerifier: Redacted.make(row.code_verifier),
+    redirectUri: row.redirect_uri,
+    ...(row.return_to === null ? {} : { returnTo: row.return_to }),
+    ...(flowContext === undefined ? {} : { flowContext }),
+    expiresAt: date(row.expires_at),
+  };
+};
 
 const decodeOAuthIdentity = (row: OAuthIdentityRow): OAuthIdentity => ({
   tenantId: row.tenant_id,
@@ -418,26 +441,29 @@ export const makeAuthStore = (sql: SQL, options: AdapterOptions = {}): AuthStore
       write("put-oauth-state", record.tenantId, "oauth-state", async () => {
         await sql`
           INSERT INTO ${sql(tables.oauthStates)}
-            (tenant_id, provider, state_hash, code_verifier, redirect_uri, return_to, expires_at)
+            (tenant_id, provider, state_hash, code_verifier, redirect_uri, return_to, flow_context, expires_at)
           VALUES
             (${record.tenantId}, ${record.provider}, ${record.stateHash},
              ${Redacted.value(record.codeVerifier)}, ${record.redirectUri},
-             ${record.returnTo ?? null}, ${record.expiresAt.toISOString()})
+             ${record.returnTo ?? null},
+             ${record.flowContext === undefined ? null : JSON.stringify(record.flowContext)},
+             ${record.expiresAt.toISOString()})
           ON CONFLICT (tenant_id, state_hash) DO UPDATE SET
             provider = excluded.provider,
             code_verifier = excluded.code_verifier,
             redirect_uri = excluded.redirect_uri,
             return_to = excluded.return_to,
+            flow_context = excluded.flow_context,
             expires_at = excluded.expires_at
         `;
       }).pipe(Effect.asVoid),
-    consumeOAuthState: (tenantId, stateHash, now) =>
+    consumeOAuthState: (tenantId, provider, stateHash, now) =>
       read("consume-oauth-state", async () => {
         const rows = await sql<OAuthStateRow[]>`
           DELETE FROM ${sql(tables.oauthStates)}
-          WHERE tenant_id = ${tenantId} AND state_hash = ${stateHash}
+          WHERE tenant_id = ${tenantId} AND provider = ${provider} AND state_hash = ${stateHash}
           RETURNING tenant_id, provider, state_hash, code_verifier, redirect_uri, return_to,
-                    expires_at
+                    flow_context, expires_at
         `;
         const record = rows[0] === undefined ? undefined : decodeOAuthState(rows[0]);
         return record === undefined || record.expiresAt.getTime() <= now.getTime()
