@@ -6,13 +6,18 @@ import {
   type AppendResult,
   EventStore,
   type EventStoreService,
+  erasedTombstone,
   type OutboxMessage,
+  prepareStreamErasure,
   readAllPartitions,
   type StoredEvent,
   type StoredEventMetadata,
+  StreamEraser,
+  type StreamEraserService,
+  streamErasureConflict,
 } from "@structure-ai/eventsourcing";
-import { Cause, Effect, Layer, Stream } from "effect";
-import { conflictIdentity, encodeJson, toBigInt, toNumber } from "./internal.js";
+import { Cause, Context, Effect, Layer, Stream } from "effect";
+import { conflictIdentity, encodeJson, jsonText, toBigInt, toNumber } from "./internal.js";
 import { type AdapterOptions, type TableNames, tableNames } from "./schema.js";
 
 interface EventRow {
@@ -52,8 +57,16 @@ const isEventsVersionConflict = (error: SqlError, eventsTable: string): boolean 
   );
 };
 
+interface ErasedStreamRow {
+  readonly stream_name: string;
+  readonly last_version: number | bigint;
+  readonly erased_at: string;
+  readonly reason: string;
+}
+
 interface EventStoreWithOutbox {
   readonly service: EventStoreService;
+  readonly streamEraser: StreamEraserService;
   readonly appendWithOutbox: (
     streamName: string,
     expectedVersion: number,
@@ -128,11 +141,13 @@ const make = (
       );
 
     /**
-     * The transactional append: version check, event inserts, and outbox
-     * inserts all inside one transaction. The `UNIQUE(stream_name, version)`
-     * constraint is the backstop for races the in-transaction check cannot
-     * see; its violation is re-mapped to `ConcurrencyConflict` (with the
-     * actual version re-read after rollback).
+     * The transactional append: ledger check, version check, event inserts,
+     * and outbox inserts all inside one transaction. The
+     * `UNIQUE(stream_name, version)` constraint is the backstop for races the
+     * in-transaction check cannot see; its violation is re-mapped to
+     * `ConcurrencyConflict` (with the actual version re-read after rollback).
+     * An erased stream is pinned forever: the ledger check fails the append
+     * as a `ConcurrencyConflict` at the recorded version.
      */
     const appendTransaction = (
       streamName: string,
@@ -143,6 +158,15 @@ const make = (
       sql
         .withTransaction(
           Effect.gen(function* () {
+            const erasedRows = yield* sql<ErasedStreamRow>`
+              SELECT stream_name, last_version, erased_at, reason
+              FROM ${sql(tables.erasedStreams)}
+              WHERE stream_name = ${streamName}
+            `;
+            const erased = erasedRows[0];
+            if (erased !== undefined) {
+              return yield* conflict(streamName, expectedVersion, toNumber(erased.last_version));
+            }
             const actualVersion = yield* currentVersion(streamName);
             if (actualVersion !== expectedVersion) {
               return yield* conflict(streamName, expectedVersion, actualVersion);
@@ -247,7 +271,85 @@ const make = (
       },
     });
 
-    return { service, appendWithOutbox: appendTransaction };
+    const streamEraser = StreamEraser.of({
+      eraseStream: (request) =>
+        Effect.gen(function* () {
+          yield* prepareStreamErasure(request);
+          const erasedAt = new Date().toISOString();
+          const result = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const recordedRows = yield* sql<ErasedStreamRow>`
+                  SELECT stream_name, last_version, erased_at, reason
+                  FROM ${sql(tables.erasedStreams)}
+                  WHERE stream_name = ${request.streamName}
+                `;
+                const recorded = recordedRows[0];
+                if (recorded !== undefined) {
+                  if (request.expectedVersion !== toNumber(recorded.last_version)) {
+                    return yield* streamErasureConflict(
+                      request.streamName,
+                      request.expectedVersion,
+                      toNumber(recorded.last_version),
+                    );
+                  }
+                  return {
+                    erasedEvents: 0,
+                    lastVersion: toNumber(recorded.last_version),
+                    erasedAt: recorded.erased_at,
+                    reason: recorded.reason,
+                  };
+                }
+                const actualVersion = yield* currentVersion(request.streamName);
+                if (actualVersion !== request.expectedVersion) {
+                  return yield* streamErasureConflict(
+                    request.streamName,
+                    request.expectedVersion,
+                    actualVersion,
+                  );
+                }
+                // One UPDATE per version: every tombstone's metadata carries
+                // its own version (mirroring the in-memory adapter), so
+                // re-reads stay consistent row by row.
+                for (let version = 1; version <= request.expectedVersion; version++) {
+                  const tombstone = erasedTombstone(request.streamName, version, erasedAt);
+                  yield* sql`
+                    UPDATE ${sql(tables.events)}
+                    SET type = ${tombstone.type},
+                        schema_version = ${tombstone.schemaVersion},
+                        payload = ${jsonText(tombstone.payload)},
+                        metadata = ${jsonText(tombstone.metadata)}
+                    WHERE stream_name = ${request.streamName} AND version = ${version}
+                  `;
+                }
+                yield* sql`
+                  DELETE FROM ${sql(tables.snapshots)}
+                  WHERE stream_name = ${request.streamName}
+                `;
+                yield* sql`
+                  INSERT INTO ${sql(tables.erasedStreams)}
+                    (stream_name, last_version, erased_at, reason)
+                  VALUES
+                    (${request.streamName}, ${request.expectedVersion}, ${erasedAt}, ${request.reason})
+                `;
+                return {
+                  erasedEvents: request.expectedVersion,
+                  lastVersion: request.expectedVersion,
+                  erasedAt,
+                  reason: request.reason,
+                };
+              }),
+            )
+            .pipe(
+              Effect.catchTag("SqlError", (error) =>
+                Effect.fail(new PersistenceError({ operation: "StreamEraser", cause: error })),
+              ),
+            );
+          return result;
+        }),
+    });
+
+    return { service, streamEraser, appendWithOutbox: appendTransaction };
   });
 
 /**
@@ -275,8 +377,9 @@ export const appendWithOutbox = (
 /** `EventStore` backed by the `events` table of the `SqlClient` in context. */
 export const eventStoreLayer = (
   options?: AdapterOptions,
-): Layer.Layer<EventStore, never, SqlClient.SqlClient> =>
-  Layer.effect(
-    EventStore,
-    Effect.map(make(tableNames(options)), (store) => store.service),
+): Layer.Layer<EventStore | StreamEraser, never, SqlClient.SqlClient> =>
+  Layer.effectContext(
+    Effect.map(make(tableNames(options)), (store) =>
+      Context.make(EventStore, store.service).pipe(Context.add(StreamEraser, store.streamEraser)),
+    ),
   );

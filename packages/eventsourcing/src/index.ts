@@ -54,3 +54,15 @@ export {
 } from "./Outbox.js";
 export * as Projection from "./Projection.js";
 export { type Snapshot, SnapshotStore, type SnapshotStoreService } from "./SnapshotStore.js";
+export {
+  ERASED_EVENT_TYPE,
+  erasedTombstone,
+  prepareStreamErasure,
+  StreamEraser,
+  type StreamEraserService,
+  StreamErasureError,
+  type StreamErasureFailureReason,
+  type StreamErasureRequest,
+  type StreamErasureResult,
+  streamErasureConflict,
+} from "./StreamErasure.js";

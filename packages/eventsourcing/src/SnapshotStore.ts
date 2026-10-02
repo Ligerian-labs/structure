@@ -23,6 +23,11 @@ export interface SnapshotStoreService {
   readonly load: (streamName: string) => Effect.Effect<Option.Option<Snapshot>, PersistenceError>;
   /** Stores `snapshot` as the latest for the stream, replacing any previous one. */
   readonly save: (streamName: string, snapshot: Snapshot) => Effect.Effect<void, PersistenceError>;
+  /**
+   * Deletes the stream's snapshot. Whether a missing snapshot is an error is
+   * caller policy: this is an unconditional delete, not an upsert.
+   */
+  readonly remove?: (streamName: string) => Effect.Effect<void, PersistenceError>;
 }
 
 /** Service tag for the snapshot store port. */

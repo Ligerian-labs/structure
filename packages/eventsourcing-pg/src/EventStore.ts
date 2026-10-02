@@ -6,6 +6,7 @@ import {
   type AppendResult,
   EventStore,
   type EventStoreService,
+  erasedTombstone,
   HistoryImporter,
   type HistoryImporterService,
   type HistoryImportResult,
@@ -14,13 +15,18 @@ import {
   historyImportResumeToken,
   type OutboxMessage,
   prepareHistoryImportBatch,
+  prepareStreamErasure,
   readAllPartitions,
   type StoredEvent,
   type StoredEventMetadata,
+  StreamEraser,
+  type StreamEraserService,
+  type StreamErasureResult,
+  streamErasureConflict,
   validateHistoryImportContinuation,
 } from "@structure-ai/eventsourcing";
 import { Cause, Context, Effect, Layer, Stream } from "effect";
-import { conflictIdentity, encodeJson, toBigInt, toNumber } from "./internal.js";
+import { conflictIdentity, encodeJson, jsonText, toBigInt, toNumber } from "./internal.js";
 import { type AdapterOptions, type TableNames, tableNames } from "./schema.js";
 
 /**
@@ -69,12 +75,20 @@ const isEventsVersionConflict = (error: SqlError, eventsTable: string): boolean 
 interface EventStoreWithOutbox {
   readonly service: EventStoreService;
   readonly historyImporter: HistoryImporterService;
+  readonly streamEraser: StreamEraserService;
   readonly appendWithOutbox: (
     streamName: string,
     expectedVersion: number,
     events: ReadonlyArray<AppendEvent>,
     messages: ReadonlyArray<OutboxMessage>,
   ) => Effect.Effect<AppendResult, ConcurrencyConflict | SqlError | PersistenceError>;
+}
+
+interface ErasedStreamRow {
+  readonly stream_name: string;
+  readonly last_version: number | bigint | string;
+  readonly erased_at: string;
+  readonly reason: string;
 }
 
 interface HistoryImportRow {
@@ -130,6 +144,22 @@ const make = (
       const { entity, id } = conflictIdentity(streamName);
       return new ConcurrencyConflict({ entity, id, expectedVersion, actualVersion });
     };
+
+    /**
+     * Serializes append vs erasure for one stream across pool connections.
+     * Under READ COMMITTED the ledger check alone cannot stop an erase that
+     * commits between an append's check and its inserts: the UNIQUE
+     * `(stream_name, version)` backstop never fires because the erased stream
+     * keeps its rows. A transaction-scoped advisory lock keyed by the stream
+     * name (in an arena private to this table set, so prefixes coexist) makes
+     * append-vs-erase linearizable; both paths take it before reading state.
+     */
+    const lockStream = (streamName: string): Effect.Effect<void, SqlError> =>
+      Effect.asVoid(sql`
+        SELECT pg_advisory_xact_lock(
+          hashtext(${tables.events}), hashtext(${streamName})
+        )
+      `);
 
     const insertEvents = (
       streamName: string,
@@ -202,6 +232,14 @@ const make = (
      * its violation is re-mapped to `ConcurrencyConflict` (with the actual
      * version re-read after rollback). Appends that insert events hold
      * `serializeCommitOrder` from their first insert to their commit.
+     * The transactional append: stream lock, ledger check, version check,
+     * event inserts, and outbox inserts all inside one transaction. Under
+     * READ COMMITTED two concurrent appends can both pass the version check;
+     * the `UNIQUE(stream_name, version)` constraint then kills the loser, and
+     * its violation is re-mapped to `ConcurrencyConflict` (with the actual
+     * version re-read after rollback). An erased stream is pinned forever:
+     * the ledger check fails the append as a `ConcurrencyConflict` at the
+     * recorded version.
      */
     const appendTransaction = (
       streamName: string,
@@ -212,6 +250,16 @@ const make = (
       sql
         .withTransaction(
           Effect.gen(function* () {
+            yield* lockStream(streamName);
+            const erasedRows = yield* sql<ErasedStreamRow>`
+              SELECT stream_name, last_version, erased_at, reason
+              FROM ${sql(tables.erasedStreams)}
+              WHERE stream_name = ${streamName}
+            `;
+            const erased = erasedRows[0];
+            if (erased !== undefined) {
+              return yield* conflict(streamName, expectedVersion, toNumber(erased.last_version));
+            }
             const actualVersion = yield* currentVersion(streamName);
             if (actualVersion !== expectedVersion) {
               return yield* conflict(streamName, expectedVersion, actualVersion);
@@ -329,6 +377,20 @@ const make = (
                 yield* sql`LOCK TABLE ${sql(tables.events)} IN EXCLUSIVE MODE`;
                 yield* sql`LOCK TABLE ${sql(tables.historyImports)} IN EXCLUSIVE MODE`;
                 yield* sql`LOCK TABLE ${sql(tables.historyImportBatches)} IN EXCLUSIVE MODE`;
+
+                // A target with erased streams mixes histories: erasure pins
+                // its streams and rewrites ids, but a resuming import could
+                // still re-insert content past the erased versions (max
+                // position is unchanged by erasure). Refuse instead.
+                const erasedAny = yield* sql<{ readonly one: number | null }>`
+                  SELECT 1 AS one FROM ${sql(tables.erasedStreams)} LIMIT 1
+                `;
+                if (erasedAny.length > 0) {
+                  return yield* historyImportConflict(
+                    "target-not-empty",
+                    "a target with erased streams cannot be imported into",
+                  );
+                }
 
                 const recordedRows = yield* sql<HistoryImportBatchRow>`
                   SELECT previous_token, checksum, complete, imported_count,
@@ -490,7 +552,86 @@ const make = (
         }),
     });
 
-    return { service, historyImporter, appendWithOutbox: appendTransaction };
+    const streamEraser = StreamEraser.of({
+      eraseStream: (request) =>
+        Effect.gen(function* () {
+          yield* prepareStreamErasure(request);
+          const erasedAt = new Date().toISOString();
+          const result = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                // Same per-stream lock the append path takes: under READ
+                // COMMITTED a concurrent append's version check and this
+                // rewrite must not interleave, or the erased version range
+                // could be re-populated by the append's inserts.
+                yield* lockStream(request.streamName);
+                const recordedRows = yield* sql<ErasedStreamRow>`
+                SELECT stream_name, last_version, erased_at, reason
+                FROM ${sql(tables.erasedStreams)}
+                WHERE stream_name = ${request.streamName}
+              `;
+                const recorded = recordedRows[0];
+                if (recorded !== undefined) {
+                  if (request.expectedVersion !== toNumber(recorded.last_version)) {
+                    return yield* streamErasureConflict(
+                      request.streamName,
+                      request.expectedVersion,
+                      toNumber(recorded.last_version),
+                    );
+                  }
+                  return {
+                    erasedEvents: 0,
+                    lastVersion: toNumber(recorded.last_version),
+                    erasedAt: recorded.erased_at,
+                    reason: recorded.reason,
+                  };
+                }
+                const actualVersion = yield* currentVersion(request.streamName);
+                if (actualVersion !== request.expectedVersion) {
+                  return yield* streamErasureConflict(
+                    request.streamName,
+                    request.expectedVersion,
+                    actualVersion,
+                  );
+                }
+                // One UPDATE per version: every tombstone's metadata carries
+                // its own version (mirroring the other adapters), so re-reads
+                // stay consistent row by row.
+                for (let version = 1; version <= request.expectedVersion; version++) {
+                  const tombstone = erasedTombstone(request.streamName, version, erasedAt);
+                  yield* sql`
+                  UPDATE ${sql(tables.events)}
+                  SET type = ${tombstone.type},
+                      schema_version = ${tombstone.schemaVersion},
+                      payload = ${jsonText(tombstone.payload)}::jsonb,
+                      metadata = ${jsonText(tombstone.metadata)}::jsonb
+                  WHERE stream_name = ${request.streamName} AND version = ${version}
+                `;
+                }
+                yield* sql`
+                DELETE FROM ${sql(tables.snapshots)}
+                WHERE stream_name = ${request.streamName}
+              `;
+                yield* sql`
+                INSERT INTO ${sql(tables.erasedStreams)}
+                  (stream_name, last_version, erased_at, reason)
+                VALUES
+                  (${request.streamName}, ${request.expectedVersion}, ${erasedAt}, ${request.reason})
+              `;
+                return {
+                  erasedEvents: request.expectedVersion,
+                  lastVersion: request.expectedVersion,
+                  erasedAt,
+                  reason: request.reason,
+                };
+              }),
+            )
+            .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
+          return result satisfies StreamErasureResult;
+        }),
+    });
+
+    return { service, historyImporter, streamEraser, appendWithOutbox: appendTransaction };
   });
 
 /**
@@ -515,14 +656,15 @@ export const appendWithOutbox = (
     store.appendWithOutbox(streamName, expectedVersion, events, messages),
   );
 
-/** `EventStore` backed by the `events` table of the `SqlClient` in context. */
+/** `EventStore` (with `HistoryImporter` and `StreamEraser`) backed by the `events` table of the `SqlClient` in context. */
 export const eventStoreLayer = (
   options?: AdapterOptions,
-): Layer.Layer<EventStore | HistoryImporter, never, SqlClient.SqlClient> =>
+): Layer.Layer<EventStore | HistoryImporter | StreamEraser, never, SqlClient.SqlClient> =>
   Layer.effectContext(
     Effect.map(make(tableNames(options)), (store) =>
       Context.make(EventStore, store.service).pipe(
         Context.add(HistoryImporter, store.historyImporter),
+        Context.add(StreamEraser, store.streamEraser),
       ),
     ),
   );

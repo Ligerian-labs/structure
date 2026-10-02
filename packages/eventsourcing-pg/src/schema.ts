@@ -14,6 +14,7 @@ export interface TableNames {
   readonly events: string;
   readonly historyImports: string;
   readonly historyImportBatches: string;
+  readonly erasedStreams: string;
   readonly snapshots: string;
   readonly checkpoints: string;
   readonly outbox: string;
@@ -28,6 +29,7 @@ export const tableNames = (options?: AdapterOptions): TableNames => {
     events: `${prefix}events`,
     historyImports: `${prefix}history_imports`,
     historyImportBatches: `${prefix}history_import_batches`,
+    erasedStreams: `${prefix}erased_streams`,
     snapshots: `${prefix}snapshots`,
     checkpoints: `${prefix}checkpoints`,
     outbox: `${prefix}outbox`,
@@ -93,6 +95,14 @@ const createTables = (
         last_position BIGINT NOT NULL,
         result_token TEXT NOT NULL,
         PRIMARY KEY (import_id, batch_id)
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS ${sql(tables.erasedStreams)} (
+        stream_name TEXT PRIMARY KEY,
+        last_version INTEGER NOT NULL,
+        erased_at TEXT NOT NULL,
+        reason TEXT NOT NULL
       )
     `;
     yield* sql`
