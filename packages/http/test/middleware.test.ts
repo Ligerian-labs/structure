@@ -215,8 +215,11 @@ describe("correlation sanitizing", () => {
     expect(correlationId).toMatch(UUID);
     expect(lastRequestLine().annotations.requestId).toBe(requestId);
     expect(lastRequestLine().annotations.correlationId).toBe(correlationId);
+    // Needles must contain non-hex characters: the replacement ids are fresh
+    // UUIDs ([0-9a-f-]), and a purely hex needle such as "bad" can occur
+    // inside one by chance and fail a healthy run.
     expect(allLogText()).not.toContain("evil");
-    expect(allLogText()).not.toContain("bad");
+    expect(allLogText()).not.toContain("also");
   });
 
   test("ids longer than 64 characters are replaced", async () => {
