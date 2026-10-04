@@ -11,6 +11,7 @@ import {
   type OAuthHttpClient,
   RateLimitExceeded,
   type TenantAuthConfig,
+  validateFlowContext,
 } from "../src/index.js";
 
 const credentials = (clientId: string) => ({
@@ -253,6 +254,31 @@ describe("OAuth providers", () => {
     );
     expect(error).toBeInstanceOf(AuthValidationError);
     expect(memory.snapshot().oauthStates).toHaveLength(0);
+  });
+
+  test("validateFlowContext accepts unvalidated input at the boundary", async () => {
+    // Non-object shapes must fail validation, not crash or coerce.
+    for (const invalid of ["sign-up", 42, true, null, ["sign-up"]] as const) {
+      const error = await Effect.runPromise(Effect.flip(validateFlowContext(invalid)));
+      expect(error).toBeInstanceOf(AuthValidationError);
+      expect(error.field).toBe("flowContext");
+      expect(error.reason).toContain("must be an object");
+    }
+    // Arrays pass the object check in JSON bodies but must still be rejected.
+    expect((await Effect.runPromise(Effect.flip(validateFlowContext([])))).reason).toContain(
+      "must be an object",
+    );
+    // Nested objects are not JSON primitives and are rejected with the offending type.
+    expect(
+      (await Effect.runPromise(Effect.flip(validateFlowContext({ nested: { deep: true } }))))
+        .reason,
+    ).toContain("got object");
+    // Valid primitives round-trip; empty objects normalize to undefined (nothing persisted).
+    expect(
+      await Effect.runPromise(validateFlowContext({ intent: "sign-up", n: 1, ok: true, x: null })),
+    ).toEqual({ intent: "sign-up", n: 1, ok: true, x: null });
+    expect(await Effect.runPromise(validateFlowContext({}))).toBeUndefined();
+    expect(await Effect.runPromise(validateFlowContext(undefined))).toBeUndefined();
   });
 
   test("does not link a verified matching email unless policy explicitly allows it", async () => {

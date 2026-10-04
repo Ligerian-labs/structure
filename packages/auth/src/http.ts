@@ -14,6 +14,7 @@ import {
   UnsupportedPasskey,
 } from "./errors.js";
 import type { OAuthProviderId, TenantId } from "./model.js";
+import { validateFlowContext } from "./oauth.js";
 import type { AuthService, AuthServiceError } from "./service.js";
 import type { PasskeyAuthenticationResponse, PasskeyRegistrationResponse } from "./webauthn.js";
 
@@ -148,31 +149,7 @@ const flowContextField = (
 ): Effect.Effect<
   Record<string, string | number | boolean | null> | undefined,
   AuthValidationError
-> => {
-  const value = body.flowContext;
-  if (value === undefined) return Effect.succeed(undefined);
-  if (!isRecord(value)) {
-    return Effect.fail(
-      new AuthValidationError({ field: "flowContext", reason: "must be an object" }),
-    );
-  }
-  for (const entry of Object.values(value)) {
-    if (
-      typeof entry !== "string" &&
-      typeof entry !== "number" &&
-      typeof entry !== "boolean" &&
-      entry !== null
-    ) {
-      return Effect.fail(
-        new AuthValidationError({
-          field: "flowContext",
-          reason: "values must be JSON primitives (string, number, boolean, or null)",
-        }),
-      );
-    }
-  }
-  return Effect.succeed(value as Record<string, string | number | boolean | null>);
-};
+> => validateFlowContext(body.flowContext);
 
 const registrationResponse = (
   body: Record<string, unknown>,
