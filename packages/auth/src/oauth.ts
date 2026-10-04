@@ -381,7 +381,7 @@ export const validateReturnTo = (
  */
 export const MAX_OAUTH_FLOW_CONTEXT_BYTES = 2_048;
 
-const isJsonPrimitive = (value: unknown): boolean =>
+const isJsonPrimitive = (value: unknown): value is string | number | boolean | null =>
   typeof value === "string" ||
   typeof value === "number" ||
   typeof value === "boolean" ||
@@ -393,23 +393,34 @@ const isJsonPrimitive = (value: unknown): boolean =>
  * and can never smuggle structured payloads past validation.
  */
 export const validateFlowContext = (
-  flowContext: Record<string, string | number | boolean | null> | undefined,
+  flowContext: unknown,
 ): Effect.Effect<
   Record<string, string | number | boolean | null> | undefined,
   AuthValidationError
 > => {
   if (flowContext === undefined) return Effect.succeed(undefined);
+  if (!isRecord(flowContext)) {
+    return Effect.fail(
+      new AuthValidationError({ field: "flowContext", reason: "must be an object" }),
+    );
+  }
   const entries = Object.entries(flowContext);
   if (entries.length === 0) return Effect.succeed(undefined);
-  if (entries.some(([, value]) => !isJsonPrimitive(value))) {
+  const invalid = entries.find(([, value]) => !isJsonPrimitive(value));
+  if (invalid !== undefined) {
     return Effect.fail(
       new AuthValidationError({
         field: "flowContext",
-        reason: "values must be JSON primitives (string, number, boolean, or null)",
+        reason: `values must be JSON primitives (string, number, boolean, or null), got ${typeof invalid[1]}`,
       }),
     );
   }
-  if (new TextEncoder().encode(JSON.stringify(flowContext)).length > MAX_OAUTH_FLOW_CONTEXT_BYTES) {
+  const safe: Record<string, string | number | boolean | null> = Object.fromEntries(
+    entries.filter((entry): entry is [string, string | number | boolean | null] =>
+      isJsonPrimitive(entry[1]),
+    ),
+  );
+  if (new TextEncoder().encode(JSON.stringify(safe)).length > MAX_OAUTH_FLOW_CONTEXT_BYTES) {
     return Effect.fail(
       new AuthValidationError({
         field: "flowContext",
@@ -417,5 +428,5 @@ export const validateFlowContext = (
       }),
     );
   }
-  return Effect.succeed(flowContext);
+  return Effect.succeed(safe);
 };
