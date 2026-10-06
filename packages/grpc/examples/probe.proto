@@ -1,0 +1,9 @@
+syntax = "proto3";
+package structure.probe;
+message Text { string value = 1; }
+service Probe {
+ rpc Unary(Text) returns (Text);
+ rpc Watch(Text) returns (stream Text);
+ rpc Upload(stream Text) returns (Text);
+ rpc Chat(stream Text) returns (stream Text);
+}

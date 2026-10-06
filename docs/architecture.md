@@ -6,7 +6,7 @@ How the `@structure-ai/*` packages compose into an application, and the rules th
 
 ```mermaid
 flowchart LR
-    Client -->|HTTP / CLI / MCP| Edge[http · cli · mcp]
+    Client -->|HTTP / CLI / MCP / gRPC| Edge[http · cli · mcp · grpc]
     Edge -->|dispatch| Bus[cqrs CommandBus]
     Bus -->|validate · authorize · idempotency · trace| Handler[command handler]
     Handler --> AS[eventsourcing AggregateStore]
@@ -21,7 +21,7 @@ flowchart LR
     ViewStore --> View
 ```
 
-- The **edge** (`http`, `cli`, `mcp`) translates transport concerns and dispatches; it holds no business logic.
+- The **edge** (`http`, `cli`, `mcp`, `grpc`) translates transport concerns and dispatches; it holds no business logic.
 - The **bus** (`cqrs`) owns boundary validation (shape), authorization of the action, idempotency keys (scoped per actor and command, bound to a payload hash, claimed before the handler runs), tracing/metrics. Business rules live one step deeper.
 - **Authorization** (`authorization`) is a typed policy value (roles × `resource:action` permissions, conditional grants, scoped roles) checked against the `Principal` attached to the fiber; the bus `Authorizer` and HTTP guards are adapters over it. It fails closed and distinguishes `Unauthenticated` (401) from `PermissionDenied` (403).
 - The **aggregate** (`domain`) is a pure decider: `decide` accepts/rejects, `evolve` folds. The same definition serves state-stored and event-sourced persistence.
@@ -36,20 +36,20 @@ flowchart TD
     config --> observability
     config --> dotenv
     cli --> dotenvcli[dotenv/cli]
-    observability --> cqrs & runtime & http & cli & ai
+    observability --> cqrs & runtime & http & cli & grpc & ai
     domain --> cqrs --> eventsourcing
     eventsourcing --> essqlite[eventsourcing-sqlite] & espg[eventsourcing-pg] & esnisshi[eventsourcing-nisshi]
     eventsourcing --> viewmodel
     migrations --> viewmodel
-    runtime --> http & cli
-    cqrs --> mcp
+    runtime --> http & cli & grpc
+    cqrs --> mcp & grpc
     auth --> authsqlite[auth-sqlite] & authpg[auth-pg]
     cqrs --> authorization
 ```
 
 **MCP as an OAuth 2.1 protected resource.** `mcp`'s HTTP transport takes an optional `auth` block: a `verify(token, request)` hook the application implements (typically `makeAuthorizationServer(...).verifyAccessToken` from `auth`, or any introspection call) and the RFC 9728 metadata to publish. The package rejects missing/invalid bearers with `401` and a `WWW-Authenticate: Bearer resource_metadata=…` challenge, serves `/.well-known/oauth-protected-resource`, refuses `tools/call` on a tool whose declared `scopes` the token lacks with `403 insufficient_scope`, and runs the request on behalf of the verified principal. The principal type is structural (compatible with `authorization`'s `Principal`), and a `within` hook lets the application pass `Principal.within` so its policy guards apply — the three packages compose in the app, never through package dependencies.
 
-No cycles; `dotenv` sits above `config` (it feeds `load(settings, { env })` and never becomes a runtime dependency — applications load `.env` files explicitly at their entrypoint, ADR-0017); `migrations` and `auth` are standalone foundations (`auth` depends only on Effect), while the auth SQL adapters depend on `auth` and Bun's built-in database clients. `ai`, `mcp`, `playwright` and `authorization` are leaves (`http`/`mcp` never depend on `authorization` — applications compose its guards with their endpoints and tools; `authorization` never depends on `auth` — applications turn an authenticated session into a `Principal`). Auth applications inject tenant configuration, persistence, mail, audit, rate limits, and external HTTP at composition time rather than coupling authentication to another context's tables. A PR that needs to violate this direction is redesigning the system and needs an ADR.
+No cycles; `dotenv` sits above `config` (it feeds `load(settings, { env })` and never becomes a runtime dependency — applications load `.env` files explicitly at their entrypoint, ADR-0017); `migrations` and `auth` are standalone foundations (`auth` depends only on Effect), while the auth SQL adapters depend on `auth` and Bun's built-in database clients. `ai`, `mcp`, `grpc`, `playwright` and `authorization` are leaves (`http`/`mcp`/`grpc` never depend on `authorization` — applications compose its guards with their endpoints and tools; `authorization` never depends on `auth` — applications turn an authenticated session into a `Principal`). Auth applications inject tenant configuration, persistence, mail, audit, rate limits, and external HTTP at composition time rather than coupling authentication to another context's tables. A PR that needs to violate this direction is redesigning the system and needs an ADR.
 
 ## Authentication boundary
 
@@ -96,3 +96,11 @@ The classification is decided where the error is born and preserved across layer
 Persistence ports and their callers expose `PersistenceError`; adapters no longer turn routine SQL, broker or stored-data failures into defects to satisfy `E = never`. CQRS handlers accept this infrastructure error separately from their declared public business schemas. HTTP returns a safe 500 for it. Its default classification prevents automatic retries of ambiguous writes.
 
 Use typed recovery for expected failures. At a transport, process or worker boundary that must inspect a `Cause`, preserve cancellation and defects before considering recovery. A matching tag is insufficient at an unknown boundary. See [ADR-0020](decisions/0020-typed-persistence-and-cause-boundaries.md) for the contract and upgrade guidance.
+
+## Native gRPC boundary
+
+[`@structure-ai/grpc`](../packages/grpc/README.md) adapts generated Protobuf-ES service descriptors to scoped native HTTP/2 gRPC through grpc-js. Applications own `.proto` field numbers and generation. Effect handles unary work, Effect Stream handles the three streaming forms, and callback adaptation stays inside grpc. The independent standard-peer tests cover all four forms in both directions.
+
+The application verifies metadata and returns the actor plus a fiber-context hook, such as `Principal.within`. grpc never treats actor metadata as identity and has no auth/authorization dependency. Its unary command/query bridge translates protobuf messages and forwards actor, correlation, idempotency key and remaining deadline; CQRS keeps shape validation, policy, idempotency and business rules. Streams can use application services directly.
+
+Declared failures use an explicit schema plus protobuf error codec in versioned binary terminal metadata, with FAILED_PRECONDITION. They retain their typed error channel even after prior stream messages. Unexpected failures use fixed safe statuses. Transport retries are disabled; applications own bounded policies with an explicit command idempotency guarantee. See [ADR-0021](decisions/0021-native-grpc-effect-adapter.md) for the public contract and runtime evidence. Bun 1.3.14 fails the native blocked-consumer reproduction; repository-pinned Bun 1.4.1 passes it.

@@ -1,0 +1,42 @@
+{
+  "name": "@structure-ai/grpc",
+  "version": "0.0.0",
+  "description": "Effect-native native gRPC server, client, streams and CQRS adapters.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/grpc"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "examples"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@structure-ai/observability": "workspace:*",
+    "@structure-ai/cqrs": "workspace:*",
+    "@structure-ai/runtime": "workspace:*",
+    "@grpc/grpc-js": "catalog:",
+    "@bufbuild/protobuf": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:",
+    "@bufbuild/protoc-gen-es": "catalog:",
+    "@connectrpc/connect": "catalog:",
+    "@connectrpc/connect-node": "catalog:"
+  }
+}
