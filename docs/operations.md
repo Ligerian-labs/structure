@@ -82,3 +82,15 @@ Inspect `PersistenceError.operation` and its cause in controlled diagnostics; ne
 A jobs worker stops on queue failures, defects or compound handler causes instead of silently losing a child fiber. Supervise `runWorker`; `workerLayer` logs failures and reports a stopped worker through readiness when available. The Nisshi relay retries transient broker failures only; permanent broker errors and SQL failures need operator recovery. Pending Nisshi rows can publish after an append reported failure.
 
 Second-factor enrollment lookup failures must prevent session creation. Wire `totp.isEnrolled` directly into the auth hook; never recover a failed lookup as `false`.
+
+## Native gRPC listeners and channels
+
+[`grpc`](../packages/grpc/README.md) acquires its listener and reusable client channels in Effect scopes. Validate typed address, explicit TLS/insecure mode, message limits, queue/concurrency limits, deadlines and drain budget before serving. Supply TLS material through application configuration; private keys stay `Redacted`. IP connection targets need an explicit certificate DNS server name on Bun. Certificate rotation requires replacing the resource.
+
+Listener acquisition registers a Readiness check and a Shutdown finalizer. Set readiness only after all resources exist. On shutdown grpc stops admitting handler work, drains native calls for `graceMs` and then closes sessions and interrupts remaining fibers. The coordinator's per-finalizer timeout must exceed grpc's grace, with room for cooperative cleanup, and the process grace must cover all finalizers. The scope finalizer performs the same idempotent close. Avoid uninterruptible blocking handler work or finalizers.
+
+Watch `grpc_server`/`grpc_client` call/error counters and duration histograms by generated service/method/status, and their boundary spans/logs via sanitized correlation. Bodies, arbitrary metadata and credentials never enter framework telemetry. RESOURCE_EXHAUSTED points to message/concurrency/session budgets; UNAVAILABLE points to transport or an in-flight idempotency claim; DEADLINE_EXCEEDED means the full call or bus budget expired. Business failures use FAILED_PRECONDITION and the application's declared protobuf error trailer. Inspect those through the typed client, never by logging raw error metadata. grpc-js verbose diagnostics are development-only and can include metadata.
+
+Transport retry is disabled, including resolver policies. Keep one application retry owner, bounded by an overall deadline, with durable idempotency for replayed commands. Established streams require application resume semantics rather than automatic replay.
+
+Use repository-pinned Bun 1.4.1 for grpc. Run the retained `packages/grpc/test/fixtures/backpressure.mjs` with a candidate runtime before upgrading or deploying. It must stop production when its 16-message native readable buffer is full; Bun 1.3.14 continues buffering and cannot satisfy this package's requirements. The package tests additionally exercise cancellation, bounded shutdown, TLS and independent native peers without external services.
