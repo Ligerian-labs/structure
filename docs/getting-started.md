@@ -145,7 +145,7 @@ export const accountsProjection = ViewProjection.make({
 
 Queries read `ViewStore.make(AccountView)` — never the event streams.
 
-In-memory adapters expose an `EventBus`, so `accountsProjection.run()` waits for appends without polling. SQL applications share `EventBus.layer` with their workers and wrap the outermost committing command with `EventBus.notifyAfter`. See [projection notifications](../packages/eventsourcing/README.md#running-projections-without-polling) for transaction boundaries and external writers.
+In-memory adapters expose an `EventBus`, so `accountsProjection.run()` waits for appends without polling. PostgreSQL `layer()` supplies a bus across processes and signals committed event inserts automatically. SQLite applications share `EventBus.layer` with their workers and wrap the outermost committing transaction with `EventBus.notifyAfter`. See [projection notifications](../packages/eventsourcing/README.md#running-projections-without-polling) for transaction boundaries and external writers.
 
 ## 6. HTTP (`@structure-ai/http`)
 

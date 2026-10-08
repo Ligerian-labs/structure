@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { PersistenceError } from "@structure-ai/domain";
 import { Cause, Deferred, Effect, Exit, Fiber, Option, Scope } from "effect";
 import { EventBus, EventStore, InMemoryEventStore } from "../src/index.js";
 import { testMetadata } from "./fixtures.js";
@@ -41,6 +42,35 @@ describe("EventBus", () => {
         yield* bus.notify;
         yield* Fiber.join(pending);
       }).pipe(Effect.provide(EventBus.layer), Effect.scoped, Effect.timeout("2 seconds")),
+    );
+  });
+
+  test("notifyAfter exposes transport failure after commit and preserves an earlier failure", async () => {
+    const failure = new PersistenceError({ operation: "EventBus.notify", cause: "disconnected" });
+    let commits = 0;
+    let notifications = 0;
+    const bus = EventBus.of({
+      notify: Effect.sync(() => {
+        notifications += 1;
+      }).pipe(Effect.andThen(Effect.fail(failure))),
+      subscribe: Effect.succeed(Effect.never),
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const committed = yield* Effect.exit(
+          EventBus.notifyAfter(
+            Effect.sync(() => {
+              commits += 1;
+            }),
+          ),
+        );
+        expect(committed).toEqual(Exit.fail(failure));
+        expect(commits).toBe(1);
+        expect(notifications).toBe(1);
+        const rejected = yield* Effect.exit(EventBus.notifyAfter(Effect.fail("rejected")));
+        expect(rejected).toEqual(Exit.fail("rejected"));
+        expect(notifications).toBe(1);
+      }).pipe(Effect.provideService(EventBus, bus)),
     );
   });
 

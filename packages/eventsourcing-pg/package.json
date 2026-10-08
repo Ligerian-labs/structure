@@ -31,7 +31,9 @@
     "@effect/sql-pg": "catalog:",
     "@structure-ai/cqrs": "workspace:*",
     "@structure-ai/domain": "workspace:*",
-    "@structure-ai/eventsourcing": "workspace:*"
+    "@structure-ai/eventsourcing": "workspace:*",
+    "pg": "catalog:",
+    "@types/pg": "catalog:"
   },
   "devDependencies": {
     "typescript": "catalog:",

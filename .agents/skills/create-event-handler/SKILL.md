@@ -29,7 +29,7 @@ const invoiceStats = Projection.make({
 ```
 
 3. Run it: `Projection.catchup` (process until caught up — tests, batch jobs), `Projection.run` (wait on an ambient `EventBus`, otherwise poll — a worker process), `Projection.rebuild(projection, reset)` (reset + full replay with `ctx.live === false`).
-4. For notification delivery, share one `EventBus` between writers and workers. In-memory stores supply it automatically. SQL applications provide `EventBus.layer` and wrap the outermost committing command with `EventBus.notifyAfter`, never an append inside an open transaction. Configure `pollInterval` for reconciliation with external writers.
+4. For notification delivery, in-memory stores supply their own `EventBus`. PostgreSQL `layer()` supplies a cross-process bus automatically (schema revision 5); with `storesLayer`, also provide `eventBusLayer` on the same `PgClient` after migration. PostgreSQL event inserts signal at the outermost commit without application wrappers. SQLite applications share one `EventBus.layer` and wrap the outermost committing transaction with `EventBus.notifyAfter`, never an append inside an open transaction. Omit `pollInterval` for notification-only workers; configure it for reconciliation when writers lack a shared transport. Restart PostgreSQL workers with a fresh layer after listener failure, and keep one active worker per projection name/read model.
 5. Handlers must be idempotent: delivery is at-least-once, checkpoint is saved per batch.
 
 ## Consumer steps

@@ -1,6 +1,8 @@
 # @structure-ai/eventsourcing-pg
 
-PostgreSQL adapters (`@effect/sql-pg`) for the `@structure-ai/eventsourcing` ports, including `EventStore`, `HistoryImporter`, `StreamEraser`, snapshots, checkpoints, outbox, and inbox, plus a durable `IdempotencyStore` for `@structure-ai/cqrs`.
+PostgreSQL adapters (`@effect/sql-pg`) for the `@structure-ai/eventsourcing` ports, including `EventStore`, `HistoryImporter`, `StreamEraser`, snapshots, checkpoints, outbox, and inbox, plus a durable `IdempotencyStore` for `@structure-ai/cqrs` and a PostgreSQL `LISTEN`/`NOTIFY` event bus for projections in separate processes.
+
+The package exports TypeScript source. Its runtime dependencies include the PostgreSQL driver declarations so consumers can typecheck the adapter without installing them separately.
 
 ## Usage
 
@@ -9,22 +11,23 @@ import { layer } from "@structure-ai/eventsourcing-pg";
 import { CommandBus } from "@structure-ai/cqrs";
 import { Layer } from "effect";
 
-// One layer: PgClient from `url` (or DATABASE_URL), migration at build, every adapter.
+// PgClient from `url` (or DATABASE_URL), migration, adapters, and a listening EventBus.
 const durable = layer({ url: databaseUrl, idempotencyTtl: "24 hours" });
 
 // The command bus takes its IdempotencyStore from the same layer.
 const bus = CommandBus.layer.pipe(Layer.provide(Layer.mergeAll(handlers, authorizer, durable)));
 ```
 
-On an existing `SqlClient` (shared with view models and migrations): `storesLayer(options)` merges every adapter; run `migrate(options)` yourself first, once, from the designated migration process. Individual adapters — `eventStoreLayer`, `snapshotStoreLayer`, `checkpointStoreLayer`, `outboxLayer`, `inboxLayer`, `idempotencyStoreLayer` — compose the same way.
+On an existing `SqlClient` (shared with view models and migrations): `storesLayer(options)` merges every adapter; run `migrate(options)` yourself first, once, from the designated migration process. For notification-driven workers, also merge `eventBusLayer(options)` on the same ambient `PgClient`, after migration. `storesLayer` alone keeps its existing storage-only contract. Individual adapters — `eventStoreLayer`, `snapshotStoreLayer`, `checkpointStoreLayer`, `outboxLayer`, `inboxLayer`, `idempotencyStoreLayer` — compose the same way.
 
 ## Exports
 
 | Export | What it is |
 | --- | --- |
-| `layer(config?)` | `PgClient` + `migrate` + every adapter, and the client itself. `config`: `url`, `maxConnections`, `applicationName`, plus the adapter options. |
+| `layer(config?)` | `PgClient` + `migrate` + every adapter + `EventBus`, and the client itself. Acquisition can fail with `SqlError` or `PersistenceError`. `config`: `url`, `maxConnections`, `applicationName`, plus the adapter options. |
+| `eventBusLayer(options?)` | Scoped cross-process `EventBus` on an ambient `PgClient`. Requires schema revision 5; opens one dedicated listening connection outside the query pool. Acquisition and delivery failures are `PersistenceError`. |
 | `storesLayer(options?)` | Every adapter on top of an ambient `SqlClient` (no migration). |
-| `migrate(options?)` | Applies every step of `migrations` in order, idempotently: the tables for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency (rev 1), then the generated `partition` column and its index on `events` (rev 2), then `outbox.available_at` with its partial index for scheduled delivery (rev 3), then `outbox.claim_token`/`lease_until` with the claim index for delivery ownership (rev 4), all prefixed by `tablePrefix`. |
+| `migrate(options?)` | Applies every step of `migrations` in order, idempotently: the tables for events, history-import bookkeeping, snapshots, checkpoints, outbox, inbox, and idempotency (rev 1), then the generated `partition` column and its index on `events` (rev 2), then `outbox.available_at` with its partial index for scheduled delivery (rev 3), then `outbox.claim_token`/`lease_until` with the claim index for delivery ownership (rev 4), then the event-insert notification trigger and its function (rev 5), all isolated by `tablePrefix`. |
 | `migrations` | The same schema as ordered `{ rev, name, apply(options?) }` steps, for consumers keeping their own migration ledger: record each `rev` as its own entry and append the next one on upgrade. |
 | `tableNames(options?)` | Resolved table names for a prefix — use it for test isolation and cleanup. |
 | `appendWithOutbox(stream, expectedVersion, events, messages)` | Events and outbox rows committed in one transaction. |
@@ -34,6 +37,32 @@ On an existing `SqlClient` (shared with view models and migrations): `storesLaye
 | `idempotencyStoreLayer(options?)` | `@structure-ai/cqrs` `IdempotencyStore` over the `idempotency` table. |
 | `purgeExpiredIdempotency(options?)` | Deletes idempotency records past their TTL; returns the count. |
 | `AdapterOptions` | `tablePrefix` (default none) and `idempotencyTtl` (default 24 hours). |
+
+## Projections in a separate process
+
+`layer()` supplies the event bus automatically. Run your projections in a worker entrypoint using the same database and `tablePrefix` as the API:
+
+```ts
+// src/projections.ts. Start separately with: bun src/projections.ts
+import { Projection } from "@structure-ai/eventsourcing";
+import { layer } from "@structure-ai/eventsourcing-pg";
+import { launch } from "@structure-ai/runtime";
+import { ordersProjection } from "./orders-projection.js";
+
+launch(Projection.run(ordersProjection), {
+  layers: layer({ url: databaseUrl, tablePrefix: "app_" }),
+});
+```
+
+Application code owns the worker process; PostgreSQL carries notifications between it and the API, CLI commands, webhooks, or other writers. For a view model, use its `ViewProjection.run()` with the worker's view-model store layer too. Keep one active worker per projection name and read model. Stop that worker before inline catch-up or rebuilding the same projection.
+
+Revision 5 installs an `AFTER INSERT` statement trigger on the events table. It calls `pg_notify` only when rows were inserted; PostgreSQL delivers after the outermost transaction commits. Rollbacks and rolled-back savepoints send nothing. Appends, `appendWithOutbox`, new history-import batches and direct SQL inserts signal automatically, including when a workflow commits an event and later fails. Command wrappers with `EventBus.notifyAfter` are unnecessary. Direct SQL writers must still honor the [commit-order contract](#commit-order).
+
+Layer acquisition completes `LISTEN` before returning. Workers then subscribe locally before their initial catch-up. Signals contain only a constant wake-up marker, coalesce per transaction and subscriber, and never carry event payloads. Workers read durable history from their checkpoints. Channels use the events table's PostgreSQL relation OID, so prefixed tables and tables in different schemas have independent channels.
+
+Omit `pollInterval` to perform no continuous event-store polling; an explicitly configured interval still causes reconciliation reads. A listener disconnect fails pending and future waits with `PersistenceError` (`EventBus.listen`), so the worker stops. Restart the whole worker and its layer to reconnect and catch up from the checkpoint, including writes committed while it was offline. The adapter does not reconnect silently. Notification connection teardown is scoped and bounded. Use a direct PostgreSQL connection or session pooling for this dedicated listener; transaction pooling cannot retain `LISTEN` subscriptions.
+
+Apply revision 5 before starting a worker that uses `eventBusLayer`. The migration is idempotent and preserves existing history. `layer()` runs it automatically; applications with their own migration ledger append revision 5 there. This revision requires PostgreSQL 14 or newer (`CREATE OR REPLACE TRIGGER`). When dropping a test table set, also drop its trigger function; the trigger disappears with the table, but the function remains.
 
 ## Partition column
 

@@ -747,7 +747,7 @@ export const makeAuthorizationServer = (
       }),
     authorize: (request, userId) =>
       Effect.gen(function* () {
-        const _tenant = yield* options.resolveTenant(request.tenantId);
+        yield* options.resolveTenant(request.tenantId);
         const client = yield* options.store.findClient(request.tenantId, request.clientId);
         // Unknown client or bad redirect: fail closed — never redirect.
         if (client === undefined) return yield* clientError("is unknown");

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { PersistenceError } from "@structure-ai/domain";
 import { Deferred, Effect, Exit, Fiber, Layer, Ref, Stream, TestClock, TestContext } from "effect";
 import {
   CheckpointStore,
@@ -20,6 +21,26 @@ const incremented = (amount: number) => ({
 });
 
 describe("Projection", () => {
+  test("transport subscription and wait failures propagate through the worker", async () => {
+    const failure = new PersistenceError({ operation: "EventBus.listen", cause: "disconnected" });
+    const projection = Projection.make({
+      name: "failed-listener",
+      registry: counterRegistry,
+      when: {},
+    });
+    for (const subscribe of [Effect.fail(failure), Effect.succeed(Effect.fail(failure))]) {
+      const exit = await Effect.runPromise(
+        Effect.exit(Projection.run(projection)).pipe(
+          Effect.provideService(EventBus, EventBus.of({ notify: Effect.void, subscribe })),
+          Effect.provide(layer),
+          Effect.scoped,
+          Effect.timeout("1 second"),
+        ),
+      );
+      expect(exit).toEqual(Exit.fail(failure));
+    }
+  });
+
   test("subscribes before the initial empty read, preventing a lost startup wake-up", async () => {
     const program = Effect.gen(function* () {
       const store = yield* EventStore;
