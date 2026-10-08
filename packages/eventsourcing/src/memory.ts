@@ -12,6 +12,7 @@ import {
   SynchronizedRef,
 } from "effect";
 import { CheckpointStore } from "./CheckpointStore.js";
+import { EventBus } from "./EventBus.js";
 import {
   type AppendResult,
   EventStore,
@@ -88,6 +89,8 @@ interface HistoryImportBatchRecord {
 const importBatchKey = (batch: HistoryImportBatch): string =>
   `${batch.importId.length}:${batch.importId}${batch.batchId}`;
 
+type InMemoryEventStoreServices = EventStore | EventBus | HistoryImporter | StreamEraser;
+
 /**
  * In-memory `EventStore`. Appends run inside a single atomic `Ref.modify`,
  * so the per-stream version check and the global position assignment are
@@ -95,9 +98,10 @@ const importBatchKey = (batch: HistoryImportBatch): string =>
  * wins and the loser gets a `ConcurrencyConflict`. Reads see a consistent
  * snapshot taken when the stream is subscribed.
  */
-export const InMemoryEventStore: Layer.Layer<EventStore | HistoryImporter | StreamEraser> =
-  Layer.effectContext(
+export const InMemoryEventStore: Layer.Layer<InMemoryEventStoreServices, never> =
+  Layer.scopedContext(
     Effect.gen(function* () {
+      const bus = yield* EventBus.make;
       const ref = yield* SynchronizedRef.make<EventStoreState>({
         streams: new Map(),
         all: [],
@@ -175,7 +179,11 @@ export const InMemoryEventStore: Layer.Layer<EventStore | HistoryImporter | Stre
                 state,
               ];
             },
-          ).pipe(Effect.flatten),
+          ).pipe(
+            Effect.flatten,
+            Effect.tap(() => (events.length > 0 ? bus.notify : Effect.void)),
+            Effect.uninterruptible,
+          ),
         read: (streamName, options) =>
           Stream.unwrap(
             Effect.map(Ref.get(ref), (state) => {
@@ -309,6 +317,9 @@ export const InMemoryEventStore: Layer.Layer<EventStore | HistoryImporter | Stre
                   },
                 ] as const;
               }),
+            ).pipe(
+              Effect.tap((result) => (result.status === "imported" ? bus.notify : Effect.void)),
+              Effect.uninterruptible,
             );
           }),
       });
@@ -392,6 +403,7 @@ export const InMemoryEventStore: Layer.Layer<EventStore | HistoryImporter | Stre
           }),
       });
       return Context.make(EventStore, eventStore)
+        .pipe(Context.add(EventBus, bus))
         .pipe(Context.add(HistoryImporter, historyImporter))
         .pipe(Context.add(StreamEraser, streamEraser));
     }),
@@ -632,7 +644,14 @@ export const InMemoryInbox: Layer.Layer<Inbox> = Layer.effect(
 
 /** Every in-memory adapter merged: a full test/development environment. */
 export const InMemoryAll: Layer.Layer<
-  EventStore | HistoryImporter | StreamEraser | SnapshotStore | CheckpointStore | Outbox | Inbox
+  | EventStore
+  | EventBus
+  | HistoryImporter
+  | StreamEraser
+  | SnapshotStore
+  | CheckpointStore
+  | Outbox
+  | Inbox
 > = Layer.mergeAll(
   InMemoryEventStore,
   InMemorySnapshotStore,

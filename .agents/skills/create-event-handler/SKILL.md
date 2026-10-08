@@ -28,8 +28,9 @@ const invoiceStats = Projection.make({
 });
 ```
 
-3. Run it: `Projection.catchup` (process until caught up — tests, batch jobs), `Projection.run` (poll forever — a worker process), `Projection.rebuild(projection, reset)` (reset + full replay with `ctx.live === false`).
-4. Handlers must be idempotent: delivery is at-least-once, checkpoint is saved per batch.
+3. Run it: `Projection.catchup` (process until caught up — tests, batch jobs), `Projection.run` (wait on an ambient `EventBus`, otherwise poll — a worker process), `Projection.rebuild(projection, reset)` (reset + full replay with `ctx.live === false`).
+4. For notification delivery, share one `EventBus` between writers and workers. In-memory stores supply it automatically. SQL applications provide `EventBus.layer` and wrap the outermost committing command with `EventBus.notifyAfter`, never an append inside an open transaction. Configure `pollInterval` for reconciliation with external writers.
+5. Handlers must be idempotent: delivery is at-least-once, checkpoint is saved per batch.
 
 ## Consumer steps
 

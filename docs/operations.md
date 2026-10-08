@@ -47,6 +47,12 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 | Auth dependency failures and OAuth provider latency | Mail/provider/storage degradation affecting sign-in journeys |
 | Expired auth tokens/sessions/challenges awaiting cleanup | Retention job failure or store growth; raw bearer values must never be present |
 
+## Projection notifications
+
+Provide the same `EventBus` instance to writers and projection workers. In-memory stores expose it automatically. SQL writers use `EventBus.notifyAfter` around the outermost committing command transaction. Workers subscribe before catching up and unsubscribe when interrupted. A handler or decode failure still stops the worker without advancing the failed batch checkpoint; restart it after resolving the failure.
+
+Bus-backed workers perform no idle polling unless `pollInterval` is explicitly configured. Set a reconciliation interval when other processes write to the store or some writes bypass notifications. Monitor checkpoint lag against the feed head; a disconnected bus can leave an otherwise healthy worker waiting indefinitely. Restarting always catches up from its durable checkpoint. Stop the live worker before rebuilding the same projection.
+
 ## Recovery procedures
 
 - **Stale or corrupted view model** — rebuild it: `viewProjection.rebuild(...)` truncates the table and replays every event with `live: false` (side-effect consumers must gate on `live`, so a rebuild never re-sends emails). Views are disposable by design.

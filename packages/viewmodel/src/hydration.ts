@@ -50,7 +50,7 @@ export interface ViewProjection<E extends { readonly _tag: string }, EH, R> {
     EH | EventDecodeError | PersistenceError,
     EventStore | CheckpointStore | SqlClient | R
   >;
-  /** Runs forever: catch up, sleep, repeat. Interrupt the fiber to stop. */
+  /** Runs forever: catch up, wait on EventBus when provided, otherwise poll. Interrupt to stop. */
   readonly run: (
     options?: Projection.RunOptions,
   ) => Effect.Effect<

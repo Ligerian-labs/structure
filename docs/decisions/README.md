@@ -25,3 +25,4 @@ Numbered, immutable once accepted; reversing a decision means a new ADR marking 
 | [0019](0019-composable-command-fixtures.md) | Explicit fixture instances and base/feature catalogs create isolated application data through commands, with app-owned readiness and cleanup |
 | [0020](0020-typed-persistence-and-cause-boundaries.md) | Typed persistence failures and explicit transport, worker and cleanup cause policies |
 | [0021](0021-native-grpc-effect-adapter.md) | Native gRPC through grpc-js and Protobuf-ES; scoped Effect streams, typed protobuf business failures and explicit Bun compatibility evidence |
+| [0022](0022-projection-commit-notifications.md) | Scoped in-process commit notifications wake checkpointed projections; SQL notification follows the outermost command commit |

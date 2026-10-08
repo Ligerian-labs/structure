@@ -34,7 +34,7 @@ const accounts = ViewProjection.make({
       store.patch(event.accountId, { balance: /* prev + amount via get/patch */ }),
   },
 });
-// worker: accounts.run(...)  ·  tests/batch: accounts.catchup(...)  ·  accounts.rebuild(...) = truncate + full replay
+// worker: accounts.run(...) waits on EventBus when provided, otherwise polls  ·  tests/batch: accounts.catchup(...)  ·  accounts.rebuild(...) = truncate + full replay
 
 // 3. queries read the typed store:
 const program = Effect.gen(function* () {
@@ -52,6 +52,8 @@ const program = Effect.gen(function* () {
 | `ViewModel.createTableSql(def)` / `ViewModel.migration(def, id)` | Generated DDL (`CREATE TABLE IF NOT EXISTS`, PK on the id column) as a string or as a `@structure-ai/migrations` migration. |
 | `ViewStore.make(def)` / `ViewStore.layer(tag, def)` | Typed store over `SqlClient`: `get` (fails `NotFound | PersistenceError`), `findById`, `find(criteria, { orderBy, order, limit, offset })`, `findOne`, `count`, `upsert`/`upsertMany` (ON CONFLICT id DO UPDATE), `patch` (read-merge-write; the projection is the single writer), `remove` (idempotent), `truncate`. Criteria are equality-AND on encoded values; `null` compiles to `IS NULL`. |
 | `ViewProjection.make({ name, view, registry, when })` | Hydration built on `@structure-ai/eventsourcing` projections: handlers `(event, store, { stored, live })`; returns `{ projection, catchup, run, rebuild }` — `rebuild` truncates the table and replays with `live: false`. |
+
+`run()` inherits [the event-sourcing notification behavior](../eventsourcing/README.md#running-projections-without-polling). Share one `EventBus` with the writers to wait without polling. In-memory stores supply it automatically; SQL command transactions use `EventBus.notifyAfter` outside the outermost transaction. An explicit `pollInterval` provides reconciliation for external writers.
 
 ## Storage classes
 

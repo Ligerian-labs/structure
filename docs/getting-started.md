@@ -145,6 +145,8 @@ export const accountsProjection = ViewProjection.make({
 
 Queries read `ViewStore.make(AccountView)` — never the event streams.
 
+In-memory adapters expose an `EventBus`, so `accountsProjection.run()` waits for appends without polling. SQL applications share `EventBus.layer` with their workers and wrap the outermost committing command with `EventBus.notifyAfter`. See [projection notifications](../packages/eventsourcing/README.md#running-projections-without-polling) for transaction boundaries and external writers.
+
 ## 6. HTTP (`@structure-ai/http`)
 
 Declare the api with the `Api`/`ApiGroup` helpers, mount the command via the CQRS bridge (`HttpCqrs.command(Deposit)` as the endpoint handler), and compose `Health.layer` (readiness-backed `/health/*`) and `Docs.layer` (`/docs` + `/openapi.json`). `serve({ port })` runs it on Bun with graceful shutdown; the same call takes `mounts` (raw web handlers such as the auth handler or an MCP transport) and `static` (an embedded SPA build) so one port serves the whole app. The complete, working wiring is `packages/http/test/http.test.ts` — copy it.

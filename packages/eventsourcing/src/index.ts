@@ -6,6 +6,7 @@ export {
   type EventRegistryEntry,
   type SerializedEvent,
 } from "./codec.js";
+export { EventBus, type EventBusService } from "./EventBus.js";
 export {
   type AppendEvent,
   type AppendResult,
