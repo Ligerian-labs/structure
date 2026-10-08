@@ -2,6 +2,8 @@
 
 PostgreSQL adapters (`@effect/sql-pg`) for the `@structure-ai/eventsourcing` ports, including `EventStore`, `HistoryImporter`, `StreamEraser`, snapshots, checkpoints, outbox, and inbox, plus a durable `IdempotencyStore` for `@structure-ai/cqrs` and a PostgreSQL `LISTEN`/`NOTIFY` event bus for projections in separate processes.
 
+The package exports TypeScript source. Its runtime dependencies include the PostgreSQL driver declarations so consumers can typecheck the adapter without installing them separately.
+
 ## Usage
 
 ```ts
