@@ -1,7 +1,8 @@
 import type { PersistenceError } from "@structure-ai/domain";
-import { Chunk, type Duration, Effect, Stream } from "effect";
+import { Chunk, type Duration, Effect, Option, Stream } from "effect";
 import { CheckpointStore } from "./CheckpointStore.js";
 import type { EventDecodeError, EventRegistry } from "./codec.js";
+import { EventBus } from "./EventBus.js";
 import { EventStore, type StoredEvent } from "./EventStore.js";
 
 /**
@@ -52,7 +53,11 @@ export interface CatchupStats {
 }
 
 export interface RunOptions {
-  /** Delay between polls once caught up. Default 500 millis. */
+  /**
+   * With EventBus: optional reconciliation interval for missed/external
+   * notifications; otherwise waits without polling. Without EventBus:
+   * delay between polls, default 500 millis.
+   */
   readonly pollInterval?: Duration.DurationInput;
   /** Max events fetched and checkpointed per batch. Default 100. */
   readonly batchSize?: number;
@@ -118,8 +123,9 @@ export const catchup = <E extends { readonly _tag: string }, EH, R>(
 > => catchupWith(projection, true, options?.batchSize ?? 100);
 
 /**
- * Runs the projection forever: catch up to the head, sleep `pollInterval`,
- * repeat. Never returns; interrupt the fiber to stop it.
+ * Subscribes to EventBus before catching up, then waits for commit signals.
+ * Optional pollInterval reconciles writers outside the bus. Without a bus,
+ * polls every 500 millis by default. Interrupt the fiber to unsubscribe.
  */
 export const run = <E extends { readonly _tag: string }, EH, R>(
   projection: Projection<E, EH, R>,
@@ -129,9 +135,21 @@ export const run = <E extends { readonly _tag: string }, EH, R>(
   EH | EventDecodeError | PersistenceError,
   EventStore | CheckpointStore | R
 > =>
-  catchupWith(projection, true, options?.batchSize ?? 100).pipe(
-    Effect.andThen(Effect.sleep(options?.pollInterval ?? "500 millis")),
-    Effect.forever,
+  Effect.scoped(
+    Effect.gen(function* () {
+      const bus = yield* Effect.serviceOption(EventBus);
+      const wait = Option.isSome(bus)
+        ? yield* bus.value.subscribe
+        : Effect.sleep(options?.pollInterval ?? "500 millis");
+      const next =
+        Option.isSome(bus) && options?.pollInterval !== undefined
+          ? wait.pipe(Effect.timeoutOption(options.pollInterval), Effect.asVoid)
+          : wait;
+      return yield* catchupWith(projection, true, options?.batchSize ?? 100).pipe(
+        Effect.andThen(next),
+        Effect.forever,
+      );
+    }),
   );
 
 /**
