@@ -2,8 +2,10 @@ import type * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
 import { PgClient } from "@effect/sql-pg";
 import type { IdempotencyStore } from "@structure-ai/cqrs";
+import type { PersistenceError } from "@structure-ai/domain";
 import type {
   CheckpointStore,
+  EventBus,
   EventStore,
   HistoryImporter,
   Inbox,
@@ -13,6 +15,7 @@ import type {
 } from "@structure-ai/eventsourcing";
 import { Layer, Redacted } from "effect";
 import { checkpointStoreLayer } from "./CheckpointStore.js";
+import { eventBusLayer } from "./EventBus.js";
 import { eventStoreLayer } from "./EventStore.js";
 import { idempotencyStoreLayer } from "./IdempotencyStore.js";
 import { inboxLayer, outboxLayer } from "./Outbox.js";
@@ -63,12 +66,16 @@ export interface PgAdaptersConfig extends AdapterOptions {
 /**
  * Everything in one layer: a `PgClient` (configured from `options.url` or
  * `DATABASE_URL`), the schema migration (run at layer build), and every
- * adapter in `storesLayer`. The client is exposed too, so callers can run
+ * adapter in `storesLayer`, and a dedicated cross-process notification listener.
+ * The client is exposed too, so callers can run
  * their own queries.
  */
 export const layer = (
   options?: PgAdaptersConfig,
-): Layer.Layer<StoreServices | PgClient.PgClient | SqlClient.SqlClient, SqlError> => {
+): Layer.Layer<
+  StoreServices | EventBus | PgClient.PgClient | SqlClient.SqlClient,
+  SqlError | PersistenceError
+> => {
   const url = options?.url ?? process.env.DATABASE_URL;
   const client = PgClient.layer({
     ...(url !== undefined ? { url: Redacted.make(url) } : {}),
@@ -76,5 +83,7 @@ export const layer = (
     ...(options?.applicationName !== undefined ? { applicationName: options.applicationName } : {}),
   });
   const migrated = Layer.effectDiscard(migrate(options)).pipe(Layer.provideMerge(client));
-  return storesLayer(options).pipe(Layer.provideMerge(migrated));
+  return Layer.merge(storesLayer(options), eventBusLayer(options)).pipe(
+    Layer.provideMerge(migrated),
+  );
 };

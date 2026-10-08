@@ -1,4 +1,5 @@
 export { checkpointStoreLayer } from "./CheckpointStore.js";
+export { eventBusLayer } from "./EventBus.js";
 export { appendWithOutbox, eventStoreLayer } from "./EventStore.js";
 export {
   type IdempotencyStoreOptions,

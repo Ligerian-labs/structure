@@ -2,6 +2,7 @@ import * as SqlClient from "@effect/sql/SqlClient";
 import type { SqlError } from "@effect/sql/SqlError";
 import { Effect } from "effect";
 import type { IdempotencyStoreOptions } from "./IdempotencyStore.js";
+import { notificationFunctionName, notificationTriggerName } from "./notifications.js";
 
 /** Options shared by every adapter in this package. */
 export interface AdapterOptions extends IdempotencyStoreOptions {
@@ -247,18 +248,54 @@ const addOutboxClaims = (
   });
 
 /**
+ * Rev 5: insert notifications follow the outermost commit, including writes
+ * issued outside the framework. A statement transition table avoids signals
+ * for inserts that produced no rows; identical signals coalesce in PostgreSQL.
+ * Channels contain only the relation OID, never event payloads or metadata.
+ */
+const addEventNotifications = (
+  options?: AdapterOptions,
+): Effect.Effect<void, SqlError, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const events = tableNames(options).events;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`
+        CREATE OR REPLACE FUNCTION ${sql(notificationFunctionName(events))}()
+        RETURNS trigger LANGUAGE plpgsql AS $structure_notify$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM structure_inserted_events) THEN
+            PERFORM pg_notify('structure_events_' || TG_RELID::text, 'committed');
+          END IF;
+          RETURN NULL;
+        END;
+        $structure_notify$
+      `;
+        yield* sql`
+        CREATE OR REPLACE TRIGGER ${sql(notificationTriggerName)}
+        AFTER INSERT ON ${sql(events)}
+        REFERENCING NEW TABLE AS structure_inserted_events
+        FOR EACH STATEMENT EXECUTE FUNCTION ${sql(notificationFunctionName(events))}()
+      `;
+      }),
+    );
+  });
+
+/**
  * The schema as ordered, idempotent steps, for consumers that keep their
  * own migration ledger (append each new `rev` as a new entry there). Rev 1
  * is the table set up to 0.0.14; rev 2 adds the generated `partition`
  * column and its index to `events`; rev 3 adds `outbox.available_at` and
  * its partial index; rev 4 adds `outbox.claim_token`/`lease_until` and
- * the claim index.
+ * the claim index; rev 5 adds commit notifications for inserts on `events`.
  */
 export const migrations: ReadonlyArray<SchemaMigration> = [
   { rev: 1, name: "eventsourcing-pg-tables", apply: createTables },
   { rev: 2, name: "eventsourcing-pg-events-partition", apply: addPartitionColumn },
   { rev: 3, name: "eventsourcing-pg-outbox-available-at", apply: addOutboxAvailableAt },
   { rev: 4, name: "eventsourcing-pg-outbox-claims", apply: addOutboxClaims },
+  { rev: 5, name: "eventsourcing-pg-event-notifications", apply: addEventNotifications },
 ];
 
 /**

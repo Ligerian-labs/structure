@@ -4,6 +4,7 @@ import type { OutboxMessage } from "@structure-ai/eventsourcing";
 import { Outbox } from "@structure-ai/eventsourcing";
 import { Effect } from "effect";
 import { layer, tableNames } from "../src/index.js";
+import { notificationFunctionName } from "../src/notifications.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -31,6 +32,7 @@ describe.skipIf(databaseUrl === undefined)("pg outbox claims (needs DATABASE_URL
       for (const table of Object.values(tables)) {
         yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
       }
+      yield* sql`DROP FUNCTION IF EXISTS ${sql(notificationFunctionName(tables.events))}()`;
     }).pipe(Effect.orDie);
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -60,6 +62,7 @@ describe.skipIf(databaseUrl === undefined)("pg outbox claims (needs DATABASE_URL
       for (const table of Object.values(tables)) {
         yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
       }
+      yield* sql`DROP FUNCTION IF EXISTS ${sql(notificationFunctionName(tables.events))}()`;
     }).pipe(Effect.orDie);
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -90,6 +93,7 @@ describe.skipIf(databaseUrl === undefined)("pg outbox claims (needs DATABASE_URL
       for (const table of Object.values(tables)) {
         yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
       }
+      yield* sql`DROP FUNCTION IF EXISTS ${sql(notificationFunctionName(tables.events))}()`;
     }).pipe(Effect.orDie);
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -122,6 +126,7 @@ describe.skipIf(databaseUrl === undefined)("pg outbox claims (needs DATABASE_URL
       for (const table of Object.values(tables)) {
         yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
       }
+      yield* sql`DROP FUNCTION IF EXISTS ${sql(notificationFunctionName(tables.events))}()`;
     }).pipe(Effect.orDie);
     await Effect.runPromise(
       Effect.gen(function* () {

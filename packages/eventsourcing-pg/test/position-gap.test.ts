@@ -3,6 +3,7 @@ import * as SqlClient from "@effect/sql/SqlClient";
 import { CheckpointStore, EventStore, Projection } from "@structure-ai/eventsourcing";
 import { Chunk, Deferred, Effect, Fiber, Ref, Stream } from "effect";
 import { layer, tableNames } from "../src/index.js";
+import { notificationFunctionName } from "../src/notifications.js";
 import { counterRegistry, testMetadata } from "./fixtures.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -138,6 +139,7 @@ const withStores = <A, E>(
     for (const table of Object.values(tables)) {
       yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
     }
+    yield* sql`DROP FUNCTION IF EXISTS ${sql(notificationFunctionName(tables.events))}()`;
   }).pipe(Effect.orDie);
   return Effect.runPromise(
     body(tablePrefix).pipe(

@@ -2,7 +2,7 @@
  * The schema as versioned steps: rev 1 is the table set as it shipped up
  * to 0.0.14, rev 2 adds the generated `partition` column and its index on
  * `events`, rev 3 adds `outbox.available_at` with its partial index, rev 4
- * adds `outbox.claim_token`/`lease_until` with the claim index.
+ * adds `outbox.claim_token`/`lease_until` with the claim index; rev 5 adds event notifications.
  * `migrate()` applies every step in order and is idempotent.
  *
  * Runs against `DATABASE_URL` only (see pg.test.ts).
@@ -12,6 +12,7 @@ import * as SqlClient from "@effect/sql/SqlClient";
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { type AdapterOptions, migrate, migrations, tableNames } from "../src/index.js";
+import { notificationFunctionName } from "../src/notifications.js";
 import { testMetadata } from "./fixtures.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -132,6 +133,7 @@ const runTest = (
     for (const table of Object.values(tables)) {
       yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
     }
+    yield* sql`DROP FUNCTION IF EXISTS ${sql(notificationFunctionName(tables.events))}()`;
   }).pipe(Effect.orDie);
   return Effect.runPromise(
     scenario({ tablePrefix }).pipe(
@@ -144,8 +146,8 @@ const runTest = (
 };
 
 describe.skipIf(databaseUrl === undefined)("pg schema migration steps (needs DATABASE_URL)", () => {
-  test("migrations are rev 1 (0.0.14 tables), rev 2 (partition), rev 3 (available_at), rev 4 (claims), in order", () => {
-    expect(migrations.map((migration) => migration.rev)).toEqual([1, 2, 3, 4]);
+  test("migrations are rev 1 (0.0.14 tables), rev 2 (partition), rev 3 (available_at), rev 4 (claims), rev 5 (notifications), in order", () => {
+    expect(migrations.map((migration) => migration.rev)).toEqual([1, 2, 3, 4, 5]);
     for (const migration of migrations) {
       expect(migration.name.length).toBeGreaterThan(0);
     }
