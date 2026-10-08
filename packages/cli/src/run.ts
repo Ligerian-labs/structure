@@ -2,6 +2,7 @@ import { Command, HelpDoc, ValidationError } from "@effect/cli";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
 import { ConfigLoadError } from "@structure-ai/config";
 import { Cause, Effect, Exit, Option } from "effect";
+import { installSyncStdio } from "./drain.js";
 
 /** The command succeeded. */
 export const EXIT_SUCCESS = 0;
@@ -100,6 +101,8 @@ export interface RunCliOptions<Name extends string, E, A> {
  * ```
  */
 export const runCli = <Name extends string, E, A>(options: RunCliOptions<Name, E, A>): void => {
+  // Issue #101: piped stdout must not lose bytes queued at process exit.
+  installSyncStdio();
   const prefix = options.serviceName ?? options.name;
   const execute = Command.run(options.root, { name: options.name, version: options.version });
   const app = execute(process.argv).pipe(

@@ -6,6 +6,7 @@ export {
   Options,
   withSubcommands,
 } from "./command.js";
+export { installSyncStdio } from "./drain.js";
 export {
   type CliTestOutcome,
   EXIT_CONFIG,
