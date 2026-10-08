@@ -2,13 +2,14 @@ import { describe, expect, test } from "bun:test";
 import * as SqlClient from "@effect/sql/SqlClient";
 import {
   type CheckpointStore,
+  EventBus,
   EventRegistry,
   EventStore,
   type EventStoreService,
   type StoredEventMetadata,
 } from "@structure-ai/eventsourcing";
 import { layer as sqliteStores } from "@structure-ai/eventsourcing-sqlite";
-import { Effect, Schema } from "effect";
+import { Deferred, Effect, Exit, Option, Schema, Stream } from "effect";
 import { createTableSql, ViewModel, ViewProjection, ViewStore } from "../src/index.js";
 
 const AccountOpened = Schema.TaggedStruct("AccountOpened", {
@@ -88,6 +89,68 @@ const runWith = <A>(
   );
 
 describe("ViewProjection", () => {
+  test("post-transaction notifications hydrate a SQL view, and rolled-back writes stay absent", async () => {
+    await runWith(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe(createTableSql(AccountBalance));
+          const events = yield* EventStore;
+          const bus = yield* EventBus.make;
+          const ready = yield* Deferred.make<void>();
+          const hydrated = yield* Deferred.make<void>();
+          const observed = EventStore.of({
+            ...events,
+            readAll: (options) =>
+              events.readAll(options).pipe(Stream.ensuring(Deferred.succeed(ready, undefined))),
+          });
+          const projection = ViewProjection.make({
+            name: "notified-accounts",
+            view: AccountBalance,
+            registry,
+            when: {
+              AccountOpened: (event, store) =>
+                store
+                  .upsert({ id: event.accountId, owner: event.owner, balance: 0 })
+                  .pipe(Effect.andThen(Deferred.succeed(hydrated, undefined)), Effect.asVoid),
+            },
+          });
+          yield* projection
+            .run()
+            .pipe(
+              Effect.provideService(EventBus, bus),
+              Effect.provideService(EventStore, observed),
+              Effect.forkScoped,
+            );
+          yield* Deferred.await(ready);
+          const rolledBack = yield* Effect.exit(
+            EventBus.notifyAfter(
+              sql.withTransaction(
+                append(events, "rolled-back", 0, [
+                  AccountOpened.make({ accountId: "rolled-back", owner: "alice" }),
+                ]).pipe(Effect.andThen(Effect.fail("rollback"))),
+              ),
+            ).pipe(Effect.provideService(EventBus, bus)),
+          );
+          expect(Exit.isFailure(rolledBack)).toBe(true);
+          expect(yield* Deferred.isDone(hydrated)).toBe(false);
+
+          yield* EventBus.notifyAfter(
+            sql.withTransaction(
+              append(events, "committed", 0, [
+                AccountOpened.make({ accountId: "committed", owner: "bob" }),
+              ]),
+            ),
+          ).pipe(Effect.provideService(EventBus, bus));
+          yield* Deferred.await(hydrated).pipe(Effect.timeout("1 second"));
+          const view = yield* ViewStore.make(AccountBalance);
+          expect(Option.isNone(yield* view.findById("rolled-back"))).toBe(true);
+          expect((yield* view.get("committed")).owner).toBe("bob");
+        }),
+      ),
+    );
+  });
+
   test("catchup hydrates, resumes from the checkpoint, and rebuild replays with live:false", async () => {
     await runWith(
       Effect.gen(function* () {

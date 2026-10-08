@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { DomainEvent } from "@structure-ai/domain";
-import { Chunk, Effect, Either, Schema, Stream } from "effect";
+import { Chunk, Effect, Either, Fiber, Option, Schema, Stream } from "effect";
 import {
+  EventBus,
   EventRegistry,
   EventStore,
   HistoryImport,
@@ -86,6 +87,26 @@ const partitionedHistory: ReadonlyArray<StoredEvent> = [
 ];
 
 describe("InMemoryHistoryImporter", () => {
+  test("new imported history notifies subscribers, and an identical retry does not", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const bus = yield* EventBus;
+        const wait = yield* bus.subscribe;
+        const importer = yield* HistoryImporter;
+        const checksum = yield* HistoryImport.checksum(history);
+        yield* importer.importBatch(batch(history, checksum), historyRegistry);
+        yield* wait;
+        const retried = yield* importer.importBatch(batch(history, checksum), historyRegistry);
+        expect(retried.status).toBe("unchanged");
+        const pending = yield* Effect.forkScoped(wait);
+        yield* Effect.yieldNow();
+        expect(Option.isNone(yield* Fiber.poll(pending))).toBe(true);
+        yield* bus.notify;
+        yield* Fiber.join(pending);
+      }).pipe(Effect.provide(InMemoryAll), Effect.scoped, Effect.timeout("2 seconds")),
+    );
+  });
+
   test("a history without partition, origin, or extensions checksums exactly as before", async () => {
     expect(await Effect.runPromise(HistoryImport.checksum(history))).toBe(
       historyChecksumBeforePartition,
