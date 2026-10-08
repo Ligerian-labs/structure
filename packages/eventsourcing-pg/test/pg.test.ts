@@ -2,6 +2,7 @@ import { describe } from "bun:test";
 import * as SqlClient from "@effect/sql/SqlClient";
 import { Effect } from "effect";
 import { layer, tableNames } from "../src/index.js";
+import { notificationFunctionName } from "../src/notifications.js";
 import {
   registerHistoryImportScenarios,
   registerScenarios,
@@ -23,6 +24,7 @@ const runTest = (scenario: Scenario): Promise<void> => {
     for (const table of Object.values(tables)) {
       yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
     }
+    yield* sql`DROP FUNCTION IF EXISTS ${sql(notificationFunctionName(tables.events))}()`;
   }).pipe(Effect.orDie);
   return Effect.runPromise(
     scenario({ tablePrefix }).pipe(

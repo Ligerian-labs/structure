@@ -13,6 +13,7 @@ import { type IdempotencyContext, IdempotencyStore } from "@structure-ai/cqrs";
 import { EventStore, Inbox, Outbox, SnapshotStore } from "@structure-ai/eventsourcing";
 import { Chunk, Deferred, Effect, Either, Exit, Fiber, Option, Predicate, Stream } from "effect";
 import { type AdapterOptions, layer, tableNames, withUnitOfWork } from "../src/index.js";
+import { notificationFunctionName } from "../src/notifications.js";
 import { testMetadata } from "./fixtures.js";
 import type { TestServices } from "./scenarios.js";
 
@@ -42,6 +43,7 @@ const runTest = (
     for (const table of Object.values(tables)) {
       yield* sql`DROP TABLE IF EXISTS ${sql(table)}`;
     }
+    yield* sql`DROP FUNCTION IF EXISTS ${sql(notificationFunctionName(tables.events))}()`;
   }).pipe(Effect.orDie);
   return Effect.runPromise(
     Effect.gen(function* () {

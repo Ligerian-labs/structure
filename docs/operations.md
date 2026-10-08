@@ -49,9 +49,11 @@ How an app built on `@structure-ai/*` runs, and what to do when it misbehaves. S
 
 ## Projection notifications
 
-Provide the same `EventBus` instance to writers and projection workers. In-memory stores expose it automatically. SQL writers use `EventBus.notifyAfter` around the outermost committing command transaction. Workers subscribe before catching up and unsubscribe when interrupted. A handler or decode failure still stops the worker without advancing the failed batch checkpoint; restart it after resolving the failure.
+In-memory stores supply their own `EventBus`. PostgreSQL's all-in-one layer supplies a dedicated `LISTEN` connection; revision 5's event-table trigger sends notifications after the actual outermost commit, including writes from separate API, CLI and webhook processes. Apply the migration before building a standalone `eventBusLayer`, and point workers at the same database and table prefix as writers. SQLite writers share one local bus with their workers and use `EventBus.notifyAfter` around the outermost committing transaction.
 
-Bus-backed workers perform no idle polling unless `pollInterval` is explicitly configured. Set a reconciliation interval when other processes write to the store or some writes bypass notifications. Monitor checkpoint lag against the feed head; a disconnected bus can leave an otherwise healthy worker waiting indefinitely. Restarting always catches up from its durable checkpoint. Stop the live worker before rebuilding the same projection.
+Workers subscribe before catching up and unsubscribe when interrupted. Bus-backed workers perform no idle polling unless `pollInterval` is explicitly configured; remove an existing interval when adopting PostgreSQL notifications. Configure reconciliation for external writers that have no shared transport. Monitor checkpoint lag against the feed head.
+
+A PostgreSQL listener disconnect stops the worker with `PersistenceError`; supervise and restart the entire worker with a fresh layer to reconnect. Restart catches up all committed history from the durable checkpoint. A handler or decode failure also stops the worker without advancing the failed batch checkpoint; resolve the cause before restarting. Keep one active worker per projection name and read model, and stop it before inline catch-up or rebuild. See [worker setup and connection requirements](../packages/eventsourcing-pg/README.md#projections-in-a-separate-process).
 
 ## Recovery procedures
 

@@ -32,7 +32,7 @@ const program = Effect.gen(function* () {
 | `HistoryImporter` + `HistoryImport.checksum` | Imports a frozen history with source positions, stream versions, ids, timestamps, correlation/causation, actor, partition, origin and extensions intact. Batches are atomic, checksum-verified, resumable, and idempotent. |
 | `AggregateStore.make(aggregate, registry, opts?)` | `load` (fold history), `execute` (load → decide → append with expected version), `executeWithRetry` (reload+retry on conflict only, default 3); stamps `EventMetadata` including correlation, causation, optional actor, and the command's `partition` and `extensions` (never `origin`). Stream naming: `<AggregateName>-<id>` (aggregate names must not contain `-`). |
 | `SnapshotStore` | Optional; picked up from context when provided, written every `snapshotEvery` events. |
-| `EventBus.make/layer/notifyAfter` | Scoped in-process commit notifications, broadcast with one coalesced pending signal per subscriber. `notifyAfter(effect)` signals after a successful outermost commit boundary and preserves its result and failure cause. |
+| `EventBus.make/layer/notifyAfter` | Commit-notification port with a scoped in-process default, broadcast with one coalesced pending signal per subscriber. `notifyAfter(effect)` signals after a successful outermost commit boundary and preserves its result and failure cause; transport failures propagate as `PersistenceError`. |
 | `Projection.make/catchup/run/rebuild` + `CheckpointStore` | Named projections, `run` waits on an ambient `EventBus` or polls without one, at-least-once, checkpoint per batch, unknown event types skipped and counted, `rebuild` replays with `live: false`. |
 | `Outbox` + `OutboxRelay.run/drain` | Pending → claim → publish → settle; exponential backoff with jitter; after `maxAttempts` (default 5) entries dead-letter with the last error kept for diagnosis. Scheduling is durable: `OutboxMessage.availableAt` delays the first attempt, `pending` returns only due entries, the relay persists the next eligible time through `markFailed` (backoff survives restarts), and `replay(ids)` requeues dead letters fresh. Delivery ownership is claim-based: `claim(limit, lease)` atomically takes a lease on due entries (a `FOR UPDATE SKIP LOCKED` UPDATE on PostgreSQL, one UPDATE on SQLite, a `Ref` transaction in memory), so concurrent relays never hold the same entry; settlements (`markPublished`/`markFailed`/`markDead`) take the claim's token and are fenced — a settlement from a crashed or slow worker whose lease expired and was recovered elsewhere returns `false` and writes nothing. A lease that lapses without settlement makes the entry claimable again (at-least-once delivery survives worker crashes). `OutboxRelayOptions.lease` (default 30 seconds) bounds how long a relay may hold entries. |
 | `Inbox` + `Inbox.dedupe(consumerId, messageId)` | Idempotent consumers: runs the effect only for unseen messages, marks after success. |
@@ -46,26 +46,25 @@ Exactly-once business effects come from expected-version appends plus inbox dedu
 
 `InMemoryEventStore` and `InMemoryAll` expose their own bus and notify automatically after successful nonempty appends and new history-import batches. Empty, conflicting, and unchanged writes do not notify. Keep that bus with its event store; replacing it with another bus disconnects the workers from the writers.
 
-For SQL stores, provide one shared `EventBus.layer` alongside the durable store layer and notify after the **outermost** transaction or command completes:
+For PostgreSQL, `@structure-ai/eventsourcing-pg.layer()` supplies a cross-process bus automatically. Its revision 5 event-table trigger signals after the actual outermost commit, including external SQL inserts, and drops signals on rollback. API and worker processes use the same database and table prefix; no `notifyAfter` wrapper or polling interval is needed. See [separate-process workers](../eventsourcing-pg/README.md#projections-in-a-separate-process) for migration, layer composition and restart behavior.
+
+For SQLite, provide one shared in-process `EventBus.layer` alongside the durable stores and notify after the **outermost** committing transaction:
 
 ```ts
 import { EventBus, Projection } from "@structure-ai/eventsourcing";
-import { withUnitOfWork } from "@structure-ai/eventsourcing-pg";
 import { Effect, Layer } from "effect";
 
 const services = Layer.mergeAll(durable, EventBus.layer);
 const app = Effect.gen(function* () {
   yield* Projection.run(projection).pipe(Effect.forkScoped);
-  yield* EventBus.notifyAfter(withUnitOfWork(commandEffect));
+  yield* EventBus.notifyAfter(sql.withTransaction(commandEffect));
   yield* Effect.never; // the application keeps serving commands
 }).pipe(Effect.provide(services), Effect.scoped);
 ```
 
-Build the services once for the application lifetime. Separately providing the layer to each command and worker creates different bus instances.
+Build the services once for the application lifetime. Separately providing the local layer to each command and worker creates different bus instances. Wrapping a successful nested append or savepoint would notify before the actual commit. `notifyAfter` signals only on success; original typed failures, defects and cancellation propagate unchanged, while a notification transport failure adds `PersistenceError`. A workflow that commits and then fails needs notification at each actual persistence boundary.
 
-For SQLite, use `EventBus.notifyAfter(sql.withTransaction(commandEffect))`. Wrapping a successful nested append or savepoint would notify before the actual commit, so wrap the whole command transaction. `notifyAfter` signals only on success; typed failures, defects, and cancellation propagate unchanged. The notification cannot run projection handlers inside the writer's transaction.
-
-This bus covers one process. Every successful local commit that should wake a projection must signal the same bus. For writers in other processes, writes bypassing the wrapper, or a future notification transport that can drop signals, set `run({ pollInterval: "30 seconds" })` to reconcile periodically. With a bus, this interval is a fallback deadline and signals still wake workers immediately. Without a bus, `run` retains polling with a default interval of 500 ms. Cross-process transports and automatic SQL commit notifications are outside this version.
+The default `EventBus.layer` covers one process. Every local commit must signal that same bus. For external writers without a shared transport, set `run({ pollInterval: "30 seconds" })` to reconcile periodically. With a bus, this interval is a fallback deadline and signals still wake workers immediately. Without a bus, `run` retains polling with a default interval of 500 ms. Transport subscription or wait failures stop the worker through its typed `PersistenceError` channel; restart the worker with a fresh transport layer to recover from its checkpoint.
 
 ## Partitions
 
