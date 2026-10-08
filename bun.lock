@@ -222,12 +222,12 @@
         "@structure-ai/cqrs": "workspace:*",
         "@structure-ai/domain": "workspace:*",
         "@structure-ai/eventsourcing": "workspace:*",
+        "@types/pg": "catalog:",
         "effect": "catalog:",
         "pg": "catalog:",
       },
       "devDependencies": {
         "@types/bun": "catalog:",
-        "@types/pg": "catalog:",
         "typescript": "catalog:",
       },
     },
