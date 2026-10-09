@@ -1,7 +1,9 @@
+import { writeSync } from "node:fs";
 import { Command, HelpDoc, ValidationError } from "@effect/cli";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
 import { ConfigLoadError } from "@structure-ai/config";
-import { Cause, Effect, Exit, Option } from "effect";
+import { Cause, Console as ConsoleService, Effect, Exit, type Layer, Option } from "effect";
+import type { Console as ConsoleInterface } from "effect/Console";
 
 /** The command succeeded. */
 export const EXIT_SUCCESS = 0;
@@ -85,9 +87,170 @@ export interface RunCliOptions<Name extends string, E, A> {
 }
 
 /**
+ * Writes `data` to `fd` with blocking `writeSync` until every byte is out.
+ *
+ * Bun makes piped stdout/stderr non-blocking and silently drops whatever is
+ * still queued on the async write path when the process exits, so CLI output
+ * must not rely on `stream.write`/`console.log`. `EAGAIN` (pipe full) waits
+ * briefly and retries so a slow reader is awaited rather than spun on;
+ * `EPIPE` (reader gone, e.g. `| head -1`) is a normal end of output, not a
+ * failure.
+ */
+const writeBlocking = (fd: number, data: Uint8Array): void => {
+  let offset = 0;
+  while (offset < data.length) {
+    let written: number;
+    try {
+      written = writeSync(fd, data, offset, data.length - offset);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EAGAIN") {
+        Bun.sleepSync(1);
+        continue;
+      }
+      if (code === "EPIPE") return;
+      throw error;
+    }
+    offset += written;
+  }
+};
+
+/**
+ * A stream that looks like `process.stdout`/`process.stderr` (TTY metadata,
+ * everything else inherited) but turns every `write` into a blocking
+ * {@link writeBlocking} call, so a `console.Console` built on top of it
+ * cannot lose bytes to a full pipe.
+ */
+const blockingStream = (fd: number, target: NodeJS.WriteStream): NodeJS.WriteStream => {
+  const stream = Object.create(target) as NodeJS.WriteStream;
+  Object.defineProperty(stream, "write", {
+    value: (
+      chunk: string | Uint8Array,
+      encodingOrCallback?: unknown,
+      callback?: () => void,
+    ): boolean => {
+      const done =
+        typeof encodingOrCallback === "function" ? (encodingOrCallback as () => void) : callback;
+      writeBlocking(fd, typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk);
+      if (typeof done === "function") done();
+      return true;
+    },
+  });
+  return stream;
+};
+
+/** The `console.Console` method surface {@link blockingConsole} relies on. */
+interface ConsoleSink {
+  assert(condition: boolean, ...data: ReadonlyArray<unknown>): void;
+  clear(): void;
+  count(label?: string): void;
+  countReset(label?: string): void;
+  debug(...data: ReadonlyArray<unknown>): void;
+  dir(item: unknown, options?: unknown): void;
+  dirxml(...data: ReadonlyArray<unknown>): void;
+  error(...data: ReadonlyArray<unknown>): void;
+  group(...data: ReadonlyArray<unknown>): void;
+  groupCollapsed(...data: ReadonlyArray<unknown>): void;
+  groupEnd(): void;
+  info(...data: ReadonlyArray<unknown>): void;
+  log(...data: ReadonlyArray<unknown>): void;
+  table(tabularData: unknown, properties?: ReadonlyArray<string>): void;
+  time(label?: string): void;
+  timeEnd(label?: string): void;
+  timeLog(label?: string, ...data: ReadonlyArray<unknown>): void;
+  trace(...data: ReadonlyArray<unknown>): void;
+  warn(...data: ReadonlyArray<unknown>): void;
+}
+
+/**
+ * `bun-types` leaves `console.Console` untyped; the constructor exists at
+ * runtime on Bun (verified) and its formatting matches the global console
+ * exactly, which is why it is preferred over re-implementing `util.format`
+ * semantics. Single confined cast.
+ */
+const makeConsoleSink = (): ConsoleSink =>
+  new (
+    console as {
+      readonly Console: new (options: {
+        readonly stdout: NodeJS.WriteStream;
+        readonly stderr: NodeJS.WriteStream;
+      }) => ConsoleSink;
+    }
+  ).Console({
+    stdout: blockingStream(1, process.stdout),
+    stderr: blockingStream(2, process.stderr),
+  });
+
+const sink = makeConsoleSink();
+
+/**
+ * Installs the blocking sink as the global `console` and returns the
+ * previous console. Handler code writes output with the plain `console.log`
+ * of the host (that is exactly how issue #101 reproduced), and that global
+ * does not go through the Effect `Console` service — so the service alone
+ * cannot make the process lossless. The swap is process-wide by design:
+ * `runCli` owns the process lifecycle (single entrypoint, exit code, output)
+ * and runs before any handler code can capture the old reference.
+ */
+const installGlobalSink = (): void => {
+  globalThis.console = sink as unknown as typeof globalThis.console;
+};
+
+/**
+ * `Console` service whose writes block until the bytes reach the OS. On Bun
+ * the async write path backs up when stdout is a pipe and is dropped at
+ * process exit, truncating command output (issue #101). Every consumer in a
+ * `runCli` process routes through this service — command handlers'
+ * `Console.log`, `@effect/cli`'s own help/version/completions output, and
+ * Effect's default loggers — so backing it with blocking writes makes the
+ * whole process lossless without touching each call site.
+ */
+const blockingConsole: ConsoleInterface = {
+  [ConsoleService.TypeId]: ConsoleService.TypeId,
+  assert: (...data) => Effect.sync(() => sink.assert(...data)),
+  clear: Effect.sync(() => sink.clear()),
+  count: (label) => Effect.sync(() => sink.count(label)),
+  countReset: (label) => Effect.sync(() => sink.countReset(label)),
+  debug: (...data) => Effect.sync(() => sink.debug(...data)),
+  dir: (item, options) => Effect.sync(() => sink.dir(item, options)),
+  dirxml: (...data) => Effect.sync(() => sink.dirxml(...data)),
+  error: (...data) => Effect.sync(() => sink.error(...data)),
+  group: (options) =>
+    Effect.sync(() => {
+      if (options?.collapsed === true) {
+        sink.groupCollapsed(options.label);
+        return;
+      }
+      sink.group(options?.label);
+    }),
+  groupEnd: Effect.sync(() => sink.groupEnd()),
+  info: (...data) => Effect.sync(() => sink.info(...data)),
+  log: (...data) => Effect.sync(() => sink.log(...data)),
+  table: (tabularData, properties) => Effect.sync(() => sink.table(tabularData, properties)),
+  time: (label) => Effect.sync(() => sink.time(label)),
+  timeEnd: (label) => Effect.sync(() => sink.timeEnd(label)),
+  timeLog: (label, ...data) => Effect.sync(() => sink.timeLog(label, ...data)),
+  trace: (...data) => Effect.sync(() => sink.trace(...data)),
+  warn: (...data) => Effect.sync(() => sink.warn(...data)),
+  unsafe: sink,
+};
+
+/**
+ * Provides the blocking {@link ConsoleService} for a Bun CLI process. Used
+ * by {@link runCli}; exported for entrypoints that run commands outside
+ * `runCli` (custom runtimes) and for tests.
+ */
+export const layerBlockingConsole: Layer.Layer<never> = ConsoleService.setConsole(blockingConsole);
+
+/**
  * Production entrypoint: parses `process.argv`, runs the root command with
  * the Bun platform services provided, and exits with a classified,
  * deterministic exit code (see {@link exitCodeFor}).
+ *
+ * All output — handler `Console.log` calls, `@effect/cli` help/version
+ * output, error lines — goes through the blocking console (see
+ * {@link layerBlockingConsole}) so nothing is lost when stdout is a pipe:
+ * by the time the process exits, every byte has reached the OS.
  *
  * Usage/parse errors and `--help`/`--version` are reported by `@effect/cli`
  * itself; a `ConfigLoadError` prints its full issue list to stderr and exits
@@ -101,6 +264,7 @@ export interface RunCliOptions<Name extends string, E, A> {
  */
 export const runCli = <Name extends string, E, A>(options: RunCliOptions<Name, E, A>): void => {
   const prefix = options.serviceName ?? options.name;
+  installGlobalSink();
   const execute = Command.run(options.root, { name: options.name, version: options.version });
   const app = execute(process.argv).pipe(
     Effect.tapErrorCause((cause) =>
@@ -115,11 +279,12 @@ export const runCli = <Name extends string, E, A>(options: RunCliOptions<Name, E
         }
         const message = messageForCause(cause);
         if (message !== undefined) {
-          process.stderr.write(`${prefix}: ${message}\n`);
+          writeBlocking(2, Buffer.from(`${prefix}: ${message}\n`, "utf8"));
         }
       }),
     ),
     Effect.provide(BunContext.layer),
+    Effect.provide(layerBlockingConsole),
   );
   BunRuntime.runMain(app, {
     disableErrorReporting: true,
