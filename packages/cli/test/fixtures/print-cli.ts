@@ -11,7 +11,9 @@ import { defineCommand, runCli } from "../../src/index.js";
 
 const LINES = Number.parseInt(process.env.PRINT_LINES ?? "256", 10);
 
-class Boom extends Data.TaggedError("Boom")<{ readonly classification: "permanent" }> {}
+class Boom extends Data.TaggedError("Boom")<{ readonly reason: string }> {
+  readonly classification = "permanent";
+}
 
 const root = defineCommand({
   name: "print",
@@ -26,7 +28,7 @@ const root = defineCommand({
         if (i % 2 === 0) console.log(line);
         else yield* Console.log(line);
       }
-      if (process.env.PRINT_FAIL === "1") return yield* new Boom();
+      if (process.env.PRINT_FAIL === "1") return yield* new Boom({ reason: "requested failure after printing" });
     }),
 });
 
