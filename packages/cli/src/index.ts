@@ -16,6 +16,7 @@ export {
   EXIT_TEMPFAIL,
   EXIT_USAGE,
   exitCodeFor,
+  layerBlockingConsole,
   type RunCliOptions,
   runCli,
   runCliForTest,
