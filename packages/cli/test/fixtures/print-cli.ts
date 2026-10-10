@@ -28,7 +28,8 @@ const root = defineCommand({
         if (i % 2 === 0) console.log(line);
         else yield* Console.log(line);
       }
-      if (process.env.PRINT_FAIL === "1") return yield* new Boom({ reason: "requested failure after printing" });
+      if (process.env.PRINT_FAIL === "1")
+        return yield* new Boom({ reason: "requested failure after printing" });
     }),
 });
 
