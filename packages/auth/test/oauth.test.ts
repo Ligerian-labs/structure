@@ -223,6 +223,43 @@ describe("OAuth providers", () => {
     expect(result.flowContext).toEqual({ intent: "sign-up" });
   });
 
+  test("expires flow context with the OAuth state", async () => {
+    let clock = new Date("2026-08-20T12:00:00.000Z");
+    const memory = inMemoryAuthStore();
+    const oauth = fakeOAuth({
+      sub: "google-subject",
+      email: "oauth@example.com",
+      email_verified: true,
+    });
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(config),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: allowAllRateLimiter,
+      oauthHttpClient: oauth.client,
+      primitives: { now: () => clock },
+    });
+    const started = await Effect.runPromise(
+      auth.beginOAuth("tenant-a", "google", { flowContext: { intent: "sign-up" } }),
+    );
+    // advance past the default 10-minute OAuth state TTL
+    clock = new Date("2026-08-20T12:11:00.000Z");
+    expect(
+      await Effect.runPromise(
+        Effect.flip(
+          auth.completeOAuth({
+            tenantId: "tenant-a",
+            provider: "google",
+            state: Redacted.make(stateFrom(started.authorizationUrl)),
+            code: Redacted.make("authorization-code"),
+          }),
+        ),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    // the expired state row is gone entirely: no context can be recovered
+    expect(memory.snapshot().oauthStates).toHaveLength(0);
+  });
+
   test("rejects oversized flow context before persisting any state", async () => {
     const { auth, memory } = makeHarness({
       sub: "google-subject",

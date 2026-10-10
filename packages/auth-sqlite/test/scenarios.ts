@@ -223,6 +223,23 @@ export const registerStoreScenarios = (makeHarness: MakeHarness): void => {
       ).toBeUndefined();
     }));
 
+  test("does not return flow context from an expired OAuth state", () =>
+    withHarness(makeHarness, async ({ store }) => {
+      const state: OAuthStateRecord = {
+        tenantId: "tenant-a",
+        provider: "github",
+        stateHash: "expired-flow-hash",
+        codeVerifier: Redacted.make("pkce-verifier"),
+        redirectUri: "https://example.com/auth/oauth/github/callback",
+        flowContext: { intent: "sign-up" },
+        expiresAt: expired,
+      };
+      await run(store.putOAuthState(state));
+      expect(
+        await run(store.consumeOAuthState("tenant-a", "github", "expired-flow-hash", now)),
+      ).toBeUndefined();
+    }));
+
   test("consumes OAuth state once and enforces provider identity uniqueness", () =>
     withHarness(makeHarness, async ({ store }) => {
       const state: OAuthStateRecord = {
