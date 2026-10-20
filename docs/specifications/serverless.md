@@ -40,53 +40,71 @@ Proposed subpaths:
 
 No existing foundation package depends on serverless; no circular dependency or `http → serverless` edge is allowed. Applications compose auth and authorization just as they do today; serverless does not import them to invent a second policy system. `structure-infra` consumes the versioned contract, not guest application modules.
 
+The proposed `@structure-ai/config/settings` subpath must export only Setting/Settings, without the current config barrel's `load.js → node:fs` import. It is a required extraction, not an optional optimization. The guest loader consumes the controlled init maps through an injected ConfigProvider; file/env loading stays host-only.
+
 Current [HTTP serving](../../packages/http/src/serve.ts) and [runtime launch](../../packages/runtime/src/AppRuntime.ts) import `@effect/platform-bun`. Their current barrels are not guest-safe. Before implementation, expose a transport-neutral HTTP subpath containing API definitions, middleware, error mapping and CQRS bridge, and a runtime-core subpath for Readiness/Shutdown if reused. These are **proposed prerequisites**, not existing exports. Preserve existing public exports for Bun callers. Do not solve an accidental Bun import by providing dummy Bun globals or blindly tree-shaking platform initialization. Build graph inspection must show that guest code does not import platform-bun, Node builtins, process-global config loaders or native adapters.
 
-The runtime-core extraction must preserve existing readiness and bounded drain semantics without importing `launch`. The guest adapter owns its instance Scope and protocol-triggered shutdown rather than installing OS signal handlers. No changes to existing packages or manifests are part of this specification PR. Implementation should introduce the prerequisites in separately reviewable changes, each updating its package docs and machine index when real exports exist. This PR deliberately adds no published-package entry to `llms.txt`.
+The runtime-core extraction must preserve existing readiness and bounded drain semantics without importing `launch`. The guest adapter owns its instance Scope and protocol-triggered shutdown rather than installing OS signal handlers. No changes to existing packages or manifests are part of this specification PR. Implementation should introduce the prerequisites in separately reviewable changes, each updating its package docs and machine index when real exports exist. This PR deliberately adds no published-package entry to `llms.txt`. These choices remain proposals; acceptance of the design requires an ADR before implementing the runtime, per this directory's rules.
 
 ## Public API sketches
 
-The following proposed type-level contract keeps resource acquisition and all application dependencies explicit. It uses the existing [`Setting<A>`](../../packages/config/src/Settings.ts) shape. `Application.define` accepts a fully composed constructor: unresolved services besides Scope are a type error. Initialization errors are retained internally as typed `E`; only fixed safe error codes cross stdio.
+The proposed contract keeps instance acquisition and request dependencies explicit. It uses the existing [`Setting<A>`](../../packages/config/src/Settings.ts) shape through a **future guest-safe subpath**. The runtime supplies `HostHttp` at instance acquisition and supplies both `HostHttp` and `Invocation` per request. All other application services must be composed before these boundaries.
 
 ```ts
-import type { Setting } from "@structure-ai/config";
+import type { Setting } from "@structure-ai/config/settings";
 import type { Effect, Scope } from "effect";
 
-interface Handler {
+type RequestServices = Invocation | HostHttp;
+interface Handler<E> {
   readonly handle: (
     request: Request,
-  ) => Effect.Effect<Response, RequestFailure, Invocation>;
+  ) => Effect.Effect<Response, E | RequestFailure, RequestServices>;
+}
+interface ApplicationInstance<E> {
+  readonly handler: Handler<E>;
+  readonly ready: Effect.Effect<void, E>;
 }
 interface ApplicationSpec<C, E> {
   readonly id: string;
   readonly settings: Setting<C>;
-  readonly capabilities: ReadonlyArray<HttpsCapability>;
-  readonly make: (config: C) => Effect.Effect<Handler, E, Scope.Scope>;
-  readonly ready: (config: C) => Effect.Effect<void, E>;
+  readonly make: (
+    config: C,
+  ) => Effect.Effect<ApplicationInstance<E>, E, Scope.Scope | HostHttp>;
 }
 declare const Application: {
   readonly define: <C, E>(spec: ApplicationSpec<C, E>) => ApplicationDefinition<C, E>;
 };
 ```
 
-`ApplicationDefinition<C, E>` is an opaque value retaining the inferred config/error types and the spec. `HttpsCapability` is the shared contract's `{ kind: "https", name, origins }` shape. `RequestFailure` is a union of the classified serverless errors below; application business failures must be mapped at their HTTP boundary. `define` validates static declarations and duplicate keys without running config loading, application effects, network or listeners at module import time. `ready` is a bounded required-resource check run after `make` and before emitting ready. If no additional probe is needed, supply `() => Effect.void`. Revision 1 forbids remote calls during initialization, so `make` and `ready` may check only local configuration, layers and resources. Required remote-service preflight must be a host admission check with its own scoped authority and timeout; an app requiring guest-side network initialization is unsupported. Runtime probes after startup belong to the handler/resource policy; a known unusable instance must retire through drain.
+`ApplicationDefinition<C, E>` is opaque and retains the inferred spec. `define` validates declarations without loading config or running application effects, network or listeners. `make` acquires shared resources in the instance Scope and returns both a handler and a readiness Effect which closes over those resources. Runtime runs that readiness Effect before emitting ready. Use `ready: Effect.void` when no further local probe is needed. Revision 1 forbids remote calls during initialization: acquiring `HostHttp` is allowed, invoking fetch is not, because no Invocation exists. A remote-service preflight belongs to host admission with separate authority/timeouts; apps requiring guest network initialization are unsupported. A known unusable running instance fails affected requests and retires through drain.
 
-`Invocation` is a proposed Effect Context service with request-scoped `requestId`, `correlationId`, `remainingMs: Effect<number>`, `signal: AbortSignal` and the immutable effective limits. The handler may read it but cannot replace the host's deadline. The adapter provides it afresh on each request and removes it before warm reuse. Instance-scoped services must not capture a prior invocation. `HostHttp` is a proposed Context service supplied by the guest runtime; a handler calls `HostHttp.fetch(grant, request)` returning an Effect of bounded Response or `CapabilityDenied | DeadlineExceeded | DependencyUnavailable | BodyTooLarge`. Its service requirement is `Invocation`. Runtime owns host call IDs and never exposes a general control-plane client.
+`Invocation` and `HostHttp` are proposed Effect Context tags. `Invocation` carries a fresh `requestId`, `correlationId`, `remainingMs: Effect<number>`, `signal: AbortSignal` and immutable effective limits. `HostHttp` carries `fetch(grant, request)`, whose Effect requires `Invocation` and fails with `CapabilityDenied | DeadlineExceeded | DependencyUnavailable | BodyTooLarge`. Code first yields `HostHttp`, then calls the service method. Access therefore requires `HostHttp | Invocation`, exactly the handler's R channel. Cancellation remains Effect interruption, including a host `callResult` with code `Cancelled`; it is not a recoverable fetch success. Runtime owns call IDs, supplies each request Context and removes it before warm reuse. Instance services may retain the broker service but must never capture a previous Invocation.
 
 Proposed HTTP adapter shapes:
 
 ```ts
-// Imports from future @structure-ai/serverless/http.
+// Future @structure-ai/serverless/http; namespaces from @effect/platform.
 declare const fromHttpApp: (
-  app: HttpApp.Default<HttpProblem, Scope.Scope>,
-) => Handler;
+  app: HttpApp.Default<
+    HttpProblem,
+    Scope.Scope | RequestServices | HttpRouter.HttpRouter.DefaultServices
+  >,
+) => Handler<never>;
 
-declare const fromHttpApi: <A, E>(
-  apiLayer: Layer.Layer<A | HttpApi.Api | HttpRouter.HttpRouter.DefaultServices, E>,
-) => Effect.Effect<Handler, E | AdapterInitError, Scope.Scope>;
+declare const fromHttpApi: <E>(
+  apiLayer: Layer.Layer<
+    HttpApi.Api,
+    E,
+    RequestServices | HttpRouter.HttpRouter.DefaultServices
+  >,
+) => Handler<E>;
 ```
 
-These sketches refer to the installed `@effect/platform` HttpApp/HttpApi/HttpRouter namespaces and Effect Layer/Scope types. `fromHttpApp` requires an already provided app. `fromHttpApi` acquires the platform services in the instance Scope, installs the same standard middleware as HTTP core, proves initialization/readiness before returning, and disposes them at drain. It must preserve the API's schemas and CQRS declared business-error 422 encoding. It cannot defer a failed layer build until the first request and still emit ready. The installed `HttpApiBuilder.toWebHandler` is a useful implementation reference, but its Promise handler and `dispose` alone do not prove startup error typing or cancellation. The adapter must retain typed initialization failures and wire AbortSignal to Effect interruption, including compound Cause behavior. No `orDie`, unsafe `_tag` casts or false `E = never` types may hide infrastructure failures.
+`HttpRouter.DefaultServices` in the installed platform is `HttpPlatform | Etag.Generator | FileSystem | Path`. The adapter **provides**, rather than requires the caller to construct, guest implementations: lexical POSIX Path; FileSystem restricted to `/artifact` read-only and `/tmp` with the contract quota, with symlink escape denied; Etag over admitted files; and HttpPlatform file responses through that restricted filesystem, buffered within bodyBytes. No OS-backed or Bun default layer is used. File APIs outside these roots fail with typed permission errors; unsupported watches/native operations fail explicitly. Static serving is not an MVP feature, even though the low-level platform interfaces must exist for HttpApi composition.
+
+For each invocation, the adapter builds `apiLayer` in a new request Scope using the current Invocation, HostHttp and its restricted platform services. API group layers and endpoint handlers can therefore yield both tags. Shared application/domain resources are acquired in `make` and provided to `apiLayer` as values/layers; request-owned route construction is never memoized across invocations. This per-request build is a deliberate MVP cost. Readiness proves shared instance resources and adapter definition validation, not construction of request-dependent layers. A request-layer acquisition failure remains typed `E` until the runtime maps it safely to Internal; it does not retroactively become a startup failure. `fromHttpApp` supplies the same services and maps expected HttpProblems through standard HTTP middleware.
+
+Preserve API schemas and the CQRS bridge's declared business-error 422 encoding. The installed `HttpApiBuilder.toWebHandler` is a reference, not an implementation guarantee: a future adapter must own its request runtime/context/dispose and bridge AbortSignal to Effect interruption and compound Cause semantics. No `orDie`, unsafe `_tag` cast or false `E = never` may hide resource failures. Request finalizers finish before a terminal frame; instance finalizers run only at drain.
 
 Proposed guest entrypoint and build APIs:
 
@@ -97,6 +115,7 @@ declare const run: <C, E>(app: ApplicationDefinition<C, E>) => void;
 // @structure-ai/serverless/build, host only
 interface BuildOptions {
   readonly entry: string;
+  readonly definitionFile: string;
   readonly outDirectory: string;
   readonly runnerLockFile: string;
   readonly sourceRevision: string;
@@ -106,16 +125,16 @@ declare const build: (
 ) => Effect.Effect<ArtifactDescriptor, BuildError>;
 ```
 
-`run` is the single process boundary. It installs the approved shim, reads the private protocol, owns the Effect runtime/scope and exits deterministically. Domain/application modules never call `runPromise`, create ManagedRuntime or fork daemon work. `ArtifactDescriptor` contains verified `artifactDigest`, manifest and output location. `BuildError` is a classified permanent error with bounded safe issue codes and file locations, never config/secret values. Runner locks identify exact engine, source/toolchain and import inventory, not registry `latest` or an unconstrained engine semver.
+`run` owns the process runtime, verified bootstrap/manifest, stdio and instance Scope. Domain modules never execute effects at process boundaries or fork daemon work. `ArtifactDescriptor` contains the verified digest, manifest and output path. BuildError is permanent, with bounded safe codes/file locations. Runner locks identify exact engine/source/toolchain/import inventory, never registry `latest`.
 
-Proposed tagged errors use `Data.TaggedError` and a readonly `classification` field. `UnsupportedRuntime`, `InvalidConfig`, `ProtocolViolation`, `CapabilityDenied`, `BodyTooLarge` and `AdapterInitError` are permanent; `DeadlineExceeded` and `DependencyUnavailable` are transient. `Cancelled` is permanent in the wire error schema but remains an interruption in Effect until the process boundary. Error objects retain safe operation IDs/codes, not raw bodies, secret URLs or external exception messages. `ProtocolViolation` is host-local and terminates an instance; it is not an accepted guest SafeFailure code. HTTP business conflicts retain the existing conflict classification and 409 mapping rather than becoming runtime errors.
+`RequestFailure` is exactly `CapabilityDenied | DeadlineExceeded | DependencyUnavailable | BodyTooLarge | AdapterInitError`. Proposed classes use `Data.TaggedError` and readonly classification. CapabilityDenied, BodyTooLarge, AdapterInitError, InvalidConfig, UnsupportedRuntime and host-local ProtocolViolation are permanent; DeadlineExceeded and DependencyUnavailable are transient. Arbitrary typed `E` and AdapterInitError map to SafeFailure Internal at the process boundary; InvalidConfig/UnsupportedRuntime during boot map to their matching startup codes. A defect maps to Internal, interruption to Cancelled with the host reason, and ProtocolViolation terminates the instance without fabricating a guest error frame. Expected application business errors must already be mapped to HTTP. No error channel carries raw causes, bodies, secret URLs or upstream messages; local typed causes are retained until the owning safe translation boundary.
 
 ## Example application and build flow
 
-This complete **proposed minimal composition sketch** has no database, listener or network dependency. `Application`, `run` and the generated artifact are future APIs. The Settings/Effect/Schema names follow current repository APIs. It demonstrates the separation of settings, handler and process entrypoint, not a WASIX execution result.
+This **proposed composition sketch** uses future Settings and serverless subpaths. It has no network, listener or database. Its `ready` Effect can access resources closed over by `make`. It demonstrates API shape, not WASIX execution.
 
 ```ts
-import { Settings } from "@structure-ai/config";
+import { Settings } from "@structure-ai/config/settings";
 import { Application } from "@structure-ai/serverless";
 import { run } from "@structure-ai/serverless/wasix";
 import { Effect } from "effect";
@@ -123,37 +142,75 @@ import { Effect } from "effect";
 const app = Application.define({
   id: "greeting-api",
   settings: Settings.struct({ greeting: Settings.string("GREETING") }),
-  capabilities: [],
   make: (config) => Effect.succeed({
-    handle: (request) => Effect.succeed(
-      new Response(request.method === "HEAD" ? null : config.greeting, {
-        status: 200,
-        headers: { "content-type": "text/plain; charset=utf-8" },
-      }),
-    ),
+    handler: {
+      handle: (request) => Effect.succeed(
+        new Response(request.method === "HEAD" ? null : config.greeting, {
+          status: 200,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        }),
+      ),
+    },
+    ready: Effect.void,
   }),
-  ready: () => Effect.void,
 });
 
 run(app);
 ```
 
-For a real CQRS API, keep the existing command/query definitions, deciders and handler registration in application modules. Replace the entrypoint's Bun listener with `fromHttpApi` over a fully provided API layer and the standard middleware. Replace persistence/provider implementations with explicitly supported ports. Test both transports against the same domain behavior fixtures. In particular, the guest adapter must preserve [HTTP error semantics](../../packages/http/README.md#errors): validation 400, authentication 401, permission 403, not found 404, conflict 409, declared business failure 422, throttling 429, deadline 504 and safe defect 500.
+A network handler can yield `HostHttp` and `Invocation` in `handle`; `fromHttpApi` endpoint layers have the same requirements and receive fresh providers per request. Preserve [existing HTTP error semantics](../../packages/http/README.md#errors), with declared business [422 encoding owned by the CQRS bridge](../../packages/http/src/cqrs.ts): validation 400, authentication 401, principal permission 403, not found 404, conflict 409, business failure 422, throttling 429, deadline 504 and safe defect 500. A platform egress CapabilityDenied is an Internal-style deployment fault, mapped to gateway 502, not an application principal's 403.
+
+### Declarative build input
+
+The app author supplies `serverless.build.json`. This is the **single source for requested limits/capabilities and artifact key lists**. It is strict JSON with exactly `schemaVersion: 1`, `appId` and `requirements`; validation of the latter two is identical to the shared artifact schema. All 15 limit keys are mandatory, including defaults copied deliberately by the author or a future scaffold command. No inferred limits or evaluation of the entry module occurs at build time.
+
+Proposed definition for the greeting app:
+
+```json
+{
+  "schemaVersion": 1,
+  "appId": "greeting-api",
+  "requirements": {
+    "configKeys": ["GREETING"],
+    "secretKeys": [],
+    "capabilities": [],
+    "limits": {
+      "memoryBytes": 134217728,
+      "workerRssBytes": 268435456,
+      "startupMs": 10000,
+      "requestMs": 30000,
+      "cancelGraceMs": 100,
+      "drainMs": 5000,
+      "idleMs": 60000,
+      "bodyBytes": 1048576,
+      "headerBytes": 16384,
+      "headerCount": 64,
+      "frameBytes": 2097152,
+      "activeRequests": 1,
+      "activeCalls": 4,
+      "callsPerRequest": 32,
+      "logBytesPerSecond": 16384
+    }
+  }
+}
+```
+
+`build` schema-decodes this file and copies appId/requirements into the manifest. It gets runner/module/engine/toolchain/import identity from the approved runner lock, file sizes/digests from bundled bytes, and source/lock/builder provenance from explicit CI inputs. It never imports or executes `entry`, `Application.define` or `run`. `inspect` also never runs app code. Bundling parses source and resolves locked imports without running application build hooks or package scripts. Executing an arbitrary caller-provided bundler plugin is outside this API.
+
+At actual guest initialization, the runtime compares `ApplicationSpec.id` and sorted `settings.docs` names/secret flags to the verified manifest's appId/configKeys/secretKeys before loading values; mismatch is InvalidConfig. Required/default/type validation then uses the Setting schema. Duplicate docs names or mismatched metadata fail safely. The runtime supplies no code-declared capability map: manifest requirements and host init grants are the only source. `verify` executes the bundle only in the pinned sandbox with explicit test bindings, exercises this comparison and conformance fixtures, and reports which tests ran. No secret is needed to inspect/build an artifact.
 
 Proposed commands, **not available today**:
 
 ```sh
-structure-serverless build --entry src/guest.ts --runner-lock runner.lock.json --out dist/serverless
+structure-serverless build --entry src/guest.ts --definition serverless.build.json --runner-lock runner.lock.json --out dist/serverless
 structure-serverless inspect dist/serverless
 structure-serverless verify dist/serverless
 structure-serverless dev --artifact dist/serverless --config-file dev-config.json --secret-file dev-secrets.json
 ```
 
-Build runs on the developer/CI host, never on a production worker. It resolves locked TypeScript dependencies, bundles ESM, rejects unresolved/dynamic/native imports and unsupported globals, includes the exact approved runner, emits the contract manifest and checks every digest. A conservative scanner cannot prove arbitrary JavaScript safety; manifest/import/runtime admission and negative execution tests remain necessary. A safe default forbids direct `eval`, `Function`, `std`/`os`, raw timers beyond the shim and arbitrary module loaders. No package manager runs in the guest.
+Build runs only on the developer/CI host. It emits a closed ESM bundle, approved runner, manifest/digest and import report. Reject unresolved/dynamic/native imports, direct eval/Function/std/os, unsupported globals and ambient module loaders. Scanning is not a security proof; admission and negative execution tests remain required. No package manager runs in the guest. `dev` uses the same artifact/protocol, explicit scoped bindings and private secret file; values never enter argv/artifact/watcher output. Simulated harness reports label themselves simulated. Production deployment and authorization belong to structure-infra.
 
-`inspect` reports versions, files, import inventory and requested permissions without executing application code. `verify` checks bytes/schema/imports and runs local conformance fixtures in the pinned runner; its report identifies which tests actually ran. `dev` uses the same artifact and protocol with explicit local bindings. The secret file is private and never included in the artifact or watcher output; values are not passed on the command line. The developer tool validates keys, closes resources on interruption and starts no broader network grant than configured. A simulated harness is useful for fast tests but must label itself simulated. Production deployment and tenant authorization belong to structure-infra, not an SDK command that guesses credentials.
-
-Build outputs include manifest, exact artifact digest, lock/source/toolchain identities, import report and a compatibility report. Reproducibility means repeating the same pinned build yields identical files/digest; source maps, absolute build paths, timestamps and random IDs must not perturb it. If upstream compilation is nondeterministic, record that failure and block the reproducibility gate rather than claiming build-once promotion. Promote the validated immutable bytes through environments; never rebuild with secrets or environment names.
+Rebuilding the same pinned inputs must yield identical files/digest. Absolute paths, timestamps, maps and random IDs cannot perturb outputs; nondeterminism blocks the reproducibility gate. Promote those exact bytes with new environment bindings. Capability origins are a predeclared finite superset: a single build definition may enumerate both staging and production origins for a named grant; each environment's policy/init permits only its subset, and its config selects one permitted URL. These nonsecret origins are deliberate artifact topology, not an environment-specific build or environment-name code branch. Adding an unknown future origin requires a newly reviewed artifact; revision 1 provides no origin substitution beyond that superset. S01 promotion is tested within the predeclared set.
 
 ## JavaScript and package compatibility
 
@@ -162,9 +219,9 @@ Build outputs include manifest, exact artifact digest, lock/source/toolchain ide
 | ESM, Promise, typed arrays, Map/Set | Closed bundle plus embedded engine | QuickJS documents language support; full application graph remains unproved |
 | Effect scheduling | Queue microtasks, bounded setTimeout/clearTimeout, monotonic clock | Shim/event-loop integration must prove yielding, interruption, timer cleanup and no starvation |
 | HTTP Web APIs | Request/Response/Headers/URL, TextEncoder/Decoder, AbortController/Signal | Explicit shim work, binary/duplicate-header/abort tests required |
-| Fetch / crypto / entropy | Named `HostHttp.fetch`; secure entropy and UUID via restricted runner binding | No ambient network fetch; no blanket WebCrypto/Intl/Node crypto claim; algorithms require explicit support |
-| config | Settings schemas and controlled maps, secrets Redacted | Loader graph must avoid filesystem/process imports; transport-neutral extraction may be required |
-| observability | Safe structured stderr, guest metrics/log bridge | Existing native OTLP/exporter startup must be replaced; no direct collector sockets |
+| Fetch / crypto / entropy | Named HostHttp service fetch; secure entropy and UUID via restricted runner binding | No ambient network fetch; no blanket WebCrypto/Intl/Node crypto claim; algorithms require explicit support |
+| config | Settings schemas and controlled maps, secrets Redacted | Required future config/settings extraction and controlled-map loader; current config barrel is rejected |
+| observability | Bounded untrusted stderr logs only | No guest metric/span export or OTLP bridge in revision 1; host owns metrics/traces |
 | domain / CQRS | Pure Effect deciders/handlers and serializable schemas | Bus internals/dependencies still require exact graph/run tests; durable idempotency stays external |
 | HTTP API schemas/middleware | Future HTTP core subpath and guest adapter | Current Bun-serving barrel is not a WASIX adapter |
 | runtime | Instance Scope/readiness/drain through proposed core split | `launch` / BunRuntime / OS signal listeners excluded |
@@ -175,7 +232,7 @@ Each supported tuple pins SDK, Effect/platform versions, engine/runner/toolchain
 
 ## Config, state and background work
 
-Config validation precedes telemetry and application resource acquisition. Report all safe key/type issues together and fail readiness. Do not report values or arbitrary parse causes. Instance config is immutable. Local dotenv/file expansion happens only in host tooling, then feeds explicit maps. The SDK must not read its worker's shell environment or choose logic by names such as production/staging. Dynamic flags need a later explicit capability with timeout/refresh policy; they cannot mutate a running binding silently.
+Config validation precedes application log setup and resource acquisition. Report all safe key/type issues together and fail readiness. Do not report values or arbitrary parse causes. Instance config is immutable. Local dotenv/file expansion happens only in host tooling, then feeds explicit maps. The SDK must not read its worker's shell environment or choose logic by names such as production/staging. Dynamic flags need a later explicit capability with timeout/refresh policy; they cannot mutate a running binding silently.
 
 The filesystem and guest globals are ephemeral. Durable state belongs to an owned external service with its own tenant authorization and transactional guarantees. Host routing isolation does not filter database rows. Warm instances may retain bounded disposable connection-independent caches, with tenant/user-safe keys, expiry and no correctness dependency. Scale-down, crashes and redeploys may discard them at any point.
 
@@ -193,7 +250,7 @@ This is a **proposed migration pattern**, not an audit of Bigatelier's current r
 
 1. Inventory the slice's dependency graph and current response/error schemas. Identify Bun.serve/runtime imports, database/native libraries, file access, auth/session crypto, streaming endpoints, recurring jobs and outbox/projection loops. Keep unsupported routes on the current runtime. Establish the current command and read-model behavior with existing feature fixtures.
 2. Keep deciders, command/query payloads and business errors in transport-independent modules. Keep the service owning durable data, authentication/session verification and command transactions on the current supported runtime. Expose a narrow HTTPS API authorized for the deployment service identity and the actual end-user action. The guest must forward end-user identity through a verified delegation scheme; deployment identity alone cannot authorize every user.
-3. Add a guest entrypoint for the catalog slice using future `fromHttpApi`; provide an application port through `HostHttp.fetch("catalog", request)`. Its manifest declares only the catalog origin and required config/secret keys. The server constructs the URL from validated config plus safe encoded identifiers, never from an unrestricted caller URL. Verify principal/tenant authorization on the owning service as well as the guest.
+3. Add a guest entrypoint for the catalog slice using future `fromHttpApi`; provide an application port by yielding HostHttp in a request-owned handler/layer and invoking its fetch service with grant `catalog`. Its manifest declares only the catalog origin and required config/secret keys. The server constructs the URL from validated config plus safe encoded identifiers, never from an unrestricted caller URL. Verify principal/tenant authorization on the owning service as well as the guest.
 4. Commands carry a durable idempotency key to that service and commit domain state plus integration outbox atomically there. Return the committed operation ID, or 202 only for a persisted receipt. A lost guest response may be reconciled by querying that ID/key. The existing worker continues job dispatch, projections and outbox delivery through scale-to-zero events.
 5. Run migrations through the existing deployment policy, build one immutable artifact, create a scoped staging binding and pass the contract tests. Test missing identity, wrong tenant, duplicate command, crash after commit, secret rotation and read-model lag. Compare wire responses with the existing API, including business 422 and conflicts.
 6. Route a limited catalog slice only after readiness and compatibility gates. Observe cold/warm latency, errors and downstream connections, then expand gradually. Roll back the route to the prior compatible runtime/binding on failure; do not rebuild or reverse a database migration automatically.
@@ -202,13 +259,28 @@ For this first slice, the WASIX guest is an application adapter and may delegate
 
 ## Lifecycle, error and telemetry integration
 
-Follow the [normative lifecycle](wasix-contract.md#lifecycle-cancellation-and-http-outcomes): boot/hello/init, typed settings, telemetry, resource acquisition, required probes, then ready. One request Scope owns its fibers, timers, calls and finalizers. Terminal frames are emitted only after request cleanup. Drain flips unready, stops dispatch, finishes within the smaller request/drain budget, closes instance layers, flushes bounded telemetry and exits. Forced kill is an expected failure mode, not a successful graceful shutdown. A durable side effect must survive both paths correctly.
+Follow the [normative lifecycle](wasix-contract.md#lifecycle-cancellation-and-http-outcomes): boot/hello/init, typed settings, bounded log setup, shared resource acquisition, local required probes, then ready. Request-dependent HttpApi layers build within each request, with their own typed failure path. One request Scope owns its fibers, timers, calls and finalizers. Terminal frames are emitted only after request cleanup. Drain flips unready, stops dispatch, finishes within the smaller request/drain budget, closes instance layers, flushes bounded telemetry and exits. Forced kill is an expected failure mode, not a successful graceful shutdown. A durable side effect must survive both paths correctly.
 
 SDK interruption is cooperative inside the guest; the host's independent timer/process boundary enforces hard limits even during busy loops. Fetch abort closes host work and rejects the guest Effect, but cannot undo a remote commit. Neither host nor SDK retries a dispatched request. Application client retries are bounded, use the same durable key when appropriate and fit within the remaining deadline. No nested implicit retries may multiply load.
 
-The host owns ingress/queue/startup/dispatch/egress/termination metrics. Guest observability carries safe request/correlation IDs into logs and traces, service/artifact version and matched route templates. Never emit raw path/query, request/response bodies, Authorization/Cookie, secret/config values or prompts. Bounded metric labels are route template, stable operation and failure code; request/user/tenant IDs are not metric labels. Approved tenant context may enter access-controlled logs under retention policy. Host audit events separately record who changed deployment, grant, secret version and routing. stderr is untrusted, rate-limited tenant output, never trusted audit evidence.
+The host owns ingress/queue/startup/dispatch/egress/termination metrics and traces. Revision 1 guest telemetry is only bounded untrusted stderr, never a protocol frame. The SDK may write sanitized log text with the authoritative Invocation correlation ID and matched route template; the host wraps it in instance/request metadata but does not parse it as trusted metrics, spans or audit events. No guest OTLP exporter or joined distributed trace is provided. Arbitrary tenant code can deliberately leak its own secret to its tenant log sink; platform redaction cannot make that safe. Host credentials and other tenants' data must never be accessible to it.
 
-Required signals include cold-start duration/failure, active/queued/rejected requests, remaining capacity, request outcomes/latency, guest and worker memory, hard kills, egress denial/timeouts, lost/dropped telemetry and external queue/projection lag where relevant. Define user-facing latency/error objectives from measured cold/warm behavior before production rollout. No latency or cost benefit is promised by this spec. Operators must be able to trace an admitted request to artifact/config/policy identity without logging sensitive data.
+Do not emit raw paths/queries, bodies, Authorization/Cookie, secret/config values or prompts from SDK logging. Host metrics use bounded route/operation/failure labels, never request/user/tenant IDs. Approved tenant context may enter access-controlled logs under retention policy. Host audit events separately record deployment/grant/secret/routing changes. Host spans cannot join guest spans without a later protocol extension; correlation IDs join host records and guest logs. Native OTLP exports stay in host components.
+
+Required host signals include cold-start duration/failure, active/queued/rejected requests, capacity, outcomes/latency, guest/worker memory, hard kills, egress denials and dropped stderr/host-export records. External workers monitor their queue/projection lag. Host exporter outage must remain bounded and observable; S08 exercises host collection failure or stderr backpressure, not a nonexistent guest exporter. Define user-facing objectives from measured cold/warm behavior before production rollout. No latency/cost benefit is promised.
+
+## SDK assumptions and blocking spikes
+
+All rows are future work. A failed or unexecuted row blocks the named implementation phase; no upstream language feature claim substitutes for the experiment.
+
+| ID | Assumption to settle | Experiment and exit evidence |
+| --- | --- | --- |
+| K1 | QuickJS/WASIX can run the closed Effect graph and scheduler | Pin tuple; run Promise/microtask/timer/yield/encoding/Schema fixtures in actual guest; inventory every import/global; block phase 1 on unsupported graph |
+| K2 | Guest-safe config/HTTP/runtime/observability extractions preserve Bun APIs and deny ambient authority | Typecheck both entrypoints; inspect transitive imports; negative node:fs/Bun/std/os cases; restricted platform FileSystem/Path/HttpPlatform tests before phase 2 |
+| K3 | Entry bundling is closed and deterministic without evaluation | Build twice from fixed definition/runner/source/lock inputs; exact byte/digest equality; sentinel top-level side effects must not execute during build/inspect; mismatched settings metadata fails actual guest init |
+| K4 | AbortSignal and Effect scopes preserve interruption and typed/compound causes | Request-dependent HttpApi layer fixtures yield Invocation/HostHttp; cancel during acquisition/handler/finalizer; inspect no leaked request services/calls; busy loop/microtasks killed by supervisor |
+| K5 | Resource/platform/stdio bindings fit the fixed budgets | Binary/header/ETag/file responses, forbidden roots, frame corruption, heap/linear/native memory, timers and stack tests; bounded failure with sibling tenant responsiveness |
+| K6 | Cold/warm cost and observability are operationally acceptable | Measured startup/per-request distributions, memory/CPU and downstream connection use; finite log/host-export outage; operator-approved objectives before phase 4 |
 
 ## Delivery phases and acceptance
 
@@ -225,14 +297,14 @@ All runtime rows below are **unexecuted future acceptance requirements**. Docume
 
 | ID | Scenario | Observable acceptance |
 | --- | --- | --- |
-| S01 | Build the same locked greeting app twice; change only deployment config | Identical artifact bytes/digest; changed runtime greeting with new configRevision; no secret/env embedded |
+| S01 | Build the same locked greeting app twice without evaluating entry; change only deployment config within declared origin superset | Identical artifact bytes/digest; changed runtime greeting with new configRevision; no secret/env embedded |
 | S02 | Build app importing Bun, node:fs, native addon, std/os, dynamic loader or unapproved module | Explicit safe build error/import report, no deployable artifact |
-| S03 | Missing, unknown or invalid settings plus secret parse failure | All safe issues reported before make/ready; no value disclosure; startup fails |
+| S03 | Build definition/settings metadata mismatch; missing, unknown or invalid settings plus secret parse failure | All safe issues reported before make/ready; no value disclosure; startup fails |
 | S04 | Existing HttpApi/CQRS fixture under Bun transport and guest adapter | Same schema/status/business 422/compound Cause semantics; separate WASIX run recorded |
-| S05 | Handler uses Invocation/HostHttp, then a different authenticated user invokes warm instance | Fresh request scope, no prior principal/transaction/call, calls attributed and authorized correctly |
+| S05 | HttpApi endpoint layer/handler yields Invocation/HostHttp; a different authenticated user invokes warm instance | Fresh request scope, no prior principal/transaction/call, calls attributed and authorized correctly |
 | S06 | Handler forks work, times out, disconnects, defects or returns a too-large streaming body | Request scopes closed/joined before terminal; safe mapping and bounded kill where uncooperative |
 | S07 | External command commits but response is lost; retry uses durable key; scale guest to zero | One durable business result, reconciled status, outbox/worker progresses independently |
-| S08 | Force startup/readiness/finalizer failure and telemetry sink outage | No premature readiness, bounded failure/drain, no recursive logging, dropped signals observable |
+| S08 | Force shared startup/readiness and request-layer/finalizer failure; block stderr or host collector/exporter | No premature readiness, bounded failure/drain, no recursive logging, dropped signals observable |
 
 The pure testing harness must allow deterministic host config/secret maps, fake capability responses, deadlines and cancellation, capture structured terminal outcomes and assert no leaked fibers/calls. It must not perform network, use real providers or pretend to enforce native process isolation. Runner integration tests execute the same artifact/frame fixtures in actual WASIX; security tests exercise denied syscalls, malformed frames, SSRF and hostile CPU/memory/Promise loops with an independent supervisor. Real external-service scenarios run only in explicit isolated integration infrastructure, separate from the default network-free suite.
 
