@@ -16,6 +16,7 @@ Living documentation for the framework. "Living" means every document here has a
 | How do I contribute? | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
 | Machine-readable package index | [`llms.txt`](../llms.txt) |
 | Step-by-step task recipes | `.agents/skills/*/SKILL.md` |
+| What is proposed for WASIX serverless applications and hosting? | [serverless SDK](specifications/serverless.md), [shared WASIX contract](specifications/wasix-contract.md), [structure-infra hosting](specifications/structure-infra.md) |
 
 ## Contents
 
@@ -26,6 +27,7 @@ Living documentation for the framework. "Living" means every document here has a
 - [performance-audit-2026-09.md](performance-audit-2026-09.md) — measured baseline, current bottlenecks and follow-ups.
 - [performance-results/](performance-results/) — checked-in timing records and CPU profile excerpts; see `2026-09-16.json` (audit baseline), `2026-09-16-inmemory-append.json` (append optimization, issue #89) and their profile excerpts.
 - [decisions/](decisions/) — architecture decision records: numbered, immutable once accepted, superseded rather than edited.
+- Proposed specifications, not implemented package/runtime support: [serverless SDK](specifications/serverless.md), [WASIX artifact and guest/host contract](specifications/wasix-contract.md), and [structure-infra hosting](specifications/structure-infra.md). The hosting link is provisional until the companion specification PR lands. API/CLI sketches and runtime acceptance scenarios are proposals; documentation checks do not prove WASIX compatibility.
 
 ## Rules for this directory
 
