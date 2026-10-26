@@ -87,7 +87,7 @@ Run `fixtures plan <scenario> --input '<json>'` before `fixtures load`. Loading 
 
 Inspect `PersistenceError.operation` and its cause in controlled diagnostics; never serialize the raw cause to clients. The error does not establish whether a write committed. Check the operation's idempotency and stored outcome before retrying. If idempotency cleanup fails, the combined cause retains the original dispatch failure and cleanup failure; the claim can remain in flight until TTL expiry.
 
-A jobs worker stops on queue failures, defects or compound handler causes instead of silently losing a child fiber. Supervise `runWorker`; `workerLayer` logs failures and reports a stopped worker through readiness when available. The Nisshi relay retries transient broker failures only; permanent broker errors and SQL failures need operator recovery. Pending Nisshi rows can publish after an append reported failure.
+A jobs worker run that fails (queue failure, defect, compound handler cause) is restarted by `workerLayer` with bounded jittered backoff; readiness reports not ready only while the worker is down. Previously the worker stopped permanently on the first failure and needed operator supervision of `runWorker`; `restart: false` keeps that behavior for external supervision. The Nisshi relay retries transient broker failures only; permanent broker errors and SQL failures need operator recovery. Pending Nisshi rows can publish after an append reported failure.
 
 Second-factor enrollment lookup failures must prevent session creation. Wire `totp.isEnrolled` directly into the auth hook; never recover a failed lookup as `false`.
 
