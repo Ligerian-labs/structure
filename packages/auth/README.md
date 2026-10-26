@@ -415,7 +415,7 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 
 ## Security and operations
 
-- `baseUrl` must use HTTPS except `http://localhost`/`127.0.0.1` for development.
+- `baseUrl` must use HTTPS except on loopback hosts for development: `localhost` and every name under `.localhost` (RFC 6761 §6.3 — browsers resolve `*.localhost` to loopback and treat it as a trustworthy origin, e.g. `http://pr-12.app.localhost:18080`), plus `127.0.0.1` and `[::1]`. The same loopback rule applies to `passkey.origins`.
 - OAuth secrets, access tokens, codes, session tokens, and email tokens are `Redacted` and excluded from audit events and errors.
 - Rate-limiter keys are SHA-256 digests; email addresses, caller subjects, and tokens are not sent to the limiter. Anonymous walls key on the caller the app names (`callerSubject`), never on a shared constant.
 - Second-factor material is sealed at rest under the instance secret; access tokens are verified by signature before any claim is trusted; refresh-token reuse revokes the family.
