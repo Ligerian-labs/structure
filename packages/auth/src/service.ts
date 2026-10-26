@@ -372,12 +372,30 @@ const validatePassword = (
   return Effect.void;
 };
 
+/**
+ * RFC 6761 §6.3 loopback hostnames: `localhost` and every name below
+ * `.localhost` (both with and without the trailing root dot), plus the
+ * loopback IP addresses. Browsers resolve `*.localhost` to loopback and
+ * treat `http://*.localhost` as a potentially trustworthy origin, so local
+ * preview hosts such as `http://pr-12.app.localhost:18080` are local for
+ * the plain-HTTP allowance. A hostname like `localhost.com` does not end
+ * in `.localhost` and is not local.
+ */
+const isLocalHostname = (hostname: string): boolean => {
+  const name = hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
+  return (
+    name === "localhost" ||
+    name.endsWith(".localhost") ||
+    name === "127.0.0.1" ||
+    name === "::1" ||
+    name === "[::1]"
+  );
+};
+
 const validateTenantConfig = (
   config: TenantAuthConfig,
 ): Effect.Effect<TenantAuthConfig, AuthValidationError> => {
-  const localhost =
-    config.baseUrl.hostname === "localhost" || config.baseUrl.hostname === "127.0.0.1";
-  if (config.baseUrl.protocol !== "https:" && !(localhost && config.baseUrl.protocol === "http:")) {
+  if (config.baseUrl.protocol !== "https:" && !(isLocalHostname(config.baseUrl.hostname) && config.baseUrl.protocol === "http:")) {
     return Effect.fail(
       new AuthValidationError({
         field: "baseUrl",
@@ -436,7 +454,7 @@ const validateTenantConfig = (
           new AuthValidationError({ field: "passkey.origins", reason: "must contain valid URLs" }),
         );
       }
-      const localOrigin = origin.hostname === "localhost" || origin.hostname === "127.0.0.1";
+      const localOrigin = isLocalHostname(origin.hostname);
       if (
         origin.origin !== originValue ||
         (origin.protocol !== "https:" && !(localOrigin && origin.protocol === "http:")) ||

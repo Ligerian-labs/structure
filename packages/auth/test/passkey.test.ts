@@ -420,3 +420,39 @@ describe("passkeys", () => {
     expect(ed25519.algorithm).toBe("Ed25519");
   });
 });
+
+describe("passkey origins on loopback hosts (RFC 6761)", () => {
+  test("accepts an exact http://*.localhost origin within the RP ID and rejects lookalikes", async () => {
+    const memory = inMemoryAuthStore();
+    const localConfig: TenantAuthConfig = {
+      ...config,
+      baseUrl: new URL("http://pr-12.app.localhost:18080"),
+      passkey: { ...config.passkey, rpName: "Example", rpId: "app.localhost", origins: ["http://pr-12.app.localhost:18080"] },
+    };
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(localConfig),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: allowAllRateLimiter,
+    });
+    // A valid config reaches the challenge (begin returns a dummy challenge
+    // for unknown users rather than failing, so success itself is the proof).
+    const options = await Effect.runPromise(auth.beginPasskeyAuthentication("tenant-a", "nobody@example.com"));
+    expect(options.rpId).toBe("app.localhost");
+
+    const lookalike: TenantAuthConfig = {
+      ...localConfig,
+      passkey: { ...config.passkey, rpName: "Example", rpId: "app.localhost.com", origins: ["http://pr-12.app.localhost.com:18080"] },
+    };
+    const lookalikeAuth = makeAuth({
+      store: inMemoryAuthStore().store,
+      resolveTenant: () => Effect.succeed(lookalike),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: allowAllRateLimiter,
+    });
+    const rejected = await Effect.runPromise(
+      Effect.flip(lookalikeAuth.beginPasskeyAuthentication("tenant-a", "nobody@example.com")),
+    );
+    expect(String(rejected)).toContain("passkey.origins");
+  });
+});

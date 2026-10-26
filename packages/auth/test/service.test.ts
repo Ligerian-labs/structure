@@ -5,6 +5,7 @@ import {
   type AuthEmail,
   allowAllRateLimiter,
   argon2id,
+  AuthValidationError,
   EmailNotVerified,
   InvalidAuthToken,
   InvalidCredentials,
@@ -609,5 +610,41 @@ describe("passkey verification wall", () => {
     expect(keys[0]).not.toBe(keys[1]);
     expect(keys[2]).toBe(await run(sha256("credential-1")));
     expect(keys[0]).toBe(await run(sha256("203.0.113.7")));
+  });
+});
+
+describe("loopback base URLs (RFC 6761)", () => {
+  const localAuth = (url: URL) => {
+    const memory = inMemoryAuthStore();
+    return makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed({ ...tenantConfig, baseUrl: url }),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: allowAllRateLimiter,
+    });
+  };
+
+  test("accepts plain HTTP on *.localhost preview hosts", async () => {
+    const auth = localAuth(new URL("http://pr-12.app.localhost:18080"));
+    const cleared = await run(auth.sessionCookie("tenant-a", undefined));
+    expect(cleared).toContain("Max-Age=0");
+    expect(cleared).not.toContain("Secure");
+  });
+
+  test("accepts plain HTTP on [::1]", async () => {
+    const auth = localAuth(new URL("http://[::1]:3000"));
+    await run(auth.sessionCookie("tenant-a", undefined));
+  });
+
+  test("still rejects plain HTTP on non-local hostnames", async () => {
+    const auth = localAuth(new URL("http://pr-12.app.localhost.com:18080"));
+    const error = await fail(auth.sessionCookie("tenant-a", undefined));
+    expect(error).toBeInstanceOf(AuthValidationError);
+    expect((error as AuthValidationError).field).toBe("baseUrl");
+  });
+
+  test("still rejects http://localhost.com and not-actually-local lookalikes", async () => {
+    const auth = localAuth(new URL("http://localhost.com:18080"));
+    await fail(auth.sessionCookie("tenant-a", undefined));
   });
 });
