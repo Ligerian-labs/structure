@@ -13,7 +13,13 @@ export {
   nextRun,
   parseCron,
 } from "./cron.js";
-export { type JobsLayerOptions, layer, workerLayer } from "./layer.js";
+export {
+  type JobsLayerOptions,
+  layer,
+  type WorkerLayerOptions,
+  type WorkerRestartOptions,
+  workerLayer,
+} from "./layer.js";
 export { type JobsReadinessOptions, jobsReadinessCheck } from "./readiness.js";
 export {
   backoffMillis,
