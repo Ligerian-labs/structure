@@ -427,7 +427,12 @@ describe("passkey origins on loopback hosts (RFC 6761)", () => {
     const localConfig: TenantAuthConfig = {
       ...config,
       baseUrl: new URL("http://pr-12.app.localhost:18080"),
-      passkey: { ...config.passkey, rpName: "Example", rpId: "app.localhost", origins: ["http://pr-12.app.localhost:18080"] },
+      passkey: {
+        ...config.passkey,
+        rpName: "Example",
+        rpId: "app.localhost",
+        origins: ["http://pr-12.app.localhost:18080"],
+      },
     };
     const auth = makeAuth({
       store: memory.store,
@@ -437,12 +442,19 @@ describe("passkey origins on loopback hosts (RFC 6761)", () => {
     });
     // A valid config reaches the challenge (begin returns a dummy challenge
     // for unknown users rather than failing, so success itself is the proof).
-    const options = await Effect.runPromise(auth.beginPasskeyAuthentication("tenant-a", "nobody@example.com"));
+    const options = await Effect.runPromise(
+      auth.beginPasskeyAuthentication("tenant-a", "nobody@example.com"),
+    );
     expect(options.rpId).toBe("app.localhost");
 
     const lookalike: TenantAuthConfig = {
       ...localConfig,
-      passkey: { ...config.passkey, rpName: "Example", rpId: "app.localhost.com", origins: ["http://pr-12.app.localhost.com:18080"] },
+      passkey: {
+        ...config.passkey,
+        rpName: "Example",
+        rpId: "app.localhost.com",
+        origins: ["http://pr-12.app.localhost.com:18080"],
+      },
     };
     const lookalikeAuth = makeAuth({
       store: inMemoryAuthStore().store,

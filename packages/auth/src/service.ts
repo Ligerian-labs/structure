@@ -395,7 +395,10 @@ const isLocalHostname = (hostname: string): boolean => {
 const validateTenantConfig = (
   config: TenantAuthConfig,
 ): Effect.Effect<TenantAuthConfig, AuthValidationError> => {
-  if (config.baseUrl.protocol !== "https:" && !(isLocalHostname(config.baseUrl.hostname) && config.baseUrl.protocol === "http:")) {
+  if (
+    config.baseUrl.protocol !== "https:" &&
+    !(isLocalHostname(config.baseUrl.hostname) && config.baseUrl.protocol === "http:")
+  ) {
     return Effect.fail(
       new AuthValidationError({
         field: "baseUrl",

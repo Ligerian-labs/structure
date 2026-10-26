@@ -3,9 +3,9 @@ import { Effect, Redacted } from "effect";
 import {
   type AuthAuditEvent,
   type AuthEmail,
+  AuthValidationError,
   allowAllRateLimiter,
   argon2id,
-  AuthValidationError,
   EmailNotVerified,
   InvalidAuthToken,
   InvalidCredentials,
