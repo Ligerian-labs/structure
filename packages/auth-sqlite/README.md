@@ -33,6 +33,7 @@ const store = makeAuthStore(sql, options);
 
 - User/password and user/OAuth creation use database transactions and tenant-scoped uniqueness.
 - One-time tokens, OAuth states, and passkey challenges use atomic `DELETE ... RETURNING` consumption.
+- Provider mismatch does not consume another provider's state/context: OAuth state consumption is scoped by tenant, provider, and state hash, so a callback routed to the wrong provider fails without burning the valid state (or its flow context) for the correct one.
 - Password replacement and all-session revocation commit in one transaction.
 - Passkey labels and AAGUIDs survive round trips. Rename and removal match tenant, user, and credential id; counter updates compare the expected stored value and fail with `IdentityConflict` on races.
 - Sessions and tokens contain only hashes supplied by `@structure-ai/auth`; raw bearer values never enter these tables.
