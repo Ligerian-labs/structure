@@ -87,7 +87,7 @@ The service methods take the caller as a trailing optional argument (`signInPass
 | --- | --- |
 | Password | Registration, mandatory email verification, sign-in/out, change, forgotten-password reset, and all-session revocation. Bun `password` performs Argon2id off the main thread (defaults: 64 MiB, 3 iterations). |
 | Magic link | Enumeration-safe request response, expiring single-use token, verified account provisioning, opaque session creation. |
-| Sessions | 256-bit opaque bearer token returned as `Redacted`; only SHA-256 digests enter storage. Expiry, individual revocation, all-user revocation, and secure cookie helpers. |
+| Sessions | 256-bit opaque bearer token returned as `Redacted`; only SHA-256 digests enter storage. Expiry, individual revocation, all-user revocation, and secure cookie helpers. Session slots keep several sessions in one browser, each request naming its own. |
 | Passkey | Registration/authentication ceremonies; strict challenge, type, origin, RP ID hash, user-presence/user-verification, signature, and counter validation. Supports ES256, RS256, and Ed25519, owner labels, AAGUID metadata, rename, and removal. |
 | OAuth | Authorization code + S256 PKCE + single-use state. Built-in Google, GitHub, X, and LinkedIn definitions; injected bounded HTTP client and provider resolver. |
 | Multi-tenancy | Tenant ID scopes users, emails, identities, tokens, sessions, challenges, passkeys, and provider configuration. |
@@ -180,6 +180,33 @@ const { handler } = await Effect.runPromise(
 Invalid shapes, unknown ids, and same-method path collisions (a `:provider` segment matches any single segment, including defaults) fail construction with every violation aggregated in `InvalidAuthRoutes` — overrides never shadow each other silently at runtime. Renaming paths changes neither cookie paths nor the origin/tenant/error envelope. Route ids are contract-stable; renaming an id is a breaking change.
 
 Magic-link/reset/verification emails land on application pages. Set those pages with `TenantAuthConfig.links.emailVerification`, `links.magicLink`, and `links.passwordReset`. Each value may be relative to `baseUrl` or an absolute URL. The service adds the token query parameter. Those pages POST the token to the matching endpoint so link scanners do not consume credentials merely by fetching a URL.
+
+## Session slots
+
+A browser keeps one session cookie per origin, so a second sign-in in the same browser replaces the session of every open tab. Session slots let one browser hold several sessions (one person per tab, a support agent's second account), each request naming the one it acts with.
+
+- A **slot** is a subject's id, matching `SLOT_PATTERN` (1 to 128 base64url characters). Its session travels in a second cookie, `<cookieName>.<slot>` (`slotCookieName`), with exactly the usual cookie's attributes.
+- A request names its slot in the `x-session-slot` header (`SESSION_SLOT_HEADER`), or in the `session_slot` query parameter (`SESSION_SLOT_QUERY`) on GET and HEAD only, for the addresses a browser loads by itself (an `<img>`, an `<iframe>`, a new tab). `requestedSlot(request)` reads the header first; a header and a query that disagree, two query values that disagree, or a value outside the pattern are `invalid`, never a guess.
+- `sessionCookie(tenantId, session, { slot })` writes (or, with `undefined`, clears) the slot's cookie; `sessionTokenFromCookie(tenantId, cookieHeader, { slot })` reads the slot's cookie only, never the usual one. Both fail with `AuthValidationError` on a slot outside the pattern.
+- The built-in routes honour the selector. An invalid slot answers 400 `invalid_session_slot`. A named slot reads the slot's cookie only, and every session `Set-Cookie` (sign-ins, password change and reset, the OAuth callback, sign-out) writes the slot's cookie only: a sign-out ends the slot's session and clears the slot's cookie, leaving the usual cookie and the other slots alive. The session held in slot S must belong to subject S; another subject's session there answers as no session.
+- A request that names no slot is served exactly as before, by the usual cookie alone.
+
+Your own routes read a slot the same way; the subject check is theirs to make:
+
+```ts
+const named = requestedSlot(request); // a Web Request or an @effect/platform HttpServerRequest
+if (named._tag === "invalid") return badRequest("invalid_session_slot");
+const slot = named._tag === "slot" ? { slot: named.slot } : undefined;
+const token = yield* auth.sessionTokenFromCookie(tenantId, cookieHeader, slot);
+const session = token === undefined ? undefined : yield* auth.getSession(tenantId, token);
+// The session held in slot S serves subject S or nobody.
+const signedIn = slot !== undefined && session?.user.id !== slot.slot ? undefined : session;
+
+// Signing a subject in for one tab: its own slot, the usual cookie untouched.
+const setCookie = yield* auth.sessionCookie(tenantId, fresh, { slot: fresh.user.id });
+```
+
+Each slot cookie adds about 100 bytes to every request. `sessionTokenFromCookie` ignores a `Cookie` header over 16 KiB, measured without its slot cookies, so slots never cost a browser its usual session. Clearing the dead ones stays with the application: on a slot sign-in, `slotCookiesOf(cookieName, cookieHeader)` lists the slot cookies the browser sent (once per slot, tokens `Redacted`), and `sessionCookie(tenantId, undefined, { slot })` clears one.
 
 ## API keys
 
@@ -424,6 +451,7 @@ OAuth profiles without email are supported (notably X). Unverified provider emai
 | --- | --- |
 | `makeAuth`, `AuthService`, `MakeAuthOptions`, `PasskeyRegistrationMetadata` | Main Effect workflow service, including optional passkey labels at registration. |
 | `makeAuthHandler`, `AuthHandlerOptions`, `AuthRouteId`, `AuthRouteViolation` | Web-standard transport adapter with configurable route paths. |
+| `requestedSlot`, `SESSION_SLOT_HEADER`, `SESSION_SLOT_QUERY`, `SLOT_PATTERN`, `slotCookieName`, `slotCookiesOf`, `SessionSlotOptions` | Session slots: the per-request selector and the slot cookies that `sessionCookie` and `sessionTokenFromCookie` write and read with `{ slot }`. |
 | `AuthStore`, `inMemoryAuthStore` | Persistence port and development/test adapter. |
 | `argon2id`, `PasswordHasher` | Bun Argon2id implementation and replacement port. |
 | `OAuthProvider*`, `builtInOAuthProvider`, `fetchOAuthHttpClient` | Provider definitions, tenant resolver, exchange/profile engine, HTTP port. |
