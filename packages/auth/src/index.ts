@@ -144,6 +144,17 @@ export {
   type RegisterPasswordInput,
 } from "./service.js";
 export {
+  requestedSlot,
+  SESSION_SLOT_HEADER,
+  SESSION_SLOT_QUERY,
+  type SessionSlotOptions,
+  type SessionSlotRequest,
+  type SessionSlotSelection,
+  SLOT_PATTERN,
+  slotCookieName,
+  slotCookiesOf,
+} from "./session-slots.js";
+export {
   type AuthStore,
   type InMemoryAuthSnapshot,
   type InMemoryAuthStore,

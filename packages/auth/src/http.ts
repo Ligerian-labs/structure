@@ -16,6 +16,7 @@ import {
 import type { OAuthProviderId, TenantId } from "./model.js";
 import { validateFlowContext } from "./oauth.js";
 import type { AuthService, AuthServiceError } from "./service.js";
+import { requestedSlot } from "./session-slots.js";
 import type { PasskeyAuthenticationResponse, PasskeyRegistrationResponse } from "./webauthn.js";
 
 export interface AuthHandlerOptions {
@@ -75,6 +76,12 @@ const jsonResponse = (
   Response.json(body, {
     status,
     headers: { "cache-control": "no-store", ...headers },
+  });
+
+const invalidSessionSlot = (): Response =>
+  jsonResponse(400, {
+    error: "invalid_session_slot",
+    message: "The session slot named by this request is not valid",
   });
 
 const redirectResponse = (location: string, cookie: string): Response =>
@@ -485,7 +492,25 @@ export const makeAuthHandler = (
           return yield* new AuthValidationError({ field: "origin", reason: "is not allowed" });
         }
       }
-      const cookie = yield* auth.sessionTokenFromCookie(tenantId, request.headers.get("cookie"));
+      const named = requestedSlot(request);
+      if (named._tag === "invalid") return invalidSessionSlot();
+      // Naming a slot, the request reads and writes the slot's cookie only.
+      const slot = named._tag === "slot" ? { slot: named.slot } : undefined;
+      const presented = yield* auth.sessionTokenFromCookie(
+        tenantId,
+        request.headers.get("cookie"),
+        slot,
+      );
+      // The session held in slot S serves subject S or nobody: another
+      // subject's live session there is no session. A dead token keeps the
+      // answer a dead cookie gets.
+      const sessionToken: Effect.Effect<Redacted.Redacted<string> | undefined, AuthServiceError> =
+        slot === undefined || presented === undefined
+          ? Effect.succeed(presented)
+          : auth.getSession(tenantId, presented).pipe(
+              Effect.map((session) => (session.user.id === slot.slot ? presented : undefined)),
+              Effect.catchTag("InvalidCredentials", () => Effect.succeed(presented)),
+            );
       const subject = options.callerSubject?.(request);
       const caller = subject === undefined ? undefined : { subject };
 
@@ -528,21 +553,23 @@ export const makeAuthHandler = (
             200,
             { user: session.user, expiresAt: session.expiresAt },
             {
-              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+              "set-cookie": yield* auth.sessionCookie(tenantId, session, slot),
             },
           );
         }
         case "signOut": {
+          const cookie = yield* sessionToken;
           if (cookie !== undefined) yield* auth.signOut(tenantId, cookie);
           return jsonResponse(
             200,
             { signedOut: true },
             {
-              "set-cookie": yield* auth.sessionCookie(tenantId, undefined),
+              "set-cookie": yield* auth.sessionCookie(tenantId, undefined, slot),
             },
           );
         }
         case "getSession": {
+          const cookie = yield* sessionToken;
           if (cookie === undefined) return jsonResponse(200, { session: null });
           const session = yield* auth.getSession(tenantId, cookie);
           return jsonResponse(200, {
@@ -565,11 +592,12 @@ export const makeAuthHandler = (
             200,
             { user: session.user, expiresAt: session.expiresAt },
             {
-              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+              "set-cookie": yield* auth.sessionCookie(tenantId, session, slot),
             },
           );
         }
         case "changePassword": {
+          const cookie = yield* sessionToken;
           if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
           const body = yield* decodeBody(request, maxBodyBytes);
           const session = yield* auth.changePassword(
@@ -582,7 +610,7 @@ export const makeAuthHandler = (
             200,
             { user: session.user, expiresAt: session.expiresAt },
             {
-              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+              "set-cookie": yield* auth.sessionCookie(tenantId, session, slot),
             },
           );
         }
@@ -601,7 +629,7 @@ export const makeAuthHandler = (
             200,
             { user: session.user, expiresAt: session.expiresAt },
             {
-              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+              "set-cookie": yield* auth.sessionCookie(tenantId, session, slot),
             },
           );
         }
@@ -640,6 +668,7 @@ export const makeAuthHandler = (
               reason: "state and code are required",
             });
           }
+          const cookie = yield* sessionToken;
           const completed = yield* auth.completeOAuth({
             tenantId,
             provider,
@@ -647,7 +676,7 @@ export const makeAuthHandler = (
             code: Redacted.make(code),
             ...(cookie === undefined ? {} : { currentSessionToken: cookie }),
           });
-          const sessionCookie = yield* auth.sessionCookie(tenantId, completed.session);
+          const sessionCookie = yield* auth.sessionCookie(tenantId, completed.session, slot);
           if (options.oauthCallbackRedirect !== undefined) {
             const location =
               completed.returnTo ??
@@ -670,10 +699,12 @@ export const makeAuthHandler = (
           );
         }
         case "passkeyRegisterOptions": {
+          const cookie = yield* sessionToken;
           if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
           return jsonResponse(200, yield* auth.beginPasskeyRegistration(tenantId, cookie));
         }
         case "passkeyRegisterVerify": {
+          const cookie = yield* sessionToken;
           if (cookie === undefined) return yield* new InvalidCredentials({ reason: "session" });
           const body = yield* decodeBody(request, maxBodyBytes);
           const label = yield* stringField(body, "label", true);
@@ -701,7 +732,7 @@ export const makeAuthHandler = (
             200,
             { user: session.user, expiresAt: session.expiresAt },
             {
-              "set-cookie": yield* auth.sessionCookie(tenantId, session),
+              "set-cookie": yield* auth.sessionCookie(tenantId, session, slot),
             },
           );
         }

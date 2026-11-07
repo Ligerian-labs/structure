@@ -41,6 +41,12 @@ import {
   noOpAuthAuditSink,
   type RateLimiter,
 } from "./ports.js";
+import {
+  lengthWithoutSlotCookies,
+  type SessionSlotOptions,
+  SLOT_PATTERN,
+  slotCookieName,
+} from "./session-slots.js";
 import type { AuthStore } from "./store.js";
 import {
   type PasskeyAuthenticationOptions,
@@ -56,6 +62,7 @@ const DEFAULT_SESSION_TTL = 30 * 24 * 60 * 60 * 1_000;
 const DEFAULT_VERIFY_TTL = 24 * 60 * 60 * 1_000;
 const DEFAULT_MAGIC_TTL = 15 * 60 * 1_000;
 const DEFAULT_RESET_TTL = 60 * 60 * 1_000;
+const MAX_COOKIE_HEADER_LENGTH = 16_384;
 
 export interface AuthPrimitives {
   readonly now: () => Date;
@@ -189,13 +196,27 @@ export interface AuthService {
     tenantId: TenantId,
     userId: string,
   ) => Effect.Effect<void, AuthServiceError>;
+  /**
+   * The `Set-Cookie` value carrying `session`, or clearing the cookie when
+   * `session` is undefined. With a `slot`, the same value for the slot's
+   * cookie `<cookieName>.<slot>`: the usual cookie's attributes exactly, the
+   * usual cookie untouched.
+   */
   readonly sessionCookie: (
     tenantId: TenantId,
     session: AuthSession | undefined,
+    options?: SessionSlotOptions,
   ) => Effect.Effect<string, AuthServiceError>;
+  /**
+   * The session token a `Cookie` header carries: the usual cookie's, or with
+   * a `slot` the slot cookie's alone, never a fall back to the usual cookie.
+   * A header longer than 16 KiB once its slot cookies are set aside carries
+   * no token.
+   */
   readonly sessionTokenFromCookie: (
     tenantId: TenantId,
     cookieHeader: string | null,
+    options?: SessionSlotOptions,
   ) => Effect.Effect<Redacted.Redacted<string> | undefined, AuthServiceError>;
   /**
    * Walled on the caller's subject (never on the provider id, which every
@@ -487,6 +508,16 @@ const validateTenantConfig = (
 };
 
 const tokenValue = (token: Redacted.Redacted<string>): string => Redacted.value(token);
+
+/** The slot named in a cookie call, refused outside `SLOT_PATTERN`: it lands in a cookie name. */
+const validSlot = (
+  options: SessionSlotOptions | undefined,
+): Effect.Effect<string | undefined, AuthValidationError> =>
+  options?.slot === undefined || SLOT_PATTERN.test(options.slot)
+    ? Effect.succeed(options?.slot)
+    : Effect.fail(
+        new AuthValidationError({ field: "slot", reason: "is not a valid session slot" }),
+      );
 
 export const makeAuth = (options: MakeAuthOptions): AuthService => {
   const hasher = options.passwordHasher ?? argon2id();
@@ -892,10 +923,12 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         Effect.flatMap(() => options.store.revokeUserSessions(tenantId, userId)),
         Effect.tap(() => recordAudit(tenantId, "sessions-revoked", "succeeded", { userId })),
       ),
-    sessionCookie: (tenantId, session) =>
+    sessionCookie: (tenantId, session, slotOptions) =>
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
-        const name = config.session?.cookieName ?? "structure_session";
+        const slot = yield* validSlot(slotOptions);
+        const cookieName = config.session?.cookieName ?? "structure_session";
+        const name = slot === undefined ? cookieName : slotCookieName(cookieName, slot);
         const path = config.session?.cookiePath ?? "/";
         const sameSite = config.session?.cookieSameSite ?? "Lax";
         const domain =
@@ -912,11 +945,21 @@ export const makeAuth = (options: MakeAuthOptions): AuthService => {
         );
         return `${name}=${tokenValue(session.token)}; Path=${path}; HttpOnly; SameSite=${sameSite}${secure}; Max-Age=${maxAge}${domain}`;
       }),
-    sessionTokenFromCookie: (tenantId, cookieHeader) =>
+    sessionTokenFromCookie: (tenantId, cookieHeader, slotOptions) =>
       Effect.gen(function* () {
         const config = yield* configFor(tenantId);
-        if (cookieHeader === null || cookieHeader.length > 16_384) return undefined;
-        const name = config.session?.cookieName ?? "structure_session";
+        const slot = yield* validSlot(slotOptions);
+        if (cookieHeader === null) return undefined;
+        const cookieName = config.session?.cookieName ?? "structure_session";
+        // The guard measures the header without its slot cookies: the slots a
+        // browser holds never cost it its session.
+        if (
+          cookieHeader.length > MAX_COOKIE_HEADER_LENGTH &&
+          lengthWithoutSlotCookies(cookieName, cookieHeader) > MAX_COOKIE_HEADER_LENGTH
+        ) {
+          return undefined;
+        }
+        const name = slot === undefined ? cookieName : slotCookieName(cookieName, slot);
         for (const segment of cookieHeader.split(";")) {
           const separator = segment.indexOf("=");
           if (separator < 0) continue;
