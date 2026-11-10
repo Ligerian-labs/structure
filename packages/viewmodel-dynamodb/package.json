@@ -1,0 +1,39 @@
+{
+  "name": "@structure-ai/viewmodel-dynamodb",
+  "version": "0.0.0",
+  "description": "ViewStore over the DynamoDB single table: declared access patterns become sparse composite-key GSIs; undeclared queries fail loudly.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/viewmodel-dynamodb"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect-aws/dynamodb": "catalog:",
+    "@aws-sdk/client-dynamodb": "catalog:",
+    "@structure-ai/domain": "workspace:*",
+    "@structure-ai/viewmodel": "workspace:*",
+    "@aws-sdk/lib-dynamodb": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:",
+    "@structure-ai/eventsourcing-dynamodb": "workspace:*"
+  }
+}

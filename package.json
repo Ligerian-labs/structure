@@ -44,7 +44,10 @@
       "@connectrpc/connect": "^2.2.0",
       "@connectrpc/connect-node": "^2.2.0",
       "pg": "^8.23.0",
-      "@types/pg": "^8.15.5"
+      "@types/pg": "^8.15.5",
+      "@effect-aws/dynamodb": "^1.1.0",
+      "@aws-sdk/client-dynamodb": "^3.0.0",
+      "@aws-sdk/lib-dynamodb": "^3.0.0"
     }
   },
   "scripts": {

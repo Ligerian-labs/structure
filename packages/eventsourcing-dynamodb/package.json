@@ -1,0 +1,38 @@
+{
+  "name": "@structure-ai/eventsourcing-dynamodb",
+  "version": "0.0.0",
+  "description": "Durable event-sourcing adapters for the same ports over Amazon DynamoDB: single-table layout, ULID global feed, transactional outbox.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/eventsourcing-dynamodb"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect-aws/dynamodb": "catalog:",
+    "@structure-ai/domain": "workspace:*",
+    "@structure-ai/eventsourcing": "workspace:*",
+    "@aws-sdk/client-dynamodb": "catalog:",
+    "@aws-sdk/lib-dynamodb": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:"
+  }
+}

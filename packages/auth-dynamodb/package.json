@@ -1,0 +1,38 @@
+{
+  "name": "@structure-ai/auth-dynamodb",
+  "version": "0.0.0",
+  "description": "Durable Bun-native AuthStore over the DynamoDB single table: transactional user/email/password creates, atomic one-time-token consumption, session and passkey user indexes.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ligerian-labs/structure.git",
+    "directory": "packages/auth-dynamodb"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "@effect-aws/dynamodb": "catalog:",
+    "@aws-sdk/client-dynamodb": "catalog:",
+    "@aws-sdk/lib-dynamodb": "catalog:",
+    "@structure-ai/auth": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/bun": "catalog:",
+    "@structure-ai/eventsourcing-dynamodb": "workspace:*"
+  }
+}

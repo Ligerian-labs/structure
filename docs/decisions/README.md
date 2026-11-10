@@ -27,3 +27,4 @@ Numbered, immutable once accepted; reversing a decision means a new ADR marking 
 | [0021](0021-native-grpc-effect-adapter.md) | Native gRPC through grpc-js and Protobuf-ES; scoped Effect streams, typed protobuf business failures and explicit Bun compatibility evidence |
 | [0022](0022-projection-commit-notifications.md) | Scoped in-process commit notifications wake checkpointed projections; SQL notification follows the outermost command commit |
 | [0023](0023-postgresql-projection-notifications.md) | PostgreSQL event-insert triggers and a dedicated LISTEN connection wake separate projection processes at commit; listener loss fails workers for supervised restart |
+| [0024](0024-dynamodb-adapters.md) | DynamoDB adapters: single table with overloaded keys, ULID positions (approximate global order), transactional append+outbox, ensureTables over SQL migrations |
