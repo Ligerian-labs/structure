@@ -14,6 +14,7 @@ import {
   UnsupportedPasskey,
 } from "./errors.js";
 import type { OAuthProviderId, TenantId } from "./model.js";
+import { validateFlowContext } from "./oauth.js";
 import type { AuthService, AuthServiceError } from "./service.js";
 import { requestedSlot } from "./session-slots.js";
 import type { PasskeyAuthenticationResponse, PasskeyRegistrationResponse } from "./webauthn.js";
@@ -149,6 +150,13 @@ const stringArray = (
     ? Effect.succeed(value)
     : Effect.fail(new AuthValidationError({ field, reason: "must be an array of strings" }));
 };
+
+const flowContextField = (
+  body: Record<string, unknown>,
+): Effect.Effect<
+  Record<string, string | number | boolean | null> | undefined,
+  AuthValidationError
+> => validateFlowContext(body.flowContext);
 
 const registrationResponse = (
   body: Record<string, unknown>,
@@ -631,6 +639,7 @@ export const makeAuthHandler = (
           }
           const body = yield* decodeBody(request, maxBodyBytes);
           const returnTo = yield* stringField(body, "returnTo", true);
+          const flowContext = yield* flowContextField(body);
           const redirectTo = returnTo ?? options.oauthCallbackRedirect;
           return jsonResponse(
             200,
@@ -640,6 +649,7 @@ export const makeAuthHandler = (
               {
                 ...(redirectTo === undefined ? {} : { returnTo: redirectTo }),
                 callbackPath: pathForRoute(routes, "oauthCallback", provider),
+                ...(flowContext === undefined ? {} : { flowContext }),
               },
               caller,
             ),
@@ -678,7 +688,11 @@ export const makeAuthHandler = (
           }
           return jsonResponse(
             200,
-            { user: completed.session.user, returnTo: completed.returnTo },
+            {
+              user: completed.session.user,
+              returnTo: completed.returnTo,
+              flowContext: completed.flowContext,
+            },
             {
               "set-cookie": sessionCookie,
             },

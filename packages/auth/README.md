@@ -121,8 +121,12 @@ const program = Effect.gen(function* () {
   yield* auth.renamePasskey("acme", session.token, browserResponse.credentialId, "Security key");
   yield* auth.removePasskey("acme", session.token, browserResponse.credentialId);
 
-  const oauth = yield* auth.beginOAuth("acme", "github", { returnTo: "/settings" });
-  // Redirect to oauth.authorizationUrl. The callback submits state + code.
+  const oauth = yield* auth.beginOAuth("acme", "github", {
+    returnTo: "/settings",
+    flowContext: { intent: "sign-up", distinctId: "anon-42" },
+  });
+  // Redirect to oauth.authorizationUrl. The callback submits state + code;
+  // completeOAuth returns flowContext exactly once, with the session.
 
   return { pending, verified };
 });
@@ -137,6 +141,8 @@ Password reset and magic-link request methods deliberately return no account-exi
 The handler compiles the OAuth callback from `basePath` and `routes.oauthCallback`. OAuth startup uses that same URI for provider authorization and the later code exchange. `authorizationServerRedirectUri(tenantId, provider)` returns the exact URI to register in the provider console.
 
 By default, a successful OAuth callback returns the existing JSON body. Set `oauthCallbackRedirect` to an absolute application path to enable the browser flow. The callback then responds with `303 See Other` to the validated `returnTo` supplied at startup, or to the configured path when `returnTo` is absent. The response sets the session cookie in both modes.
+
+Applications can attach bounded, opaque context to an OAuth flow: pass a flat `flowContext` record of JSON primitives (strings, numbers, booleans, null; at most 2048 encoded bytes) to `beginOAuth` — or as a `flowContext` body field on the OAuth-start route — and `completeOAuth` returns it exactly once, after provider and state validation, alongside the session and `returnTo`. The context is opaque to the framework: it never rides the authorization URL, never appears in logs, errors, or audit records, and oversized or nested values fail validation before any state is persisted. Durable stores keep it with the one-time OAuth state itself, so replay, expiry, and provider-mismatch semantics are unchanged.
 
 | Route id | Method | Default path |
 | --- | --- | --- |

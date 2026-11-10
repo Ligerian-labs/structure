@@ -88,6 +88,12 @@ export interface OAuthStateRecord {
   readonly codeVerifier: Redacted.Redacted<string>;
   readonly redirectUri: string;
   readonly returnTo?: string;
+  /**
+   * Bounded, JSON-safe application context set at `beginOAuth` and returned
+   * exactly once by `completeOAuth`. Opaque to the framework: never logged,
+   * never surfaced in errors or audit records.
+   */
+  readonly flowContext?: Readonly<Record<string, string | number | boolean | null>>;
   readonly expiresAt: Date;
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Effect, Redacted } from "effect";
 import {
   AccountLinkDenied,
+  AuthValidationError,
   allowAllRateLimiter,
   builtInOAuthProvider,
   InvalidAuthToken,
@@ -10,6 +11,7 @@ import {
   type OAuthHttpClient,
   RateLimitExceeded,
   type TenantAuthConfig,
+  validateFlowContext,
 } from "../src/index.js";
 
 const credentials = (clientId: string) => ({
@@ -146,6 +148,174 @@ describe("OAuth providers", () => {
         ),
       ),
     ).toBeInstanceOf(InvalidAuthToken);
+  });
+
+  test("carries bounded application flow context across the callback exactly once", async () => {
+    const { auth } = makeHarness({
+      sub: "google-subject",
+      email: "oauth@example.com",
+      email_verified: true,
+    });
+    const flowContext = { intent: "sign-up", analyticsConsent: true, distinctId: "anon-42" };
+    const started = await Effect.runPromise(auth.beginOAuth("tenant-a", "google", { flowContext }));
+    // application context never rides the authorization URL
+    expect(started.authorizationUrl).not.toContain("analyticsConsent");
+
+    const state = Redacted.make(stateFrom(started.authorizationUrl));
+    const result = await Effect.runPromise(
+      auth.completeOAuth({
+        tenantId: "tenant-a",
+        provider: "google",
+        state,
+        code: Redacted.make("authorization-code"),
+      }),
+    );
+    expect(result.flowContext).toEqual(flowContext);
+
+    // consumed with the state: a replay returns neither session nor context
+    expect(
+      await Effect.runPromise(
+        Effect.flip(
+          auth.completeOAuth({
+            tenantId: "tenant-a",
+            provider: "google",
+            state,
+            code: Redacted.make("authorization-code"),
+          }),
+        ),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+  });
+
+  test("provider mismatch does not consume another provider's state", async () => {
+    const { auth } = makeHarness({
+      sub: "google-subject",
+      email: "oauth@example.com",
+      email_verified: true,
+    });
+    const started = await Effect.runPromise(
+      auth.beginOAuth("tenant-a", "google", { flowContext: { intent: "sign-up" } }),
+    );
+    const state = Redacted.make(stateFrom(started.authorizationUrl));
+    // A callback routed to the wrong provider fails...
+    expect(
+      await Effect.runPromise(
+        Effect.flip(
+          auth.completeOAuth({
+            tenantId: "tenant-a",
+            provider: "github",
+            state,
+            code: Redacted.make("authorization-code"),
+          }),
+        ),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    // ...without burning the state: the correct provider callback still works
+    // and receives the flow context exactly once.
+    const result = await Effect.runPromise(
+      auth.completeOAuth({
+        tenantId: "tenant-a",
+        provider: "google",
+        state,
+        code: Redacted.make("authorization-code"),
+      }),
+    );
+    expect(result.flowContext).toEqual({ intent: "sign-up" });
+  });
+
+  test("expires flow context with the OAuth state", async () => {
+    let clock = new Date("2026-08-20T12:00:00.000Z");
+    const memory = inMemoryAuthStore();
+    const oauth = fakeOAuth({
+      sub: "google-subject",
+      email: "oauth@example.com",
+      email_verified: true,
+    });
+    const auth = makeAuth({
+      store: memory.store,
+      resolveTenant: () => Effect.succeed(config),
+      emailSender: { send: () => Effect.void },
+      rateLimiter: allowAllRateLimiter,
+      oauthHttpClient: oauth.client,
+      primitives: { now: () => clock },
+    });
+    const started = await Effect.runPromise(
+      auth.beginOAuth("tenant-a", "google", { flowContext: { intent: "sign-up" } }),
+    );
+    // advance past the default 10-minute OAuth state TTL
+    clock = new Date("2026-08-20T12:11:00.000Z");
+    expect(
+      await Effect.runPromise(
+        Effect.flip(
+          auth.completeOAuth({
+            tenantId: "tenant-a",
+            provider: "google",
+            state: Redacted.make(stateFrom(started.authorizationUrl)),
+            code: Redacted.make("authorization-code"),
+          }),
+        ),
+      ),
+    ).toBeInstanceOf(InvalidAuthToken);
+    // the expired state row is gone entirely: no context can be recovered
+    expect(memory.snapshot().oauthStates).toHaveLength(0);
+  });
+
+  test("rejects oversized flow context before persisting any state", async () => {
+    const { auth, memory } = makeHarness({
+      sub: "google-subject",
+      email: "oauth@example.com",
+      email_verified: true,
+    });
+    const oversized: Record<string, string> = {};
+    for (let index = 0; index < 40; index += 1) oversized[`key-${index}`] = "x".repeat(100);
+    const error = await Effect.runPromise(
+      Effect.flip(
+        auth.beginOAuth("tenant-a", "google", {
+          flowContext: oversized as Record<string, string>,
+        }),
+      ),
+    );
+    expect(error).toBeInstanceOf(AuthValidationError);
+    expect(memory.snapshot().oauthStates).toHaveLength(0);
+  });
+
+  test("rejects flow context values that are not JSON primitives", async () => {
+    const { auth, memory } = makeHarness({
+      sub: "google-subject",
+      email: "oauth@example.com",
+      email_verified: true,
+    });
+    const nested = { nested: { deep: true } } as unknown as Record<string, string>;
+    const error = await Effect.runPromise(
+      Effect.flip(auth.beginOAuth("tenant-a", "google", { flowContext: nested })),
+    );
+    expect(error).toBeInstanceOf(AuthValidationError);
+    expect(memory.snapshot().oauthStates).toHaveLength(0);
+  });
+
+  test("validateFlowContext accepts unvalidated input at the boundary", async () => {
+    // Non-object shapes must fail validation, not crash or coerce.
+    for (const invalid of ["sign-up", 42, true, null, ["sign-up"]] as const) {
+      const error = await Effect.runPromise(Effect.flip(validateFlowContext(invalid)));
+      expect(error).toBeInstanceOf(AuthValidationError);
+      expect(error.field).toBe("flowContext");
+      expect(error.reason).toContain("must be an object");
+    }
+    // Arrays pass the object check in JSON bodies but must still be rejected.
+    expect((await Effect.runPromise(Effect.flip(validateFlowContext([])))).reason).toContain(
+      "must be an object",
+    );
+    // Nested objects are not JSON primitives and are rejected with the offending type.
+    expect(
+      (await Effect.runPromise(Effect.flip(validateFlowContext({ nested: { deep: true } }))))
+        .reason,
+    ).toContain("got object");
+    // Valid primitives round-trip; empty objects normalize to undefined (nothing persisted).
+    expect(
+      await Effect.runPromise(validateFlowContext({ intent: "sign-up", n: 1, ok: true, x: null })),
+    ).toEqual({ intent: "sign-up", n: 1, ok: true, x: null });
+    expect(await Effect.runPromise(validateFlowContext({}))).toBeUndefined();
+    expect(await Effect.runPromise(validateFlowContext(undefined))).toBeUndefined();
   });
 
   test("does not link a verified matching email unless policy explicitly allows it", async () => {

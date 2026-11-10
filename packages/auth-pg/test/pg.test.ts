@@ -11,6 +11,7 @@ import {
   makeOAuthServerStore,
   migrate,
   migration,
+  oauthFlowContextMigration,
   passkeyMetadataMigration,
   tableNames,
   upgradeMigration,
@@ -88,6 +89,14 @@ describe("migration definition", () => {
         'ALTER TABLE "x_passkeys" ADD COLUMN IF NOT EXISTS aaguid TEXT',
       ]),
     );
+    const flowContext = oauthFlowContextMigration(5, { tablePrefix: "x_" });
+    expect(flowContext.name).toBe("add_x_oauth_flow_context");
+    expect(flowContext.checksum).toBe(
+      migrationChecksum(5, flowContext.name, [
+        'ALTER TABLE "x_oauth_states" ADD COLUMN IF NOT EXISTS flow_context TEXT',
+      ]),
+    );
+    expect(schemaStatements().join("\n")).not.toContain("flow_context");
   });
 });
 
@@ -154,6 +163,7 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
       migration(1, options),
       upgradeMigration(2, options),
       passkeyMetadataMigration(3, options),
+      oauthFlowContextMigration(4, options),
     ]);
     const sql = new SQL(databaseUrl);
     const dropTables = Effect.gen(function* () {
@@ -170,6 +180,7 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
           [1, `create_${options.tablePrefix}schema`],
           [2, `upgrade_${options.tablePrefix}schema_v2`],
           [3, `add_${options.tablePrefix}passkey_metadata`],
+          [4, `add_${options.tablePrefix}oauth_flow_context`],
         ]);
         const again = yield* run(set, { table: bookkeeping });
         expect(again).toHaveLength(0);
@@ -177,6 +188,7 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
         yield* migration(1, options).up;
         yield* upgradeMigration(2, options).up;
         yield* passkeyMetadataMigration(3, options).up;
+        yield* oauthFlowContextMigration(4, options).up;
       }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })));
       await Effect.runPromise(program);
 
@@ -198,6 +210,83 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
       await Effect.runPromise(
         dropTables.pipe(Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) }))),
       );
+      await sql.close();
+    }
+  });
+
+  test("adds nullable OAuth flow context column without losing existing states", async () => {
+    if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
+    const options = { tablePrefix: uniquePrefix() };
+    const tables = tableNames(options);
+    const sql = new SQL(databaseUrl);
+    try {
+      // A pre-flow-context oauth_states table, as created by migration + v2.
+      await sql`
+        CREATE TABLE ${sql(tables.oauthStates)} (
+          tenant_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          state_hash TEXT NOT NULL,
+          code_verifier TEXT NOT NULL,
+          redirect_uri TEXT NOT NULL,
+          return_to TEXT,
+          expires_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (tenant_id, state_hash)
+        )
+      `;
+      const legacyState = {
+        tenant_id: "tenant-a",
+        provider: "github",
+        state_hash: "legacy-hash",
+        code_verifier: "legacy-verifier",
+        redirect_uri: "https://example.com/auth/oauth/github/callback",
+        expires_at: new Date(Date.now() + 60_000),
+      };
+      await sql`
+        INSERT INTO ${sql(tables.oauthStates)}
+          (tenant_id, provider, state_hash, code_verifier, redirect_uri, expires_at)
+        VALUES (${legacyState.tenant_id}, ${legacyState.provider}, ${legacyState.state_hash},
+          ${legacyState.code_verifier}, ${legacyState.redirect_uri}, ${legacyState.expires_at})
+      `;
+
+      // Idempotent: applying the upgrade twice leaves one nullable column.
+      await Effect.runPromise(
+        oauthFlowContextMigration(2, options).up.pipe(
+          Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })),
+        ),
+      );
+      await Effect.runPromise(
+        oauthFlowContextMigration(2, options).up.pipe(
+          Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) })),
+        ),
+      );
+
+      // The legacy row survives and still consumes atomically; new states can
+      // carry flow context.
+      const store = makeAuthStore(sql, options);
+      const legacyConsumed = await Effect.runPromise(
+        store.consumeOAuthState("tenant-a", "github", "legacy-hash", new Date()),
+      );
+      expect(legacyConsumed?.provider).toBe("github");
+      expect(legacyConsumed?.flowContext).toBeUndefined();
+      await Effect.runPromise(
+        store.putOAuthState({
+          tenantId: "tenant-a",
+          provider: "github",
+          stateHash: "context-hash",
+          codeVerifier: Redacted.make("verifier"),
+          redirectUri: "https://example.com/auth/oauth/github/callback",
+          flowContext: { intent: "sign-up" },
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+      );
+      const consumed = await Effect.runPromise(
+        store.consumeOAuthState("tenant-a", "github", "context-hash", new Date()),
+      );
+      expect(consumed?.flowContext).toEqual({ intent: "sign-up" });
+    } finally {
+      for (const table of Object.values(tables).reverse()) {
+        await sql`DROP TABLE IF EXISTS ${sql(table)} CASCADE`;
+      }
       await sql.close();
     }
   });
@@ -288,6 +377,7 @@ describe.skipIf(databaseUrl === undefined)("PostgreSQL auth migration (needs DAT
           yield* migration(1, clientOptions).up;
           yield* upgradeMigration(2, clientOptions).up;
           yield* passkeyMetadataMigration(3, clientOptions).up;
+          yield* oauthFlowContextMigration(4, clientOptions).up;
         }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(databaseUrl) }))),
       );
       const viaBun = await snapshotSchema(sql, bunOptions.tablePrefix);
