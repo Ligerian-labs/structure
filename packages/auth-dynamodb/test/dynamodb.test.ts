@@ -2,7 +2,7 @@ import { describe } from "bun:test";
 import { layer as eventsourcingLayer } from "@structure-ai/eventsourcing-dynamodb";
 import { Effect, Redacted } from "effect";
 import { makeAuthStore } from "../src/index.js";
-import { registerStoreScenarios, type StoreHarness } from "./scenarios.js";
+import { registerStoreScenarios, registerTotpScenarios, type StoreHarness } from "./scenarios.js";
 
 /**
  * Runs the AuthStore scenarios against DynamoDB Local behind
@@ -13,7 +13,7 @@ import { registerStoreScenarios, type StoreHarness } from "./scenarios.js";
 const endpoint = process.env.DYNAMODB_ENDPOINT_URL;
 
 describe.skipIf(endpoint === undefined)("auth-dynamodb (needs DYNAMODB_ENDPOINT_URL)", () => {
-  registerStoreScenarios(async () => {
+  const makeHarness = async (): Promise<StoreHarness> => {
     const tableName = `auth_test_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
     const live = eventsourcingLayer({
       tableName,
@@ -23,12 +23,14 @@ describe.skipIf(endpoint === undefined)("auth-dynamodb (needs DYNAMODB_ENDPOINT_
       secretAccessKey: Redacted.make("local"),
     });
     const store = await Effect.runPromise(Effect.provide(makeAuthStore({ tableName }), live));
-    const harness: StoreHarness = {
+    return {
       store,
       // Same table, fresh store handle: the data must survive the "remake".
       remake: () => store,
       close: async () => {},
     };
-    return harness;
-  });
+  };
+
+  registerStoreScenarios(makeHarness);
+  registerTotpScenarios(makeHarness);
 });

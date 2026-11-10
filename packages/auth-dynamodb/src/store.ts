@@ -12,6 +12,7 @@ import {
   type PasswordCredential,
   type SessionRecord,
   type TenantId,
+  type TotpRecord,
   type UserId,
 } from "@structure-ai/auth";
 import { Effect, Option, Redacted } from "effect";
@@ -73,6 +74,11 @@ const passkeyPk = (tenantId: TenantId, credentialId: string): string =>
   `A#${tenantId}#K#${credentialId}`;
 const passkeySk = "K";
 const passkeyIndexPk = (tenantId: TenantId, userId: UserId): string => `A#${tenantId}#PU#${userId}`;
+const totpPk = (tenantId: TenantId, userId: UserId): string => `A#${tenantId}#TOTP#${userId}`;
+const totpSk = "T";
+/** Per-user index of OAuth identities (subject under the user's partition). */
+const userIdentityIndexPk = (tenantId: TenantId, userId: UserId): string =>
+  `A#${tenantId}#UI#${userId}`;
 
 const iso = (value: Date): string => value.toISOString();
 const date = (value: unknown): Date => (typeof value === "string" ? new Date(value) : new Date(0));
@@ -127,24 +133,35 @@ const decodeToken = (item: Record<string, unknown>): OneTimeTokenRecord => ({
   expiresAt: date(item.expiresAt),
 });
 
-const decodeSession = (item: Record<string, unknown>): SessionRecord => ({
-  id: item.id as string,
-  tenantId: item.tenantId as TenantId,
-  userId: item.userId as UserId,
-  tokenHash: item.tokenHash as string,
-  createdAt: date(item.createdAt),
-  expiresAt: date(item.expiresAt),
-});
+const decodeSession = (item: Record<string, unknown>): SessionRecord => {
+  const record: SessionRecord = {
+    id: item.id as string,
+    tenantId: item.tenantId as TenantId,
+    userId: item.userId as UserId,
+    tokenHash: item.tokenHash as string,
+    createdAt: date(item.createdAt),
+    expiresAt: date(item.expiresAt),
+  };
+  return item.elevatedAt === undefined ? record : { ...record, elevatedAt: date(item.elevatedAt) };
+};
 
-const decodeOAuthState = (item: Record<string, unknown>): OAuthStateRecord => ({
-  tenantId: item.tenantId as TenantId,
-  provider: item.provider as OAuthStateRecord["provider"],
-  stateHash: item.stateHash as string,
-  codeVerifier: Redacted.make(item.codeVerifier as string),
-  redirectUri: item.redirectUri as string,
-  ...(item.returnTo !== undefined && { returnTo: item.returnTo as string }),
-  expiresAt: date(item.expiresAt),
-});
+const decodeOAuthState = (item: Record<string, unknown>): OAuthStateRecord => {
+  const record: OAuthStateRecord = {
+    tenantId: item.tenantId as TenantId,
+    provider: item.provider as OAuthStateRecord["provider"],
+    stateHash: item.stateHash as string,
+    codeVerifier: Redacted.make(item.codeVerifier as string),
+    redirectUri: item.redirectUri as string,
+    expiresAt: date(item.expiresAt),
+  };
+  const withReturn =
+    item.returnTo === undefined ? record : { ...record, returnTo: item.returnTo as string };
+  if (item.flowContext === undefined) return withReturn;
+  return {
+    ...withReturn,
+    flowContext: item.flowContext as Record<string, string | number | boolean | null>,
+  };
+};
 
 const decodeOAuthIdentity = (item: Record<string, unknown>): OAuthIdentity => ({
   tenantId: item.tenantId as TenantId,
@@ -163,15 +180,51 @@ const decodeChallenge = (item: Record<string, unknown>): PasskeyChallengeRecord 
   expiresAt: date(item.expiresAt),
 });
 
-const decodePasskey = (item: Record<string, unknown>): PasskeyRecord => ({
-  tenantId: item.tenantId as TenantId,
-  userId: item.userId as UserId,
-  credentialId: item.credentialId as string,
-  publicKey: item.publicKey as string,
-  algorithm: item.algorithm as PasskeyRecord["algorithm"],
-  counter: item.counter as number,
-  transports: (item.transports ?? []) as ReadonlyArray<string>,
-  createdAt: date(item.createdAt),
+const decodePasskey = (item: Record<string, unknown>): PasskeyRecord => {
+  const record: PasskeyRecord = {
+    tenantId: item.tenantId as TenantId,
+    userId: item.userId as UserId,
+    credentialId: item.credentialId as string,
+    publicKey: item.publicKey as string,
+    algorithm: item.algorithm as PasskeyRecord["algorithm"],
+    counter: item.counter as number,
+    transports: (item.transports ?? []) as ReadonlyArray<string>,
+    createdAt: date(item.createdAt),
+  };
+  const withLabel = item.label === undefined ? record : { ...record, label: item.label as string };
+  return item.aaguid === undefined ? withLabel : { ...withLabel, aaguid: item.aaguid as string };
+};
+
+const decodeTotp = (item: Record<string, unknown>): TotpRecord => {
+  const record: TotpRecord = {
+    tenantId: item.tenantId as TenantId,
+    userId: item.userId as UserId,
+    secretBase32: item.secretBase32 as string,
+    confirmed: item.confirmed === true,
+    recoveryCodeHashes: (item.recoveryCodeHashes ?? []) as ReadonlyArray<string>,
+    failedAttempts: typeof item.failedAttempts === "number" ? item.failedAttempts : 0,
+    enrolledAt: date(item.enrolledAt),
+  };
+  const withoutLock =
+    item.lockedUntil === undefined ? record : { ...record, lockedUntil: date(item.lockedUntil) };
+  return item.lastUsedStep === undefined
+    ? withoutLock
+    : { ...withoutLock, lastUsedStep: item.lastUsedStep as number };
+};
+
+const totpItem = (record: TotpRecord): Record<string, unknown> => ({
+  [PK]: totpPk(record.tenantId, record.userId),
+  [SK]: totpSk,
+  entity: "auth-totp",
+  tenantId: record.tenantId,
+  userId: record.userId,
+  secretBase32: record.secretBase32,
+  confirmed: record.confirmed,
+  recoveryCodeHashes: [...record.recoveryCodeHashes],
+  failedAttempts: record.failedAttempts,
+  ...(record.lockedUntil !== undefined && { lockedUntil: iso(record.lockedUntil) }),
+  ...(record.lastUsedStep !== undefined && { lastUsedStep: record.lastUsedStep }),
+  enrolledAt: iso(record.enrolledAt),
 });
 
 /** Builds the `AuthStore` over the shared table. */
@@ -211,6 +264,40 @@ export const make = (
         ),
         Effect.mapError((cause) => storeError(operation, cause)),
       );
+
+    /**
+     * Lists a user's external identities through the per-user identity
+     * index (`A#<t>#UI#<uid>` / sk `<provider>#<subject>`), each entry
+     * carrying the provider and subject it points at.
+     */
+    const queryUserOAuthIdentities = (
+      client: typeof ddb,
+      name: string,
+      tenantId: TenantId,
+      userId: UserId,
+    ): Effect.Effect<
+      ReadonlyArray<{ readonly provider: string; readonly subject: string }>,
+      AuthStoreError
+    > =>
+      client
+        .query({
+          TableName: name,
+          KeyConditionExpression: "#pk = :pk",
+          ConsistentRead: true,
+          ExpressionAttributeNames: { "#pk": PK },
+          ExpressionAttributeValues: { ":pk": userIdentityIndexPk(tenantId, userId) },
+        })
+        .pipe(
+          Effect.map((output) =>
+            (output.Items ?? []).flatMap((raw) => {
+              const item = raw as { readonly provider?: unknown; readonly subject?: unknown };
+              return typeof item.provider === "string" && typeof item.subject === "string"
+                ? [{ provider: item.provider, subject: item.subject }]
+                : [];
+            }),
+          ),
+          Effect.mapError((cause) => storeError("listOAuthIdentities", cause)),
+        );
 
     const transact = (
       items: ReadonlyArray<Record<string, unknown>>,
@@ -284,6 +371,16 @@ export const make = (
               subject: identity.subject,
               ...(identity.email !== undefined && { email: identity.email }),
               createdAt: iso(identity.createdAt),
+            },
+            {
+              // Per-user index entry: keeps removeOAuthIdentity scan-free.
+              [PK]: userIdentityIndexPk(identity.tenantId, identity.userId),
+              [SK]: `${identity.provider}#${identity.subject}`,
+              entity: "auth-oauth-identity-index",
+              tenantId: identity.tenantId,
+              userId: identity.userId,
+              provider: identity.provider,
+              subject: identity.subject,
             },
             ...(user.email !== undefined
               ? [
@@ -506,6 +603,7 @@ export const make = (
               tokenHash: record.tokenHash,
               createdAt: iso(record.createdAt),
               expiresAt: iso(record.expiresAt),
+              ...(record.elevatedAt !== undefined && { elevatedAt: iso(record.elevatedAt) }),
             },
             {
               [PK]: sessionIndexPk(record.tenantId, record.userId),
@@ -600,17 +698,37 @@ export const make = (
             codeVerifier: Redacted.value(record.codeVerifier),
             redirectUri: record.redirectUri,
             ...(record.returnTo !== undefined && { returnTo: record.returnTo }),
+            ...(record.flowContext !== undefined && { flowContext: record.flowContext }),
             expiresAt: iso(record.expiresAt),
           },
           "putOAuthState",
         ),
-      consumeOAuthState: (tenantId, stateHash, now): StoreEffect<OAuthStateRecord | undefined> =>
-        Effect.map(
-          deleteOld(oauthStatePk(tenantId, stateHash), oauthStateSk, "consumeOAuthState"),
-          (item) => {
-            if (Option.isNone(item)) return undefined;
+      consumeOAuthState: (
+        tenantId,
+        provider,
+        stateHash,
+        now,
+      ): StoreEffect<OAuthStateRecord | undefined> =>
+        Effect.flatMap(
+          get(oauthStatePk(tenantId, stateHash), oauthStateSk),
+          (
+            item,
+          ): Effect.Effect<OAuthStateRecord | undefined, AuthStoreError | IdentityConflict> => {
+            if (Option.isNone(item)) return Effect.succeed(undefined);
             const record = decodeOAuthState(item.value);
-            return record.expiresAt > now ? record : undefined;
+            // A callback for another provider must not burn this state; only
+            // a matching provider consumes it (expired states are consumed
+            // but not returned — same as the SQL adapters' guarded DELETE).
+            if (record.provider !== provider) return Effect.succeed(undefined);
+            return Effect.as(
+              ddb
+                .delete({
+                  TableName: table,
+                  Key: { [PK]: oauthStatePk(tenantId, stateHash), [SK]: oauthStateSk },
+                })
+                .pipe(Effect.mapError((cause) => storeError("consumeOAuthState", cause))),
+              record.expiresAt > now ? record : undefined,
+            );
           },
         ),
       findOAuthIdentity: (tenantId, provider, subject): StoreEffect<OAuthIdentity | undefined> =>
@@ -618,20 +736,32 @@ export const make = (
           Option.isNone(item) ? undefined : decodeOAuthIdentity(item.value),
         ),
       addOAuthIdentity: (identity): StoreEffect<void> =>
-        put(
-          {
-            [PK]: oauthIdentityPk(identity.tenantId, identity.provider, identity.subject),
-            [SK]: oauthIdentitySk,
-            entity: "auth-oauth-identity",
-            tenantId: identity.tenantId,
-            userId: identity.userId,
-            provider: identity.provider,
-            subject: identity.subject,
-            ...(identity.email !== undefined && { email: identity.email }),
-            createdAt: iso(identity.createdAt),
-          },
+        transact(
+          [
+            {
+              [PK]: oauthIdentityPk(identity.tenantId, identity.provider, identity.subject),
+              [SK]: oauthIdentitySk,
+              entity: "auth-oauth-identity",
+              tenantId: identity.tenantId,
+              userId: identity.userId,
+              provider: identity.provider,
+              subject: identity.subject,
+              ...(identity.email !== undefined && { email: identity.email }),
+              createdAt: iso(identity.createdAt),
+            },
+            {
+              // Per-user index entry: the user's identities are enumerable
+              // for removal without a scan.
+              [PK]: userIdentityIndexPk(identity.tenantId, identity.userId),
+              [SK]: `${identity.provider}#${identity.subject}`,
+              entity: "auth-oauth-identity-index",
+              tenantId: identity.tenantId,
+              userId: identity.userId,
+              provider: identity.provider,
+              subject: identity.subject,
+            },
+          ],
           "addOAuthIdentity",
-          true,
         ).pipe(
           Effect.catchAll((error): Effect.Effect<never, AuthStoreError | IdentityConflict> => {
             if (error._tag === "AuthStoreError" && isConditionalFailure(error.cause)) {
@@ -691,6 +821,8 @@ export const make = (
               algorithm: record.algorithm,
               counter: record.counter,
               transports: [...record.transports],
+              ...(record.label !== undefined && { label: record.label }),
+              ...(record.aaguid !== undefined && { aaguid: record.aaguid }),
               createdAt: iso(record.createdAt),
             },
             {
@@ -752,6 +884,296 @@ export const make = (
               }
               return Effect.fail(storeError("updatePasskeyCounter", error));
             }),
+          ),
+      removeOAuthIdentity: (tenantId, userId, provider): StoreEffect<void> =>
+        Effect.flatMap(
+          queryUserOAuthIdentities(ddb, table, tenantId, userId),
+          (identities): Effect.Effect<void, AuthStoreError | IdentityConflict> =>
+            Effect.forEach(
+              identities.filter((identity) => identity.provider === provider),
+              (identity) =>
+                ddb
+                  .transactWrite({
+                    TransactItems: [
+                      {
+                        Delete: {
+                          TableName: table,
+                          Key: {
+                            [PK]: oauthIdentityPk(tenantId, provider, identity.subject),
+                            [SK]: oauthIdentitySk,
+                          },
+                        },
+                      },
+                      {
+                        Delete: {
+                          TableName: table,
+                          Key: {
+                            [PK]: userIdentityIndexPk(tenantId, userId),
+                            [SK]: `${provider}#${identity.subject}`,
+                          },
+                        },
+                      },
+                    ],
+                  })
+                  .pipe(
+                    Effect.asVoid,
+                    Effect.mapError((cause) => storeError("removeOAuthIdentity", cause)),
+                  ),
+              { discard: true },
+            ),
+        ),
+      renamePasskey: (tenantId, userId, credentialId, label): StoreEffect<boolean> =>
+        Effect.flatMap(
+          get(passkeyPk(tenantId, credentialId), passkeySk),
+          (item): Effect.Effect<boolean, AuthStoreError | IdentityConflict> =>
+            Option.isNone(item)
+              ? Effect.succeed(false)
+              : item.value.userId !== userId
+                ? Effect.succeed(false)
+                : ddb
+                    .update({
+                      TableName: table,
+                      Key: { [PK]: passkeyPk(tenantId, credentialId), [SK]: passkeySk },
+                      UpdateExpression:
+                        label === undefined ? "REMOVE #label" : "SET #label = :label",
+                      ConditionExpression: "attribute_exists(#pk)",
+                      ExpressionAttributeNames:
+                        label === undefined
+                          ? { "#label": "label", "#pk": PK }
+                          : { "#label": "label", "#pk": PK },
+                      ...(label !== undefined && {
+                        ExpressionAttributeValues: { ":label": label },
+                      }),
+                    })
+                    .pipe(
+                      Effect.as(true),
+                      Effect.catchIf(isConditionalFailure, () => Effect.succeed(false)),
+                      Effect.mapError((cause) => storeError("renamePasskey", cause)),
+                    ),
+        ),
+      removePasskey: (tenantId, userId, credentialId): StoreEffect<boolean> =>
+        Effect.flatMap(
+          get(passkeyPk(tenantId, credentialId), passkeySk),
+          (item): Effect.Effect<boolean, AuthStoreError | IdentityConflict> =>
+            Option.isNone(item) || item.value.userId !== userId
+              ? Effect.succeed(false)
+              : ddb
+                  .transactWrite({
+                    TransactItems: [
+                      {
+                        Delete: {
+                          TableName: table,
+                          Key: { [PK]: passkeyPk(tenantId, credentialId), [SK]: passkeySk },
+                        },
+                      },
+                      {
+                        Delete: {
+                          TableName: table,
+                          Key: {
+                            [PK]: passkeyIndexPk(tenantId, userId),
+                            [SK]: credentialId,
+                          },
+                        },
+                      },
+                    ],
+                  })
+                  .pipe(
+                    Effect.as(true),
+                    Effect.mapError((cause) => storeError("removePasskey", cause)),
+                  ),
+        ),
+      putTotpSecret: (record): StoreEffect<void> => put(totpItem(record), "putTotpSecret"),
+      findTotp: (tenantId, userId): StoreEffect<TotpRecord | undefined> =>
+        Effect.map(get(totpPk(tenantId, userId), totpSk), (item) =>
+          Option.isNone(item) ? undefined : decodeTotp(item.value),
+        ),
+      confirmTotp: (
+        tenantId,
+        userId,
+        recoveryCodeHashes,
+        now,
+      ): StoreEffect<TotpRecord | undefined> =>
+        ddb
+          .update({
+            TableName: table,
+            Key: { [PK]: totpPk(tenantId, userId), [SK]: totpSk },
+            UpdateExpression:
+              "SET #confirmed = :true, #recovery = :recovery, #failed = :zero, #enrolledAt = :now REMOVE #lockedUntil",
+            ConditionExpression: "attribute_exists(#pk) AND #confirmed = :false",
+            ExpressionAttributeNames: {
+              "#confirmed": "confirmed",
+              "#recovery": "recoveryCodeHashes",
+              "#failed": "failedAttempts",
+              "#enrolledAt": "enrolledAt",
+              "#lockedUntil": "lockedUntil",
+              "#pk": PK,
+            },
+            ExpressionAttributeValues: {
+              ":true": true,
+              ":false": false,
+              ":recovery": [...recoveryCodeHashes],
+              ":zero": 0,
+              ":now": iso(now),
+            },
+            ReturnValues: "ALL_NEW",
+          })
+          .pipe(
+            Effect.map((output) =>
+              output.Attributes === undefined
+                ? undefined
+                : decodeTotp(output.Attributes as Record<string, unknown>),
+            ),
+            Effect.catchIf(isConditionalFailure, () => Effect.succeed(undefined)),
+            Effect.mapError((cause) => storeError("confirmTotp", cause)),
+          ),
+      removeTotp: (tenantId, userId): StoreEffect<void> =>
+        ddb
+          .delete({ TableName: table, Key: { [PK]: totpPk(tenantId, userId), [SK]: totpSk } })
+          .pipe(
+            Effect.asVoid,
+            Effect.mapError((cause) => storeError("removeTotp", cause)),
+          ),
+      replaceTotpSecret: (tenantId, userId, secretBase32): StoreEffect<void> =>
+        ddb
+          .update({
+            TableName: table,
+            Key: { [PK]: totpPk(tenantId, userId), [SK]: totpSk },
+            UpdateExpression: "SET #secret = :secret",
+            ConditionExpression: "attribute_exists(#pk)",
+            ExpressionAttributeNames: { "#secret": "secretBase32", "#pk": PK },
+            ExpressionAttributeValues: { ":secret": secretBase32 },
+          })
+          .pipe(
+            Effect.asVoid,
+            Effect.catchIf(isConditionalFailure, () => Effect.void),
+            Effect.mapError((cause) => storeError("replaceTotpSecret", cause)),
+          ),
+      recordTotpFailure: ({
+        tenantId,
+        userId,
+        threshold,
+        cooldownMillis,
+        now,
+      }): StoreEffect<{ readonly locked: boolean; readonly lockedUntil?: Date }> =>
+        Effect.flatMap(
+          get(totpPk(tenantId, userId), totpSk),
+          (
+            item,
+          ): Effect.Effect<
+            { readonly locked: boolean; readonly lockedUntil?: Date },
+            AuthStoreError | IdentityConflict
+          > => {
+            if (Option.isNone(item)) return Effect.succeed({ locked: false });
+            const current = decodeTotp(item.value);
+            const failedAttempts = current.failedAttempts + 1;
+            const locked = failedAttempts >= threshold;
+            const lockedUntil = locked
+              ? new Date(now.getTime() + cooldownMillis)
+              : current.lockedUntil;
+            return Effect.zipRight(
+              ddb
+                .update({
+                  TableName: table,
+                  Key: { [PK]: totpPk(tenantId, userId), [SK]: totpSk },
+                  UpdateExpression:
+                    lockedUntil === undefined
+                      ? "SET #failed = :failed"
+                      : "SET #failed = :failed, #lockedUntil = :lockedUntil",
+                  ExpressionAttributeNames:
+                    lockedUntil === undefined
+                      ? { "#failed": "failedAttempts" }
+                      : { "#failed": "failedAttempts", "#lockedUntil": "lockedUntil" },
+                  ExpressionAttributeValues: {
+                    ":failed": failedAttempts,
+                    ...(lockedUntil !== undefined && { ":lockedUntil": iso(lockedUntil) }),
+                  },
+                })
+                .pipe(
+                  Effect.asVoid,
+                  Effect.mapError((cause) => storeError("recordTotpFailure", cause)),
+                ),
+              Effect.succeed(
+                locked ? { locked: true, lockedUntil: lockedUntil as Date } : { locked: false },
+              ),
+            );
+          },
+        ),
+      resetTotpFailures: (tenantId, userId): StoreEffect<void> =>
+        ddb
+          .update({
+            TableName: table,
+            Key: { [PK]: totpPk(tenantId, userId), [SK]: totpSk },
+            UpdateExpression: "SET #failed = :zero REMOVE #lockedUntil",
+            ConditionExpression: "attribute_exists(#pk)",
+            ExpressionAttributeNames: {
+              "#failed": "failedAttempts",
+              "#lockedUntil": "lockedUntil",
+              "#pk": PK,
+            },
+            ExpressionAttributeValues: { ":zero": 0 },
+          })
+          .pipe(
+            Effect.asVoid,
+            Effect.catchIf(isConditionalFailure, () => Effect.void),
+            Effect.mapError((cause) => storeError("resetTotpFailures", cause)),
+          ),
+      markTotpStepUsed: (tenantId, userId, step): StoreEffect<boolean> =>
+        ddb
+          .update({
+            TableName: table,
+            Key: { [PK]: totpPk(tenantId, userId), [SK]: totpSk },
+            UpdateExpression: "SET #lastUsed = :step",
+            ConditionExpression:
+              "attribute_exists(#pk) AND (attribute_not_exists(#lastUsed) OR #lastUsed < :step)",
+            ExpressionAttributeNames: { "#lastUsed": "lastUsedStep", "#pk": PK },
+            ExpressionAttributeValues: { ":step": step },
+          })
+          .pipe(
+            Effect.as(true),
+            Effect.catchIf(isConditionalFailure, () => Effect.succeed(false)),
+            Effect.mapError((cause) => storeError("markTotpStepUsed", cause)),
+          ),
+      consumeRecoveryCode: (tenantId, userId, codeHash): StoreEffect<boolean> =>
+        Effect.flatMap(
+          get(totpPk(tenantId, userId), totpSk),
+          (item): Effect.Effect<boolean, AuthStoreError | IdentityConflict> => {
+            if (Option.isNone(item)) return Effect.succeed(false);
+            const current = decodeTotp(item.value);
+            if (!current.recoveryCodeHashes.includes(codeHash)) return Effect.succeed(false);
+            return ddb
+              .update({
+                TableName: table,
+                Key: { [PK]: totpPk(tenantId, userId), [SK]: totpSk },
+                UpdateExpression: "SET #recovery = :recovery",
+                // Compare-and-delete: the list must still contain the code.
+                ConditionExpression: "contains(#recovery, :code)",
+                ExpressionAttributeNames: { "#recovery": "recoveryCodeHashes" },
+                ExpressionAttributeValues: {
+                  ":code": codeHash,
+                  ":recovery": current.recoveryCodeHashes.filter((hash) => hash !== codeHash),
+                },
+              })
+              .pipe(
+                Effect.as(true),
+                Effect.catchIf(isConditionalFailure, () => Effect.succeed(false)),
+                Effect.mapError((cause) => storeError("consumeRecoveryCode", cause)),
+              );
+          },
+        ),
+      elevateSession: (tenantId, tokenHash, now): StoreEffect<void> =>
+        ddb
+          .update({
+            TableName: table,
+            Key: { [PK]: sessionPk(tenantId, tokenHash), [SK]: sessionSk },
+            UpdateExpression: "SET #elevatedAt = :now",
+            ConditionExpression: "attribute_exists(#pk)",
+            ExpressionAttributeNames: { "#elevatedAt": "elevatedAt", "#pk": PK },
+            ExpressionAttributeValues: { ":now": iso(now) },
+          })
+          .pipe(
+            Effect.asVoid,
+            Effect.catchIf(isConditionalFailure, () => Effect.void),
+            Effect.mapError((cause) => storeError("elevateSession", cause)),
           ),
     } satisfies AuthStore;
   });
