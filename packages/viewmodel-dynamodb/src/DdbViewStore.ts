@@ -112,8 +112,34 @@ export class RawDynamoClient extends Context.Tag(
 }
 
 /**
+ * The GSI specs for a view's declared access patterns. Pass them to the
+ * eventsourcing layer's `extraGlobalSecondaryIndexes` so the indexes exist
+ * when the table is created: DynamoDB builds online indexes one at a time,
+ * and DynamoDB Local misbehaves around data-plane writes once `UpdateTable`
+ * GSIs are in play — create-time declaration avoids both. Composing the
+ * shared table through the eventsourcing `layer` with these specs is the
+ * recommended wiring; {@link ensureViewIndexes} remains the escape hatch
+ * for tables that already exist.
+ */
+export const patternIndexes = (
+  options: DdbViewStoreOptions,
+  viewName: string,
+): ReadonlyArray<CreateGlobalSecondaryIndexAction> =>
+  Object.entries(options.patterns).map(([patternName]) => ({
+    IndexName: gsiName(viewName, patternName),
+    KeySchema: [
+      { AttributeName: patternAttribute(viewName, patternName, "pk"), KeyType: "HASH" },
+      { AttributeName: patternAttribute(viewName, patternName, "sk"), KeyType: "RANGE" },
+    ],
+    Projection: { ProjectionType: "ALL" },
+  }));
+
+/**
  * Idempotently ensures one GSI per declared access pattern exists on the
- * shared table (adds missing ones via `UpdateTable`, waits for ACTIVE).
+ * shared table (adds missing ones via `UpdateTable`, waiting for each to
+ * become ACTIVE before starting the next). Prefer declaring the indexes at
+ * create time with {@link patternIndexes}; this remains for tables that
+ * already exist.
  */
 export const ensureViewIndexes = (
   options: DdbViewStoreOptions,
@@ -128,41 +154,21 @@ export const ensureViewIndexes = (
     const present = new Set(
       (described.Table?.GlobalSecondaryIndexes ?? []).map((index) => index.IndexName),
     );
-    const missing: Array<CreateGlobalSecondaryIndexAction> = [];
-    const attributeDefinitions: Array<{ AttributeName: string; AttributeType: "S" }> = [];
-    for (const [patternName] of Object.entries(options.patterns)) {
-      if (present.has(gsiName(viewName, patternName))) continue;
-      const pk = patternAttribute(viewName, patternName, "pk");
-      const sk = patternAttribute(viewName, patternName, "sk");
-      missing.push({
-        IndexName: gsiName(viewName, patternName),
-        KeySchema: [
-          { AttributeName: pk, KeyType: "HASH" },
-          { AttributeName: sk, KeyType: "RANGE" },
-        ],
-        Projection: { ProjectionType: "ALL" },
-      });
-      attributeDefinitions.push(
-        { AttributeName: pk, AttributeType: "S" },
-        { AttributeName: sk, AttributeType: "S" },
-      );
-    }
-    if (missing.length === 0) return;
+    const missing = patternIndexes(options, viewName).filter(
+      (index) => index.IndexName !== undefined && !present.has(index.IndexName),
+    );
     // DynamoDB builds one online index at a time: create each GSI in its own
     // UpdateTable and wait for ACTIVE before the next.
-    for (const [position, index] of missing.entries()) {
+    for (const index of missing) {
       yield* Effect.tryPromise({
         try: () =>
           client.send(
             new UpdateTableCommand({
               TableName: options.tableName,
-              AttributeDefinitions: [
-                attributeDefinitions[position * 2],
-                attributeDefinitions[position * 2 + 1],
-              ].filter(
-                (definition): definition is { AttributeName: string; AttributeType: "S" } =>
-                  definition !== undefined,
-              ),
+              AttributeDefinitions: index.KeySchema.map((key) => ({
+                AttributeName: key.AttributeName,
+                AttributeType: "S",
+              })),
               GlobalSecondaryIndexUpdates: [{ Create: index }],
             }),
           ),

@@ -160,8 +160,11 @@ export const outboxLayer = (
               claim === undefined
                 ? { ...names, "#status": "status" }
                 : { ...names, "#status": "status", "#ct": "ct" },
-            ExpressionAttributeValues:
-              claim === undefined ? values : { ...values, ":claim": claim },
+            ExpressionAttributeValues: {
+              ...values,
+              ":pending": "pending",
+              ...(claim !== undefined && { ":claim": claim }),
+            },
           })
           .pipe(
             Effect.as(true),
@@ -267,9 +270,9 @@ export const outboxLayer = (
                       claim,
                       "outbox.markPublished",
                     ),
-                  { discard: true },
+                  { discard: false },
                 ),
-                () => true,
+                (applied) => applied.every((settled) => settled),
               ),
         markFailed: (id, error, attempts, retryAt, claim) =>
           settle(
@@ -323,7 +326,7 @@ export const outboxLayer = (
                     "#ct": "ct",
                     "#lu": "lu",
                   },
-                  ExpressionAttributeValues: { ":pending": "pending", ":zero": 0 },
+                  ExpressionAttributeValues: { ":pending": "pending", ":dead": "dead", ":zero": 0 },
                 })
                 .pipe(
                   // Unknown or non-dead ids are ignored.

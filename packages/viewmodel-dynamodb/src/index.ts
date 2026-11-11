@@ -3,6 +3,7 @@ export {
   ensureViewIndexes,
   make,
   makeWithIndexes,
+  patternIndexes,
   RawDynamoClient,
   UndeclaredAccessPattern,
 } from "./DdbViewStore.js";

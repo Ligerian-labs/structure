@@ -4,15 +4,20 @@ import { layer as eventsourcingLayer } from "@structure-ai/eventsourcing-dynamod
 import { ViewModel } from "@structure-ai/viewmodel";
 import { Effect, Redacted, Schema } from "effect";
 import {
+  make,
   makeWithIndexes,
+  patternIndexes,
   UndeclaredAccessPattern,
   RawDynamoClient as ViewRawDynamoClient,
 } from "../src/index.js";
 
 /**
  * Runs against DynamoDB Local behind `DYNAMODB_ENDPOINT_URL` (skipped
- * otherwise). The eventsourcing layer creates the shared table (as in real
- * compositions); the view store then adds its pattern GSIs on top.
+ * otherwise). Every pattern GSI is declared at create time through the
+ * eventsourcing layer's `extraGlobalSecondaryIndexes` — DynamoDB builds
+ * online indexes one at a time, and DynamoDB Local rejects data-plane
+ * writes while `UpdateTable` GSIs are in play, so the suite never creates
+ * GSIs after the table exists.
  */
 const endpoint = process.env.DYNAMODB_ENDPOINT_URL;
 
@@ -35,7 +40,13 @@ type OrderViewRow = {
   note?: string;
 };
 
-const table = "viewmodel_test";
+const patterns = {
+  byTenant: { partition: ["tenantId"] },
+  byTenantStatus: { partition: ["tenantId", "status"] },
+  byStatus: { partition: ["status"] },
+};
+
+const table = `viewmodel_test_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
 
 const base = eventsourcingLayer({
   tableName: table,
@@ -43,6 +54,8 @@ const base = eventsourcingLayer({
   endpoint: endpoint ?? "",
   accessKeyId: "local",
   secretAccessKey: Redacted.make("local"),
+  // The pattern GSIs exist the moment the table does.
+  extraGlobalSecondaryIndexes: patternIndexes({ tableName: table, patterns }, "order"),
 });
 
 // GSI lifecycle needs the raw client from the same connection settings.
@@ -65,18 +78,31 @@ const provide = (
     ),
   );
 
+describe("patternIndexes", () => {
+  test("derives one sparse composite-key GSI per declared pattern", () => {
+    const specs = patternIndexes(
+      { tableName: "structure", patterns: { byTenant: { partition: ["tenantId"] } } },
+      "order",
+    );
+    expect(specs).toHaveLength(1);
+    const [index] = specs;
+    expect(index?.IndexName).toBe("vm-order-byTenant");
+    expect(index?.KeySchema).toEqual([
+      { AttributeName: "vm_order_byTenant_pk", KeyType: "HASH" },
+      { AttributeName: "vm_order_byTenant_sk", KeyType: "RANGE" },
+    ]);
+    expect(index?.Projection).toEqual({ ProjectionType: "ALL" });
+  });
+});
+
 describe.skipIf(endpoint === undefined)("viewmodel-dynamodb (needs DYNAMODB_ENDPOINT_URL)", () => {
   test("upsert/get/findById roundtrip, patch and remove", async () => {
     await Effect.runPromise(
       provide(
         Effect.gen(function* () {
-          const store = yield* makeWithIndexes(OrderView, {
-            tableName: table,
-            patterns: {
-              byTenant: { partition: ["tenantId"] },
-              byTenantStatus: { partition: ["tenantId", "status"] },
-            },
-          });
+          // All pattern GSIs already exist: this exercises the idempotent
+          // no-op path of ensureViewIndexes (describe finds nothing missing).
+          const store = yield* makeWithIndexes(OrderView, { tableName: table, patterns });
           yield* store.upsert({ id: "o1", tenantId: "t1", status: "open", total: 10 });
           const got = yield* store.get("o1");
           expect(got).toEqual({ id: "o1", tenantId: "t1", status: "open", total: 10 });
@@ -96,13 +122,7 @@ describe.skipIf(endpoint === undefined)("viewmodel-dynamodb (needs DYNAMODB_ENDP
     await Effect.runPromise(
       provide(
         Effect.gen(function* () {
-          const store = yield* makeWithIndexes(OrderView, {
-            tableName: table,
-            patterns: {
-              byTenant: { partition: ["tenantId"] },
-              byTenantStatus: { partition: ["tenantId", "status"] },
-            },
-          });
+          const store = yield* make(OrderView, { tableName: table, patterns });
           yield* store.upsertMany([
             { id: "a", tenantId: "t1", status: "open", total: 1 },
             { id: "b", tenantId: "t1", status: "paid", total: 2 },
@@ -138,11 +158,8 @@ describe.skipIf(endpoint === undefined)("viewmodel-dynamodb (needs DYNAMODB_ENDP
     await Effect.runPromise(
       provide(
         Effect.gen(function* () {
-          const store = yield* makeWithIndexes(OrderView, {
-            tableName: table,
-            patterns: { byTenant: { partition: ["tenantId"] } },
-          });
-          const result = yield* Effect.either(store.find({ status: "open" }));
+          const store = yield* make(OrderView, { tableName: table, patterns });
+          const result = yield* Effect.either(store.find({ tenantId: "t9", note: "x" }));
           expect(result._tag).toBe("Left");
           if (result._tag === "Left") {
             expect(result.left).toBeInstanceOf(UndeclaredAccessPattern);
@@ -157,12 +174,9 @@ describe.skipIf(endpoint === undefined)("viewmodel-dynamodb (needs DYNAMODB_ENDP
     await Effect.runPromise(
       provide(
         Effect.gen(function* () {
-          const store = yield* makeWithIndexes(OrderView, {
-            tableName: table,
-            patterns: { byStatus: { partition: ["status"] } },
-          });
-          // note is null/absent — but pattern is on status; use a row whose
-          // status is absent by making the field optional in a second view.
+          const store = yield* make(OrderView, { tableName: table, patterns });
+          // note is null/absent — but pattern is on status; a row whose
+          // pattern field is absent leaves the sparse index.
           yield* store.upsert({ id: "s1", tenantId: "t1", status: "open", total: 5 });
           const rows = yield* store.find({ status: "open" });
           expect(rows.map((row) => row.id)).toEqual(["s1"]);

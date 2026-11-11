@@ -257,13 +257,31 @@ export const make = (
           Effect.mapError((cause) => storeError(operation, cause)),
         );
 
+    /**
+     * A single-winner delete: the condition serializes concurrent consumers
+     * (plain deletes are not serialized on DynamoDB Local, where two racing
+     * `Delete`s can both observe `ALL_OLD`; conditional writes serialize the
+     * item everywhere). The conditional failure means "someone else consumed
+     * it first" and yields `None`.
+     */
     const deleteOld = (pk: string, sk: string, operation: string) =>
-      ddb.delete({ TableName: table, Key: { [PK]: pk, [SK]: sk }, ReturnValues: "ALL_OLD" }).pipe(
-        Effect.map((output) =>
-          Option.fromNullable(output.Attributes as Record<string, unknown> | undefined),
-        ),
-        Effect.mapError((cause) => storeError(operation, cause)),
-      );
+      ddb
+        .delete({
+          TableName: table,
+          Key: { [PK]: pk, [SK]: sk },
+          ReturnValues: "ALL_OLD",
+          ConditionExpression: "attribute_exists(#pk)",
+          ExpressionAttributeNames: { "#pk": PK },
+        })
+        .pipe(
+          Effect.map((output) =>
+            Option.fromNullable(output.Attributes as Record<string, unknown> | undefined),
+          ),
+          Effect.catchIf(isConditionalFailure, () =>
+            Effect.succeed(Option.none<Record<string, unknown>>()),
+          ),
+          Effect.mapError((cause) => storeError(operation, cause)),
+        );
 
     /**
      * Lists a user's external identities through the per-user identity

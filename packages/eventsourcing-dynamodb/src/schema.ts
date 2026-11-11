@@ -27,10 +27,20 @@ import { ulid } from "./ulid.js";
  * | inbox dedupe | `I#<consumer>` | `<messageId>` | `exp` TTL epoch seconds |
  */
 
-/** Options shared by every adapter in this package. */
+/**
+ * Options shared by every adapter in this package.
+ */
 export interface AdapterOptions {
   /** The single table every port shares. Default: `structure`. */
   readonly tableName?: string;
+  /**
+   * Extra GSIs to declare on the shared table — e.g. view-model access
+   * patterns (`patternIndexes` from `@structure-ai/viewmodel-dynamodb`).
+   * Applied when the table is created; tables that already exist get
+   * missing ones via `UpdateTable` (real DynamoDB only — see
+   * {@link ensureTables}). Every key attribute is created as a string.
+   */
+  readonly extraGlobalSecondaryIndexes?: ReadonlyArray<CreateGlobalSecondaryIndexAction>;
 }
 
 export const defaultTableName = "structure";
@@ -162,6 +172,25 @@ const statusIndex: CreateGlobalSecondaryIndexAction = {
 };
 
 /**
+ * Keyless GSI specs (allowed by the SDK's loose type) are meaningless —
+ * this guard drops them and proves the key schema present for mapping.
+ */
+const withKeys = (
+  indexes: ReadonlyArray<CreateGlobalSecondaryIndexAction>,
+): ReadonlyArray<
+  CreateGlobalSecondaryIndexAction & {
+    readonly KeySchema: NonNullable<CreateGlobalSecondaryIndexAction["KeySchema"]>;
+  }
+> =>
+  indexes.filter(
+    (
+      index,
+    ): index is CreateGlobalSecondaryIndexAction & {
+      readonly KeySchema: NonNullable<CreateGlobalSecondaryIndexAction["KeySchema"]>;
+    } => index.KeySchema !== undefined && index.KeySchema.length > 0,
+  );
+
+/**
  * Idempotently ensures the single table exists with the `feed` and `status`
  * GSIs and the `exp` TTL enabled: creates it when missing, adds missing GSIs
  * via `UpdateTable` when it exists, and waits for `ACTIVE` throughout. Run
@@ -177,6 +206,15 @@ export const ensureTables = (
     // The document client serves data-plane commands only; table lifecycle
     // needs the control-plane client from context.
     const client = yield* RawDynamoClient;
+
+    // Keyless specs (allowed by the SDK's loose type) are meaningless — drop them.
+    const extras = withKeys(options?.extraGlobalSecondaryIndexes ?? []);
+    const extraAttributes = extras.flatMap((index) =>
+      index.KeySchema.map((key) => ({
+        AttributeName: key.AttributeName,
+        AttributeType: "S" as const,
+      })),
+    );
 
     const existing = yield* describeTable(client, name).pipe(
       Effect.map((description) => description.Table),
@@ -201,8 +239,9 @@ export const ensureTables = (
                 { AttributeName: POSITION, AttributeType: "S" },
                 { AttributeName: STATUS_KEY, AttributeType: "S" },
                 { AttributeName: ENQ, AttributeType: "S" },
+                ...extraAttributes,
               ],
-              GlobalSecondaryIndexes: [feedIndex, statusIndex],
+              GlobalSecondaryIndexes: [feedIndex, statusIndex, ...extras],
             }),
           ),
         catch: dynamoError,
@@ -211,9 +250,9 @@ export const ensureTables = (
       const present = new Set(
         (existing.GlobalSecondaryIndexes ?? []).map((index) => index.IndexName),
       );
-      const missing: Array<CreateGlobalSecondaryIndexAction> = [];
-      if (!present.has("feed")) missing.push(feedIndex);
-      if (!present.has("status")) missing.push(statusIndex);
+      const missing = withKeys([feedIndex, statusIndex, ...extras]).filter(
+        (index) => index.IndexName !== undefined && !present.has(index.IndexName),
+      );
       if (missing.length > 0) {
         yield* Effect.tryPromise({
           try: () =>
@@ -225,6 +264,12 @@ export const ensureTables = (
                   { AttributeName: POSITION, AttributeType: "S" },
                   { AttributeName: STATUS_KEY, AttributeType: "S" },
                   { AttributeName: ENQ, AttributeType: "S" },
+                  ...missing.flatMap((index) =>
+                    index.KeySchema.map((key) => ({
+                      AttributeName: key.AttributeName,
+                      AttributeType: "S" as const,
+                    })),
+                  ),
                 ],
                 GlobalSecondaryIndexUpdates: missing.map((Create) => ({ Create })),
               }),
